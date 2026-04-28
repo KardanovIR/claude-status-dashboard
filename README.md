@@ -6,6 +6,8 @@ them live, color-coded, and mobile-friendly.
 
 ![statuses](https://img.shields.io/badge/statuses-idle%20%7C%20planning%20%7C%20coding%20%7C%20testing%20%7C%20blocked%20%7C%20done-blueviolet)
 
+![Dashboard screenshot](docs/dashboard.png)
+
 ## Features
 
 - **Webhook ingestion** — POST status updates from anywhere.

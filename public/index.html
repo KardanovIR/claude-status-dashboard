@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0d12" />
+  <title>Claude Sessions</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="header">
+    <div class="title">
+      <span class="logo"></span>
+      <h1>Claude Sessions</h1>
+      <span class="conn" id="conn" title="Connection">•</span>
+    </div>
+    <div class="stats" id="stats"></div>
+  </header>
+
+  <main>
+    <div class="grid" id="grid"></div>
+  </main>
+
+  <footer class="footer">
+    <span class="label">Webhook</span>
+    <code id="webhook-url">—</code>
+    <button class="copy" id="copy-btn" type="button" aria-label="Copy webhook URL">Copy</button>
+    <span class="auth" id="auth-note"></span>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

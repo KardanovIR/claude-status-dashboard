@@ -1,0 +1,23 @@
+services:
+  dashboard:
+    build: .
+    image: claude-status-dashboard
+    container_name: claude-status
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      HOST: 0.0.0.0
+      # Override these for your deployment:
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      SESSION_TTL_MS: ${SESSION_TTL_MS:-0}
+    ports:
+      # No host port specified → Docker assigns a random free port.
+      # Find it with: docker compose port dashboard 3000
+      - "3000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s

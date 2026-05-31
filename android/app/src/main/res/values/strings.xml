@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Claude Status</string>
+
+    <string name="setup_title">Dashboard server</string>
+    <string name="setup_intro">Enter the URL of your Claude Status dashboard. Include the scheme (http or https) and port if not 80/443.</string>
+    <string name="setup_url_hint">http://192.168.1.50:3000</string>
+    <string name="setup_url_invalid">Please enter a valid http(s) URL with a host.</string>
+    <string name="setup_keep_awake">Keep screen on while dashboard is open</string>
+    <string name="setup_save">Save</string>
+    <string name="setup_cancel">Cancel</string>
+    <string name="setup_saved">Saved</string>
+
+    <string name="menu_reload">Reload</string>
+    <string name="menu_settings">Change URL…</string>
+    <string name="menu_keep_awake">Keep screen on</string>
+    <string name="menu_overflow">Menu</string>
+
+    <string name="error_generic">Could not load the dashboard.</string>
+    <string name="error_retry">Retry</string>
+</resources>

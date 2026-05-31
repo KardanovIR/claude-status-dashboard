@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Safe zone is the centre 72x72 inside the 108x108 layer -->
+    <path
+        android:pathData="M54,30 L54,30 A24,24 0 1 1 53.99,30 Z"
+        android:fillColor="#D97757" />
+    <path
+        android:pathData="M44,46 L64,46 L64,62 L60,62 L60,50 L48,50 L48,62 L44,62 Z M44,66 L64,66 L64,70 L44,70 Z"
+        android:fillColor="#0F1115" />
+</vector>

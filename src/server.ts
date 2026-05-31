@@ -53,7 +53,7 @@ function requireSecret(req: Request, res: Response, next: NextFunction): void {
 const app = express();
 app.disable('x-powered-by');
 app.use(express.json({ limit: '64kb' }));
-app.use(express.static(path.join(__dirname, '..', 'public'), { maxAge: '1h' }));
+app.use(express.static(path.join(__dirname, '..', 'public'), { maxAge: 0, etag: true }));
 
 app.post('/webhook', requireSecret, (req: Request, res: Response) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
@@ -83,7 +83,9 @@ app.post('/webhook', requireSecret, (req: Request, res: Response) => {
   res.json({ ok: true, session });
 });
 
-app.delete('/sessions/:id', requireSecret, (req: Request, res: Response) => {
+// Dismissal is exposed unauthenticated so the dashboard UI can clear a card
+// without knowing the webhook secret. The webhook itself is still protected.
+app.delete('/sessions/:id', (req: Request, res: Response) => {
   const removed = sessions.delete(req.params.id);
   if (removed) broadcast('remove', { id: req.params.id });
   res.json({ ok: removed });

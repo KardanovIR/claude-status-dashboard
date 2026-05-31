@@ -149,6 +149,33 @@ main {
   flex-shrink: 0;
 }
 
+.dismiss {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.dismiss:hover,
+.dismiss:focus-visible {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: var(--blocked);
+  color: var(--blocked);
+  outline: none;
+}
+.dismiss:active { transform: scale(0.94); }
+
 .message {
   font-size: clamp(17px, 1.9vw, 22px);
   color: var(--muted);

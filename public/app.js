@@ -54,6 +54,7 @@
         <div class="card-head">
           <div class="name" title="${escape(s.name)}">${escape(s.name)}</div>
           <span class="badge status-${escape(s.status)}">${escape(s.status)}</span>
+          <button class="dismiss" type="button" data-dismiss="${escape(s.id)}" aria-label="Dismiss session" title="Dismiss">×</button>
         </div>
         ${s.message ? `<div class="message">${escape(s.message)}</div>` : ''}
         <div class="meta">
@@ -63,6 +64,21 @@
       </article>
     `).join('');
   }
+
+  async function dismissSession(id) {
+    state.delete(id);
+    renderGrid();
+    try {
+      await fetch(`/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    } catch { /* server will re-broadcast if it comes back */ }
+  }
+
+  gridEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-dismiss]');
+    if (!btn) return;
+    e.preventDefault();
+    dismissSession(btn.dataset.dismiss);
+  });
 
   function setConnected(ok) {
     connEl.classList.toggle('disconnected', !ok);

@@ -3,8 +3,9 @@
 //  AgStatus
 //
 //  REST client for the status server: config probing, workspace creation,
-//  session listing, dismissal, board deletion, pairing codes, and
-//  board-URL parsing. One shared URLSession with a 10s request timeout.
+//  session listing, dismissal, board deletion, pairing codes, push device
+//  registration, and board-URL parsing. One shared URLSession with a 10s
+//  request timeout.
 //
 
 import Foundation
@@ -122,6 +123,43 @@ enum AgStatusAPI {
         return try decode(PairCode.self, from: data)
     }
 
+    /// Registers this device for pushes. Re-POSTing the same token is an
+    /// upsert on the server, so this also updates the notify-done flag.
+    static func registerDevice(_ deviceToken: String, notifyDone: Bool, for board: Board) async throws {
+        guard board.token != nil else { throw APIError.legacyServer }
+        let url = board.boardURL.appendingPathComponent("devices")
+        let body = try JSONEncoder().encode(
+            DeviceRegistration(deviceToken: deviceToken, platform: "ios", notifyDone: notifyDone)
+        )
+        _ = try await send("POST", url, body: body)
+    }
+
+    /// Removes this device's push registration from the board.
+    static func unregisterDevice(_ deviceToken: String, for board: Board) async throws {
+        guard board.token != nil else { throw APIError.legacyServer }
+        let url = board.boardURL
+            .appendingPathComponent("devices")
+            .appendingPathComponent(deviceToken)
+        _ = try await send("DELETE", url)
+    }
+
+    /// Whether the server advertises APNs push support. Nil means the probe
+    /// couldn't reach the server (unknown — worth retrying later); false only
+    /// when the server responded without claiming push support.
+    static func serverSupportsPush(_ base: URL) async -> Bool? {
+        let origin = normalizedOrigin(base) ?? base
+        let url = origin.appendingPathComponent("api").appendingPathComponent("config")
+        do {
+            let data = try await send("GET", url)
+            let config = try? decode(ConfigResponse.self, from: data)
+            return config?.push ?? false
+        } catch let error as APIError where error == .unreachable {
+            return nil
+        } catch {
+            return false
+        }
+    }
+
     // MARK: Shared session
 
     private static let session: URLSession = {
@@ -150,11 +188,16 @@ enum AgStatusAPI {
 
     /// Performs a request and maps HTTP codes to APIError
     /// (404 → boardNotFound, 429 → rateLimited, 503 → atCapacity).
-    private static func send(_ method: String, _ url: URL) async throws -> Data {
+    /// A non-nil body is sent as JSON with the matching Content-Type.
+    private static func send(_ method: String, _ url: URL, body: Data? = nil) async throws -> Data {
         try checkTransportSecurity(url)
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let body {
+            request.httpBody = body
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
 
         let data: Data
         let response: URLResponse
@@ -215,8 +258,21 @@ enum AgStatusAPI {
 
 private struct ConfigResponse: Decodable {
     let mode: String?
+    let push: Bool?
 }
 
 private struct WorkspaceResponse: Decodable {
     let token: String
+}
+
+private struct DeviceRegistration: Encodable {
+    let deviceToken: String
+    let platform: String
+    let notifyDone: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case deviceToken = "device_token"
+        case platform
+        case notifyDone = "notify_done"
+    }
 }

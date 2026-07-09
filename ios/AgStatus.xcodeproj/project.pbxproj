@@ -22,6 +22,7 @@
 		A1000000000000000000000D /* SessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000D /* SessionStore.swift */; };
 		A1000000000000000000000E /* BoardKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000E /* BoardKeychain.swift */; };
 		A1000000000000000000000F /* DemoData.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000F /* DemoData.swift */; };
+		A10000000000000000000012 /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000013 /* NotificationManager.swift */; };
 		A10000000000000000000010 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000010 /* Assets.xcassets */; };
 		A10000000000000000000011 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012 /* PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
@@ -45,6 +46,8 @@
 		B10000000000000000000010 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B10000000000000000000011 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B10000000000000000000012 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		B10000000000000000000013 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
+		B10000000000000000000014 /* AgStatus.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AgStatus.entitlements; sourceTree = "<group>"; };
 		C10000000000000000000001 /* AgStatus.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AgStatus.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -85,7 +88,9 @@
 				B1000000000000000000000D /* SessionStore.swift */,
 				B1000000000000000000000E /* BoardKeychain.swift */,
 				B1000000000000000000000F /* DemoData.swift */,
+				B10000000000000000000013 /* NotificationManager.swift */,
 				B10000000000000000000010 /* Assets.xcassets */,
+				B10000000000000000000014 /* AgStatus.entitlements */,
 				B10000000000000000000011 /* Info.plist */,
 				B10000000000000000000012 /* PrivacyInfo.xcprivacy */,
 			);
@@ -185,6 +190,7 @@
 				A1000000000000000000000D /* SessionStore.swift in Sources */,
 				A1000000000000000000000E /* BoardKeychain.swift in Sources */,
 				A1000000000000000000000F /* DemoData.swift in Sources */,
+				A10000000000000000000012 /* NotificationManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -311,6 +317,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = AgStatus/AgStatus.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";
@@ -341,6 +348,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = AgStatus/AgStatus.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";

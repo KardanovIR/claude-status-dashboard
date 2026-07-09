@@ -1,3 +1,6 @@
+import fs from 'fs';
+import crypto from 'crypto';
+
 export interface AppConfig {
   multiTenant: boolean;
   webhookSecret: string;
@@ -8,6 +11,14 @@ export interface AppConfig {
   rateLimit: boolean;
   maxWorkspaces: number;
   version: string;
+  /** APNs push credentials; null = push disabled (everything else still works). */
+  apns: {
+    keyPem: string; // .p8 key content (PEM)
+    keyId: string; // APNS_KEY_ID
+    teamId: string; // APNS_TEAM_ID
+    topic: string; // APNS_TOPIC (app bundle id)
+    server: string; // APNs endpoint (https://api[.sandbox].push.apple.com)
+  } | null;
 }
 
 const DEFAULT_MULTI_TENANT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -27,6 +38,63 @@ function pkgVersion(): string {
 
 /** Only '1' and 'true' enable a boolean env flag; everything else disables it. */
 const boolFromEnv = (v: string | undefined): boolean => v === '1' || v === 'true';
+
+/**
+ * Parses the APNs env block. Fully unset → null (push quietly disabled).
+ * Partially set or key unreadable/invalid → warn once and return null; a bad
+ * push config must never take the rest of the server down.
+ */
+function apnsFromEnv(env: NodeJS.ProcessEnv): AppConfig['apns'] {
+  const anySet = Boolean(
+    env.APNS_KEY || env.APNS_KEY_PATH || env.APNS_KEY_ID || env.APNS_TEAM_ID ||
+    env.APNS_TOPIC || env.APNS_SERVER || env.APNS_ENV
+  );
+  if (!anySet) return null;
+
+  let keyPem = env.APNS_KEY || '';
+  if (!keyPem && env.APNS_KEY_PATH) {
+    try {
+      keyPem = fs.readFileSync(env.APNS_KEY_PATH, 'utf8');
+    } catch (err) {
+      console.warn(
+        `Push disabled: cannot read APNS_KEY_PATH=${JSON.stringify(env.APNS_KEY_PATH)} ` +
+        `(${err instanceof Error ? err.message : String(err)})`
+      );
+      return null;
+    }
+  }
+
+  const keyId = env.APNS_KEY_ID || '';
+  const teamId = env.APNS_TEAM_ID || '';
+  const topic = env.APNS_TOPIC || '';
+  if (!keyPem || !keyId || !teamId || !topic) {
+    console.warn(
+      'Push disabled: incomplete APNs config ' +
+      '(need APNS_KEY or APNS_KEY_PATH, plus APNS_KEY_ID, APNS_TEAM_ID, APNS_TOPIC)'
+    );
+    return null;
+  }
+  let key: crypto.KeyObject;
+  try {
+    key = crypto.createPrivateKey(keyPem);
+  } catch {
+    console.warn('Push disabled: APNS_KEY is not a valid PEM private key');
+    return null;
+  }
+  // ES256 means exactly EC P-256: any other key type would sign a bogus
+  // "ES256" JWT and every push would 403 with only a cryptic batch log.
+  if (key.asymmetricKeyType !== 'ec' || key.asymmetricKeyDetails?.namedCurve !== 'prime256v1') {
+    console.warn('Push disabled: APNS_KEY must be an EC P-256 (.p8) APNs auth key');
+    return null;
+  }
+
+  const server =
+    env.APNS_SERVER ||
+    (env.APNS_ENV === 'production'
+      ? 'https://api.push.apple.com'
+      : 'https://api.sandbox.push.apple.com');
+  return { keyPem, keyId, teamId, topic, server: server.replace(/\/$/, '') };
+}
 
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const port = Number(env.PORT || 3000);
@@ -64,5 +132,6 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AppConfig {
     rateLimit: true,
     maxWorkspaces,
     version: pkgVersion(),
+    apns: apnsFromEnv(env),
   };
 }

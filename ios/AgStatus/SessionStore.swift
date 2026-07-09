@@ -27,6 +27,11 @@ final class SessionStore {
         connection == .demo
     }
 
+    /// Fires when a board stops being this device's board (disconnect or
+    /// replacement by a different one), so push registration can be torn
+    /// down without the store knowing anything about notifications.
+    @ObservationIgnored var onBoardReleased: ((Board) -> Void)?
+
     @ObservationIgnored private let sse = SSEClient()
     @ObservationIgnored private var streamTask: Task<Void, Never>?
     @ObservationIgnored private var demoTask: Task<Void, Never>?
@@ -59,6 +64,9 @@ final class SessionStore {
     /// Saves the board and starts streaming. Stops demo mode if active.
     func adopt(_ board: Board) {
         stopDemoTask()
+        if let old = self.board, old != board {
+            onBoardReleased?(old)
+        }
         self.board = board
         BoardKeychain.save(board)
         sessions = []
@@ -66,10 +74,14 @@ final class SessionStore {
         connect()
     }
 
-    /// Forgets the board on this device only; the server is untouched.
+    /// Forgets the board on this device only; the server is untouched
+    /// (apart from releasing this device's push registration).
     func disconnectBoard() {
         stopDemoTask()
         cancelStream()
+        if let board {
+            onBoardReleased?(board)
+        }
         board = nil
         BoardKeychain.clear()
         sessions = []

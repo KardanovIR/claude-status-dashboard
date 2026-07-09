@@ -187,6 +187,38 @@ sessions, names, messages, project paths — delete the workspace:
 curl -X DELETE https://status.example.com/w/<token>
 ```
 
+Deleting a workspace also removes any push-notification device registrations.
+
+## Push notifications
+
+The server can notify the iOS app through Apple Push Notification service
+(APNs) when an agent needs attention:
+
+- an agent transitions into **`blocked`** → every registered device is notified;
+- an agent transitions into **`done`** → only devices that opted in
+  (`notify_done: true`) are notified.
+
+Repeat alerts for the same session and kind are debounced (at most one per
+minute), and a session that first appears already `done` doesn't notify.
+
+Devices register per workspace (multi-tenant mode only):
+
+| Method & path                            | Purpose                                            |
+| ---------------------------------------- | -------------------------------------------------- |
+| `POST /w/<token>/devices`                | Register/update a device. Body: `{"device_token": "<hex>", "platform": "ios", "notify_done": false}`. Re-POST updates `notify_done`. Max 10 devices per workspace (`429` beyond). |
+| `DELETE /w/<token>/devices/:deviceToken` | Unregister. Returns `{ok: boolean}`.               |
+
+Sending requires an APNs auth key — this is for the hosted instance;
+self-hosts without a key simply don't send pushes and everything else works
+unchanged. Configure via env vars (see `.env.example`): `APNS_KEY_PATH` (or
+`APNS_KEY` with the PEM content), `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_TOPIC`
+(the app bundle id), and `APNS_ENV` (`sandbox`|`production`; or an explicit
+`APNS_SERVER` override). `GET /api/config` advertises `"push": true|false` so
+clients know whether to offer notifications.
+
+Privacy note: a push payload contains the same session name and message your
+hook already sent to the board — nothing more — relayed through Apple's APNs.
+
 ## Status semantics
 
 | Status     | Color  | Suggested meaning                            |
@@ -403,8 +435,9 @@ to run purely in-memory instead.
 claude-status/
 ├── src/
 │   ├── app.ts                   # Express app factory (routes, SSE)
-│   ├── config.ts                # Env parsing (MULTI_TENANT, DB_PATH, TTLs)
-│   ├── store.ts                 # Sessions/workspaces store + SQLite persistence
+│   ├── config.ts                # Env parsing (MULTI_TENANT, DB_PATH, TTLs, APNs)
+│   ├── push.ts                  # APNs push dispatcher (raw http2 + ES256 JWT)
+│   ├── store.ts                 # Sessions/workspaces/devices store + SQLite persistence
 │   └── server.ts                # Entry point: env config + listen
 ├── public/
 │   ├── index.html               # Dashboard shell

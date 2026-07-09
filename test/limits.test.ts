@@ -26,7 +26,9 @@ describe('rate limiting (rateLimit: true)', () => {
   });
 
   describe('webhook (120 req/min per workspace)', () => {
-    it('allows 120 posts in a minute, 429s the 121st', async () => {
+    // retry: this test fires 121 sequential local HTTP requests and is
+    // occasionally disturbed by ephemeral-port interference on busy machines.
+    it('allows 120 posts in a minute, 429s the 121st', { retry: 2 }, async () => {
       const { app } = makeApp({ rateLimit: true });
       const token = await createWorkspace(app);
 

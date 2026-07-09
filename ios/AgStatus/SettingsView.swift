@@ -4,6 +4,7 @@ import UIKit
 /// Board details, display options, demo mode, and the dangerous stuff.
 struct SettingsView: View {
     @Environment(SessionStore.self) private var store
+    @Environment(NotificationManager.self) private var notifications
     @Environment(\.dismiss) private var dismiss
     @AppStorage("keepAwake") private var keepAwake = false
 
@@ -18,6 +19,7 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 boardSection
+                notificationsSection
                 displaySection
                 demoSection
                 dangerSection
@@ -119,6 +121,27 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
+    private var notificationsSection: some View {
+        if let board = store.board, board.token != nil {
+            Section {
+                Toggle("When an agent is blocked", isOn: blockedToggle(for: board))
+                    .disabled(!togglesEnabled || notifications.state == .requesting)
+                Toggle("When an agent finishes", isOn: doneToggle(for: board))
+                    .disabled(!togglesEnabled || notifications.state != .on)
+                if notifications.state == .denied {
+                    Button("Open Settings") { openNotificationSettings() }
+                }
+            } header: {
+                Text("Notifications")
+            } footer: {
+                Text(notificationsFooter)
+            }
+            .listRowBackground(Theme.card)
+            .task { await notifications.probeServerSupport(for: board) }
+        }
+    }
+
     private var displaySection: some View {
         Section {
             Toggle("Keep screen awake", isOn: $keepAwake)
@@ -191,6 +214,60 @@ struct SettingsView: View {
             )
         }
         .listRowBackground(Theme.card)
+    }
+
+    // MARK: - Notification helpers
+
+    /// Both toggles stay dead when the server can't push or the environment
+    /// can't. Denied stays togglable: flipping it re-checks with iOS, which
+    /// answers instantly once the user granted permission in Settings.
+    private var togglesEnabled: Bool {
+        notifications.serverPushAvailable != false
+            && notifications.state != .unsupported
+    }
+
+    private var notificationsFooter: String {
+        if notifications.serverPushAvailable == false {
+            return "This server doesn't send push notifications."
+        }
+        switch notifications.state {
+        case .denied:
+            return "Notifications are turned off for AgStatus in iOS Settings."
+        case .unsupported:
+            return "Push isn't available in this environment."
+        default:
+            return "Get pinged the moment an agent is waiting on you."
+        }
+    }
+
+    private func blockedToggle(for board: Board) -> Binding<Bool> {
+        Binding(
+            get: { notifications.state == .on || notifications.state == .requesting },
+            set: { enabled in
+                Task {
+                    if enabled {
+                        await notifications.enable(for: board)
+                    } else {
+                        await notifications.disable(for: board)
+                    }
+                }
+            }
+        )
+    }
+
+    private func doneToggle(for board: Board) -> Binding<Bool> {
+        Binding(
+            get: { notifications.notifyDone },
+            set: { value in
+                notifications.notifyDone = value
+                Task { await notifications.updateFlags(for: board) }
+            }
+        )
+    }
+
+    private func openNotificationSettings() {
+        guard let url = URL(string: UIApplication.openNotificationSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 
     // MARK: - Actions

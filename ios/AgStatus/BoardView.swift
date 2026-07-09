@@ -4,6 +4,8 @@ import UIKit
 /// The live board: one glanceable card per agent session.
 struct BoardView: View {
     @Environment(SessionStore.self) private var store
+    @Environment(NotificationManager.self) private var notifications
+    @AppStorage("pushTipShown") private var pushTipShown = false
 
     @State private var showPairSheet = false
     @State private var showSettings = false
@@ -63,6 +65,11 @@ struct BoardView: View {
             }
             .sheet(isPresented: $showPairSheet) { PairSheet() }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .task(id: store.board) {
+                if let board = store.board, board.token != nil, !pushTipShown {
+                    await notifications.probeServerSupport(for: board)
+                }
+            }
         }
     }
 
@@ -89,6 +96,71 @@ struct BoardView: View {
         .scrollContentBackground(.hidden)
         .refreshable { await store.refresh() }
         .animation(.snappy, value: store.sessions)
+        .safeAreaInset(edge: .bottom) {
+            if showsPushTip {
+                pushTip
+            }
+        }
+    }
+
+    // MARK: - Push tip
+
+    /// One-time nudge: the board is live, the server can push, and the user
+    /// hasn't opted in (or dismissed the tip) yet.
+    private var showsPushTip: Bool {
+        !pushTipShown
+            && !store.isDemo
+            && store.connection == .live
+            && !store.sessions.isEmpty
+            && notifications.state == .off
+            && notifications.serverPushAvailable == true
+            && store.board?.token != nil
+    }
+
+    private var pushTip: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "bell.badge")
+                .font(.subheadline)
+                .foregroundStyle(Theme.color(for: .planning))
+                .accessibilityHidden(true)
+            Text("Get a ping when an agent needs you")
+                .font(.footnote)
+                .foregroundStyle(Theme.textPrimary)
+                .lineLimit(2)
+            Spacer(minLength: 4)
+            Button("Enable") {
+                withAnimation { pushTipShown = true }
+                if let board = store.board {
+                    Task { await notifications.enable(for: board) }
+                }
+            }
+            .font(.footnote.weight(.semibold))
+            .buttonStyle(.borderless)
+            .foregroundStyle(Theme.color(for: .planning))
+            Button {
+                withAnimation { pushTipShown = true }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(Theme.textSecondary)
+                    .padding(4)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss notification tip")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Theme.card)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Theme.cardBorder)
+        )
+        .padding(.horizontal, 16)
+        .padding(.bottom, 4)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     // MARK: - Empty state

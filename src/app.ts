@@ -3,6 +3,7 @@ import rateLimit from 'express-rate-limit';
 import path from 'path';
 import crypto from 'crypto';
 import { AppConfig } from './config';
+import { Pusher } from './push';
 import { LEGACY_WS, PAIR_CODE_TTL_MS, STATUSES, Status, Store, UpsertInput } from './store';
 
 export type { AppConfig } from './config';
@@ -10,6 +11,7 @@ export { Store, STATUSES } from './store';
 export type { Session } from './store';
 
 const SESSION_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+const DEVICE_TOKEN_RE = /^[0-9a-fA-F]{16,200}$/;
 const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F]/g;
 const MAX_SESSIONS_PER_WORKSPACE = 50;
 const MAX_SSE_PER_WORKSPACE = 10;
@@ -34,6 +36,7 @@ export interface CreatedApp {
 
 export function createApp(cfg: AppConfig): CreatedApp {
   const store = new Store(cfg.dbPath);
+  const pusher = new Pusher(cfg.apns, store);
   const sseClients = new Map<string, Set<Response>>();
   const timers: NodeJS.Timeout[] = [];
 
@@ -112,9 +115,11 @@ export function createApp(cfg: AppConfig): CreatedApp {
       project: clean(body.project, NAME_MAX),
     };
     const max = cfg.multiTenant ? MAX_SESSIONS_PER_WORKSPACE : Infinity;
-    const { session, evictedId } = store.upsertSession(wsId, input, max);
+    const { session, evictedId, prevStatus } = store.upsertSession(wsId, input, max);
     if (evictedId) broadcast(wsId, 'remove', { id: evictedId });
     broadcast(wsId, 'session', session);
+    // Fire-and-forget: enqueues async APNs work, never throws or blocks.
+    pusher.notifyTransition(wsId, session, prevStatus);
     res.json({ ok: true, session });
   }
 
@@ -294,6 +299,34 @@ export function createApp(cfg: AppConfig): CreatedApp {
       });
     });
 
+    // Push-notification device registration (upsert by workspace + token).
+    app.post('/w/:token/devices', (req, res) => {
+      const wsId = resolveWs(req, res);
+      if (!wsId) return;
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const deviceToken = typeof body.device_token === 'string' ? body.device_token : '';
+      if (!DEVICE_TOKEN_RE.test(deviceToken)) {
+        res.status(400).json({ error: 'device_token must match ^[0-9a-fA-F]{16,200}$' });
+        return;
+      }
+      if (body.platform !== 'ios') {
+        res.status(400).json({ error: 'platform must be "ios"' });
+        return;
+      }
+      const result = store.upsertDevice(wsId, deviceToken, body.notify_done === true);
+      if (result === 'cap') {
+        res.status(429).json({ error: 'too many devices for this workspace' });
+        return;
+      }
+      res.json({ ok: true });
+    });
+
+    app.delete('/w/:token/devices/:deviceToken', (req, res) => {
+      const wsId = resolveWs(req, res);
+      if (!wsId) return;
+      res.json({ ok: store.deleteDevice(wsId, req.params.deviceToken) });
+    });
+
     app.delete('/w/:token/sessions/:id', (req, res) => {
       const wsId = resolveWs(req, res);
       if (!wsId) return;
@@ -326,6 +359,7 @@ export function createApp(cfg: AppConfig): CreatedApp {
       mode: cfg.multiTenant ? 'multi' : 'legacy',
       version: cfg.version,
       statuses: STATUSES,
+      push: Boolean(cfg.apns),
       ...(cfg.multiTenant
         ? {}
         : { webhookUrl: `${cfg.publicUrl}/webhook`, requiresSecret: Boolean(cfg.webhookSecret) }),
@@ -381,6 +415,7 @@ export function createApp(cfg: AppConfig): CreatedApp {
   function shutdown(): void {
     for (const t of timers) clearInterval(t);
     for (const wsId of Array.from(sseClients.keys())) closeStreams(wsId);
+    pusher.shutdown();
     store.close();
   }
 

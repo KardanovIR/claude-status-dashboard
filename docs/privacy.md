@@ -40,6 +40,15 @@ names (e.g. "Bash").
 Data is stored under your board's token and is visible to anyone who has
 your board URL. Treat the URL like a secret.
 
+## Push notifications
+
+If you enable push notifications in the app, notifications are delivered
+through Apple's push service (APNs). A notification payload contains only the
+session name and its short status message — the same text the hook already
+sent to your board. Your device's push token is stored under your board and
+is deleted when you turn notifications off, when the token expires, or when
+the board is deleted.
+
 ## What the app stores on your phone
 
 The AgStatus iOS app stores your board's URL and token in the iOS Keychain

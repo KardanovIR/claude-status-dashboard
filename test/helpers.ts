@@ -19,6 +19,7 @@ export const TEST_DEFAULTS: AppConfig = {
   rateLimit: false,
   maxWorkspaces: 10_000,
   version: 'test',
+  apns: null,
 };
 
 // Every app created via makeApp() gets shut down after the test that created

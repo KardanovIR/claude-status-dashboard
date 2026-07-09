@@ -23,6 +23,11 @@ export interface UpsertInput {
   project?: string;
 }
 
+export interface Device {
+  deviceToken: string;
+  notifyDone: boolean;
+}
+
 /** Reserved workspace key for single-tenant (legacy) mode. */
 export const LEGACY_WS = '_legacy';
 
@@ -30,6 +35,7 @@ export const TOKEN_RE = /^ags_[A-Za-z0-9_-]{32}$/;
 
 const WEBHOOKS_PER_MINUTE = 120;
 const LAST_SEEN_WRITE_THROTTLE_MS = 60_000;
+const MAX_DEVICES_PER_WORKSPACE = 10;
 
 // Pairing codes: short-lived, single-use, in-memory only (never SQLite).
 // No I/L/O/0/1 to keep the codes unambiguous when read aloud or typed.
@@ -50,6 +56,8 @@ interface WorkspaceMeta {
 export class Store {
   private sessions = new Map<string, Map<string, Session>>();
   private workspaces = new Map<string, WorkspaceMeta>();
+  // Push-notification device tokens per workspace (token → notifyDone + createdAt).
+  private deviceTokens = new Map<string, Map<string, { notifyDone: boolean; createdAt: number }>>();
   private webhookWindows = new Map<string, { windowStart: number; count: number }>();
   // Escrowed pairing codes, keyed by the normalized (dash-less) code.
   private pairCodes = new Map<string, { rawToken: string; expiresAt: number }>();
@@ -80,6 +88,15 @@ export class Store {
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (workspace_id, id)
       );
+      CREATE TABLE IF NOT EXISTS devices (
+        workspace_id TEXT NOT NULL,
+        device_token TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        notify_done INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (workspace_id, device_token)
+      );
     `);
     this.stmt = {
       insertWs: this.db.prepare(
@@ -96,6 +113,14 @@ export class Store {
       `),
       deleteSession: this.db.prepare('DELETE FROM sessions WHERE workspace_id = ? AND id = ?'),
       clearSessions: this.db.prepare('DELETE FROM sessions WHERE workspace_id = ?'),
+      upsertDevice: this.db.prepare(`
+        INSERT INTO devices (workspace_id, device_token, platform, notify_done, created_at, updated_at)
+        VALUES (?, ?, 'ios', ?, ?, ?)
+        ON CONFLICT (workspace_id, device_token) DO UPDATE SET
+          notify_done = excluded.notify_done, updated_at = excluded.updated_at
+      `),
+      deleteDevice: this.db.prepare('DELETE FROM devices WHERE workspace_id = ? AND device_token = ?'),
+      clearDevices: this.db.prepare('DELETE FROM devices WHERE workspace_id = ?'),
     };
     for (const row of this.db
       .prepare('SELECT id, created_at, last_seen_at FROM workspaces')
@@ -119,6 +144,19 @@ export class Store {
         project: row.project as string,
         createdAt: row.created_at as number,
         updatedAt: row.updated_at as number,
+      });
+    }
+    for (const row of this.db
+      .prepare('SELECT workspace_id, device_token, notify_done, created_at FROM devices')
+      .all() as Array<{ workspace_id: string; device_token: string; notify_done: number; created_at: number }>) {
+      let map = this.deviceTokens.get(row.workspace_id);
+      if (!map) {
+        map = new Map();
+        this.deviceTokens.set(row.workspace_id, map);
+      }
+      map.set(row.device_token, {
+        notifyDone: row.notify_done === 1,
+        createdAt: row.created_at,
       });
     }
   }
@@ -158,8 +196,10 @@ export class Store {
     const existed = this.workspaces.delete(wsId);
     this.sessions.delete(wsId);
     this.webhookWindows.delete(wsId);
+    this.deviceTokens.delete(wsId);
     if (existed) {
       this.stmt.clearSessions?.run(wsId);
+      this.stmt.clearDevices?.run(wsId);
       this.stmt.deleteWs?.run(wsId);
     }
     return existed;
@@ -169,7 +209,7 @@ export class Store {
     wsId: string,
     input: UpsertInput,
     maxSessions: number
-  ): { session: Session; evictedId: string | null } {
+  ): { session: Session; evictedId: string | null; prevStatus: Status | null } {
     let map = this.sessions.get(wsId);
     if (!map) {
       map = new Map();
@@ -218,7 +258,45 @@ export class Store {
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
     });
-    return { session, evictedId };
+    return { session, evictedId, prevStatus: prev?.status ?? null };
+  }
+
+  /**
+   * Registers (or updates) a push-notification device token. Tokens are
+   * normalized to lowercase. Returns 'cap' only when a NEW device would exceed
+   * the per-workspace limit; updates to existing devices always succeed.
+   */
+  upsertDevice(wsId: string, deviceToken: string, notifyDone: boolean): 'ok' | 'cap' {
+    const token = deviceToken.toLowerCase();
+    let map = this.deviceTokens.get(wsId);
+    if (!map) {
+      map = new Map();
+      this.deviceTokens.set(wsId, map);
+    }
+    const existing = map.get(token);
+    if (!existing && map.size >= MAX_DEVICES_PER_WORKSPACE) return 'cap';
+    const now = Date.now();
+    const createdAt = existing?.createdAt ?? now;
+    map.set(token, { notifyDone, createdAt });
+    this.stmt.upsertDevice?.run(wsId, token, notifyDone ? 1 : 0, createdAt, now);
+    return 'ok';
+  }
+
+  deleteDevice(wsId: string, deviceToken: string): boolean {
+    const token = deviceToken.toLowerCase();
+    const removed = this.deviceTokens.get(wsId)?.delete(token) ?? false;
+    if (removed) this.stmt.deleteDevice?.run(wsId, token);
+    return removed;
+  }
+
+  devices(wsId: string): Device[] {
+    const map = this.deviceTokens.get(wsId);
+    if (!map) return [];
+    return Array.from(map, ([deviceToken, d]) => ({ deviceToken, notifyDone: d.notifyDone }));
+  }
+
+  deviceCount(wsId: string): number {
+    return this.deviceTokens.get(wsId)?.size ?? 0;
   }
 
   getSessions(wsId: string): Session[] {

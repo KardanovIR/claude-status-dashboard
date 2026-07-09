@@ -4,3 +4,16 @@ dist/
 .env.local
 *.log
 .DS_Store
+
+# IDE / editor
+.idea/
+.vscode/
+
+# Local Claude Code settings (personal permissions, machine paths)
+.claude/settings.local.json
+
+# Personal scratch scripts — never commit
+copy_*.sh
+test.sh
+content.html
+config.merge.json

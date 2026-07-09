@@ -19,7 +19,7 @@ A thin WebView wrapper around the Claude Status dashboard, with:
 From this directory:
 
 ```sh
-export JAVA_HOME="/Users/ikardanov/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+export JAVA_HOME="$HOME/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 ./gradlew assembleDebug
 ```
 

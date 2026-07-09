@@ -1,8 +1,9 @@
 {
-  "name": "claude-status-dashboard",
+  "name": "agstatus-dashboard",
   "version": "1.0.0",
   "private": true,
-  "description": "Webhook-driven dashboard for Claude Code sessions",
+  "license": "MIT",
+  "description": "AgStatus — webhook-driven status dashboard for Claude Code and Codex agents",
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",

@@ -69,7 +69,7 @@ On the hosted server:
 
 AgStatus is open source. You can run the entire server yourself, in which
 case no data ever reaches the hosted instance. See the
-[self-hosting guide](../README.md#self-hosting-with-tls).
+[self-hosting guide](self-hosting.md).
 
 ## Contact
 

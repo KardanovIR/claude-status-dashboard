@@ -4,6 +4,10 @@
   "private": true,
   "license": "MIT",
   "description": "AgStatus — webhook-driven status dashboard for Claude Code and Codex agents",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KardanovIR/claude-status-dashboard.git"
+  },
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",

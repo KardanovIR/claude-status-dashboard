@@ -1,0 +1,12 @@
+App(
+    appid="claude_status",
+    name="Claude Status",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="claude_status_app",
+    stack_size=4 * 1024,
+    fap_category="Bluetooth",
+    fap_author="claude-status",
+    fap_version="1.0",
+    fap_description="Display Claude Code task statuses over BLE (paired with the host daemon).",
+    requires=["gui", "bt"],
+)

@@ -7,7 +7,7 @@ dist
 *.log
 .DS_Store
 data
-daemon
-flipper
-android
+integrations
 ios
+cli
+docs

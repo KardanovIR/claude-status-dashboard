@@ -1,19 +1,22 @@
-# Claude Code integration
+# Claude Code & Codex integration
 
-AgStatus watches your agents through Claude Code's
-[hook system](https://code.claude.com/docs/en/hooks): a small script receives
-each hook event on stdin and posts a status webhook to your board. Two ways
-to set it up:
+AgStatus watches your agents through their hook systems — Claude Code's
+[hooks](https://code.claude.com/docs/en/hooks) and OpenAI Codex's
+[lifecycle hooks](https://developers.openai.com/codex/config-reference) use
+the same shape (event JSON on stdin with `hook_event_name`, `session_id`,
+`cwd`), so one small script serves both: it receives each event and posts a
+status webhook to your board. Two ways to set it up:
 
 1. **`npx agstatus init`** (recommended) — installs a dependency-free Node
-   hook and wires everything up in one command.
+   hook and wires up Claude Code, plus Codex when `~/.codex` exists.
 2. **Manual bash hook** — the original `hooks/claude-status-hook.sh`, for
-   people who want to see and customize every moving part.
+   people who want to see and customize every moving part (Claude Code only).
 
 Both hooks are deliberately non-blocking: any failure (server down, bad
-secret, malformed payload) is swallowed and Claude Code continues normally.
-The Node hook additionally enforces a 3 s HTTP timeout and a ~4 s overall
-safety timeout.
+secret, malformed payload) is swallowed and the agent continues normally.
+The Node hook additionally enforces a 3 s HTTP timeout, a ~4 s overall
+safety timeout, and never writes to stdout (Codex interprets hook stdout as
+behavior-control decisions).
 
 ## `npx agstatus init`
 
@@ -49,6 +52,8 @@ What it does, in order:
 | `--code XXXX-XXXX` | Pair with a board created elsewhere (e.g. the iOS app) instead of creating a new one. Case and dashes don't matter. |
 | `--secret <s>`     | Webhook secret for self-hosted single-tenant servers that set `WEBHOOK_SECRET` (stored as `CLAUDE_STATUS_SECRET`). |
 | `--minimal`        | Privacy mode: send tool names only, never command text (sets `AGSTATUS_DETAIL=off`; re-running without the flag removes it). |
+| `--codex`          | Also set up OpenAI Codex even when `~/.codex` isn't detected (creates it). |
+| `--no-codex`       | Skip Codex setup. Default: auto-configure when `~/.codex` exists. |
 | `--no-qr`          | Skip the QR code (narrow terminals, scripts). |
 
 ### Pairing codes
@@ -74,7 +79,9 @@ everything else in `settings.json` is left untouched.
 
 ## How events map to statuses
 
-Both the Node hook and the bash hook apply the same mapping:
+The Node hook applies this mapping. The bash hook covers the same Claude Code
+events but predates Codex support, so it has no `PermissionRequest` or
+`apply_patch` handling (the last two rows below are Codex-only):
 
 | Hook event                                                     | Board status   | Notes |
 | -------------------------------------------------------------- | -------------- | ----- |
@@ -83,13 +90,33 @@ Both the Node hook and the bash hook apply the same mapping:
 | `PreToolUse` — `Bash` (test runner)                             | `testing`      | Detected via `pytest`/`jest`/`vitest`/`go test`/`cargo test`/etc. |
 | `PreToolUse` — `Bash` (other)                                   | `coding`       | Card shows the command, truncated to 120 chars (tool name only with `--minimal`). |
 | `PreToolUse` — `Task` / `WebSearch` / `WebFetch`                | `planning`     | Investigation tools. |
-| `Notification`                                                  | `blocked`      | Permission prompts and other attention-needed events — this is what triggers a push. |
+| `Notification`                                                  | `blocked`      | Claude Code: permission prompts and other attention-needed events — this is what triggers a push. |
+| `PermissionRequest`                                             | `blocked`      | Codex: fires before approval prompts — same push trigger. |
+| `PreToolUse` — `apply_patch`                                    | `coding`       | Codex's file-edit tool; the card shows "Editing files". |
 | `Stop`                                                          | `idle`         | Turn finished, waiting for the next prompt. |
-| `SessionEnd`                                                    | _card removed_ | The hook calls `DELETE /sessions/:id` so the card disappears. |
+| `SessionEnd`                                                    | _card removed_ | Claude Code only — the hook calls `DELETE /sessions/:id` so the card disappears. Codex has no session-end hook; its cards expire via the server's session TTL instead. |
 
 Other tools and events are ignored. The card `name` and `project` default to
 the basename of the session's working directory, so multiple sessions are
 easy to tell apart.
+
+## OpenAI Codex specifics
+
+`agstatus init` configures Codex automatically when `~/.codex` exists
+(`CODEX_HOME` is respected; `--no-codex` opts out, `--codex` forces it):
+
+1. The same hook script is copied to `~/.codex/hooks/agstatus-hook.js`.
+2. Hook registrations are merged into `~/.codex/hooks.json` (backup written
+   alongside; existing hooks are preserved; re-running replaces only the
+   AgStatus entries). Codex has no settings `env` block, so the board URL is
+   embedded in the registered command string — you can read or change it
+   right in `hooks.json`.
+3. **One-time step:** Codex requires you to trust new hooks. Run `/hooks`
+   inside Codex and approve the AgStatus entries — until then they won't fire.
+
+Events wired: `SessionStart`, `PreToolUse` (matcher
+`^(Bash|apply_patch|Edit|Write)$`), `PermissionRequest`, and `Stop`, each with
+a 10 s timeout (the script itself exits within ~4 s).
 
 ### Environment variables read by the hooks
 

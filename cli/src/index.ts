@@ -17,12 +17,25 @@ import {
   settingsPath,
   writeSettingsWithBackup,
 } from './settings';
+import {
+  codexDetected,
+  codexHasOurHooks,
+  codexHookCommand,
+  codexHookInstallPath,
+  codexHooksPath,
+  mergeCodexHooks,
+  readCodexHooks,
+  removeCodexHooks,
+  writeCodexHooksWithBackup,
+} from './codex';
 
 export interface InitOptions {
   url?: string;
   code?: string;
   secret?: string;
   minimal?: boolean;
+  /** true = force Codex setup, false = skip it, undefined = auto-detect. */
+  codex?: boolean;
   /** Suppress the QR code (tests / narrow terminals). */
   noQr?: boolean;
   log?: (line: string) => void;
@@ -30,12 +43,34 @@ export interface InitOptions {
 
 const BUNDLED_HOOK = path.join(__dirname, '..', 'assets', 'agstatus-hook.js');
 
-function installHookFile(): string {
-  const dest = hookInstallPath();
+function installHookFile(dest: string = hookInstallPath()): string {
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.copyFileSync(BUNDLED_HOOK, dest);
   fs.chmodSync(dest, 0o755);
   return dest;
+}
+
+/**
+ * Codex setup: same hook script, registered via $CODEX_HOME/hooks.json.
+ * Reads (and validates) hooks.json before writing anything, so a malformed
+ * file throws here with nothing on the Codex side changed — the caller treats
+ * that as a warning and still completes Claude Code setup.
+ */
+function setupCodex(
+  hookUrl: string,
+  minimal: boolean | undefined,
+  secret: string | undefined,
+  log: (l: string) => void
+): void {
+  const file = codexHooksPath();
+  const hooks = readCodexHooks(file); // throws (aborting) on malformed JSON
+  const merged = mergeCodexHooks(hooks, codexHookCommand(hookUrl, minimal === true, secret));
+  installHookFile(codexHookInstallPath());
+  writeCodexHooksWithBackup(file, merged);
+  log('');
+  log('✔ Codex is set up too.');
+  log(`  Hooks:     ${file}`);
+  log('  ⚠ One-time step: run /hooks inside Codex to trust the AgStatus hook.');
 }
 
 function renderQr(url: string, log: (line: string) => void): void {
@@ -90,10 +125,21 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
   writeSettingsWithBackup(file, merged);
 
   log('');
-  log('✔ AgStatus is set up.');
+  log('✔ AgStatus is set up for Claude Code.');
   log(`  Hook:      ${hookFile}`);
   log(`  Settings:  ${file} (backup written alongside)`);
   log(`  Dashboard: ${dashboardUrl}`);
+
+  // Codex is a bonus target: never let a broken ~/.codex/hooks.json abort the
+  // Claude Code setup that already succeeded above — degrade to a warning.
+  if (opts.codex ?? codexDetected()) {
+    try {
+      setupCodex(hookUrl, opts.minimal, opts.secret, log);
+    } catch (err) {
+      log('');
+      log(`⚠ Skipped Codex setup: ${(err as Error).message}`);
+    }
+  }
   log('');
   if (!opts.noQr) {
     log('Scan to open your board on your phone:');
@@ -124,7 +170,33 @@ export async function runUninstall(log: (line: string) => void = console.log): P
     fs.unlinkSync(hookFile);
     log(`✔ Deleted ${hookFile}`);
   }
-  log('AgStatus hooks are uninstalled. Backup kept at settings.json.agstatus-backup.');
+
+  // Codex side (no-op unless something of ours is there). Only delete the hook
+  // script once the registrations are gone: if cleanup is skipped (malformed
+  // hooks.json), leaving the script keeps the still-registered hook working.
+  const codexFile = codexHooksPath();
+  let codexCleanupOk = false;
+  try {
+    const hooks = readCodexHooks(codexFile);
+    const { hooks: cleaned, removed } = removeCodexHooks(hooks);
+    if (removed.length > 0) {
+      writeCodexHooksWithBackup(codexFile, cleaned);
+      log(`✔ Removed from ${codexFile}: ${removed.join(', ')}`);
+    }
+    codexCleanupOk = true;
+  } catch (err) {
+    log(`⚠ Skipped Codex cleanup: ${(err as Error).message}`);
+    log(`  Left ${codexHookInstallPath()} in place (still referenced by hooks.json).`);
+  }
+  if (codexCleanupOk) {
+    const codexHook = codexHookInstallPath();
+    if (fs.existsSync(codexHook)) {
+      fs.unlinkSync(codexHook);
+      log(`✔ Deleted ${codexHook}`);
+    }
+  }
+
+  log('AgStatus hooks are uninstalled. Backups kept alongside the edited files.');
 }
 
 export async function runStatus(log: (line: string) => void = console.log): Promise<void> {
@@ -142,6 +214,11 @@ export async function runStatus(log: (line: string) => void = console.log): Prom
 
   log(`Settings:  ${file}`);
   log(`Hook file: ${fs.existsSync(hookFile) ? hookFile : 'NOT INSTALLED'}`);
+  if (codexDetected()) {
+    const codexConfigured =
+      fs.existsSync(codexHookInstallPath()) && codexHasOurHooks(safeReadCodexHooks());
+    log(`Codex:     ${codexConfigured ? `configured (${codexHooksPath()})` : 'detected, not configured'}`);
+  }
   if (!url) {
     log('URL:       not configured — run `npx agstatus init`');
     return;
@@ -155,7 +232,15 @@ export async function runStatus(log: (line: string) => void = console.log): Prom
   }
 }
 
-const USAGE = `agstatus — live status board for your Claude Code agents
+function safeReadCodexHooks(): Record<string, unknown> {
+  try {
+    return readCodexHooks(codexHooksPath());
+  } catch {
+    return {};
+  }
+}
+
+const USAGE = `agstatus — live status board for your coding agents (Claude Code & Codex)
 
 Usage:
   npx agstatus init [options]   Set up hooks + a status board
@@ -168,11 +253,13 @@ init options:
   --code XXXX-XXXX  Pair with a board created elsewhere (e.g. the mobile app)
   --secret <s>      Webhook secret for self-hosted single-tenant servers
   --minimal         Send tool names only, never command text
+  --codex           Also set up OpenAI Codex even if ~/.codex isn't detected
+  --no-codex        Skip Codex setup (default: auto-configure when detected)
   --no-qr           Skip the QR code
 `;
 
 const VALUE_FLAGS = new Set(['url', 'code', 'secret']);
-const BOOL_FLAGS = new Set(['minimal', 'no-qr', 'help']);
+const BOOL_FLAGS = new Set(['minimal', 'no-qr', 'help', 'codex', 'no-codex']);
 
 export async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
@@ -224,6 +311,7 @@ export async function main(argv: string[]): Promise<number> {
           code: typeof flags.get('code') === 'string' ? (flags.get('code') as string) : undefined,
           secret: typeof flags.get('secret') === 'string' ? (flags.get('secret') as string) : undefined,
           minimal: flags.get('minimal') === true,
+          codex: flags.get('codex') === true ? true : flags.get('no-codex') === true ? false : undefined,
           noQr: flags.get('no-qr') === true,
         });
         return 0;

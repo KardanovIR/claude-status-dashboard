@@ -91,11 +91,24 @@ export async function claimCode(base: string, code: string): Promise<Board> {
 }
 
 /**
+ * Server-issued board tokens: `ags_` + URL-safe base64. The charset
+ * ([A-Za-z0-9_-]) contains no shell metacharacters, which matters because the
+ * token ends up interpolated into a shell command in Codex's hooks.json — a
+ * malicious or MITM'd server must not be able to smuggle `$(...)`, quotes, or
+ * `;` through it. The length bound is deliberately loose (server currently
+ * mints 32 chars) so an older CLI keeps working against a newer server.
+ */
+const TOKEN_RE = /^ags_[A-Za-z0-9_-]{16,64}$/;
+
+/**
  * Build board URLs from the base the user actually reached the server at,
  * not the server-reported PUBLIC_URL — a misconfigured PUBLIC_URL must not
  * strand the hook on a wrong origin.
  */
 function boardFrom(base: string, token: string): Board {
+  if (!TOKEN_RE.test(token)) {
+    throw new Error('The server returned a malformed board token; refusing to continue.');
+  }
   const dashboardUrl = `${base}/w/${token}`;
   return { token, dashboardUrl, webhookUrl: `${dashboardUrl}/webhook` };
 }

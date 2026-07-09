@@ -41,17 +41,28 @@ afterAll(async () => {
   created.shutdown();
 });
 
+let codexDir: string;
+let prevCodexHome: string | undefined;
+
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-e2e-'));
   prevConfigDir = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = dir;
+  // Point Codex auto-detection at a throwaway dir so tests can never touch
+  // a real ~/.codex on the machine running them. (Non-existent → undetected.)
+  codexDir = path.join(os.tmpdir(), `agstatus-e2e-codex-${process.pid}-${Math.random().toString(36).slice(2)}`);
+  prevCodexHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = codexDir;
   logs.length = 0;
 });
 
 afterEach(() => {
   if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
   else process.env.CLAUDE_CONFIG_DIR = prevConfigDir;
+  if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
+  else process.env.CODEX_HOME = prevCodexHome;
   fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(codexDir, { recursive: true, force: true });
 });
 
 function readInstalledSettings(): Record<string, unknown> {

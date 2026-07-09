@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 /**
- * AgStatus hook for Claude Code (dependency-free, node >= 18).
+ * AgStatus hook for Claude Code and OpenAI Codex (dependency-free, node >= 18).
  *
- * Posts session status to an AgStatus dashboard. Wired to SessionStart,
- * PreToolUse, Stop, Notification, SessionEnd. Reads the hook payload as JSON
- * from stdin.
+ * Posts session status to an AgStatus dashboard. Both tools deliver the hook
+ * payload as JSON on stdin with the same core fields (hook_event_name,
+ * session_id, cwd). Wired to SessionStart, PreToolUse, Stop, and
+ * Notification + SessionEnd (Claude Code) / PermissionRequest (Codex).
+ *
+ * IMPORTANT: this script must never write to stdout — Codex interprets hook
+ * stdout as behavior-control JSON, and a stray print could block a tool call.
  *
  * Env:
  *   CLAUDE_STATUS_URL     (required; exits silently when unset)
@@ -91,21 +95,37 @@ async function main() {
   if (event === 'SessionStart') {
     status = 'idle';
     message = 'Session started';
-  } else if (event === 'Notification') {
+  } else if (event === 'Notification' || event === 'PermissionRequest') {
+    // Claude Code fires Notification; Codex fires PermissionRequest before
+    // approval prompts. Both mean "a human needs to look at this".
     status = 'blocked';
+    const generic = event === 'PermissionRequest' ? 'Needs approval' : 'Needs input';
+    // The prompt text can quote the command awaiting approval, so honor the
+    // privacy switch here too: minimal mode sends only the generic label.
     message =
-      typeof payload.message === 'string' && payload.message !== ''
-        ? payload.message
-        : 'Needs input';
+      process.env.AGSTATUS_DETAIL === 'off'
+        ? generic
+        : typeof payload.message === 'string' && payload.message !== ''
+          ? payload.message
+          : generic;
   } else if (event === 'PreToolUse') {
     const tool = typeof payload.tool_name === 'string' ? payload.tool_name : '';
-    if (tool === 'Edit' || tool === 'Write' || tool === 'MultiEdit' || tool === 'NotebookEdit') {
+    // Codex's file-edit tool is apply_patch; Claude Code uses Edit/Write/….
+    if (
+      tool === 'Edit' || tool === 'Write' || tool === 'MultiEdit' ||
+      tool === 'NotebookEdit' || tool === 'apply_patch'
+    ) {
       status = 'coding';
-      message = tool;
+      message = tool === 'apply_patch' ? 'Editing files' : tool;
     } else if (tool === 'Bash') {
-      const command =
-        payload.tool_input && typeof payload.tool_input.command === 'string'
-          ? payload.tool_input.command
+      // Claude Code sends tool_input.command as a string; Codex exec tools may
+      // send an argv array (["bash","-lc","npm test"]) — join so the test
+      // detector sees the real command instead of an empty string.
+      const rawCommand = payload.tool_input ? payload.tool_input.command : undefined;
+      const command = Array.isArray(rawCommand)
+        ? rawCommand.filter((a) => typeof a === 'string').join(' ')
+        : typeof rawCommand === 'string'
+          ? rawCommand
           : '';
       status = TEST_RE.test(command) ? 'testing' : 'coding';
       message = process.env.AGSTATUS_DETAIL === 'off' ? 'Bash' : command.slice(0, COMMAND_MAX);

@@ -1,6 +1,6 @@
 # AgStatus
 
-**Live status board + push alerts for your coding agents — see every Claude Code session at a glance.**
+**Live status board + push alerts for your coding agents — see every Claude Code and Codex session at a glance.**
 
 [![CI](https://github.com/KardanovIR/claude-status-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/KardanovIR/claude-status-dashboard/actions/workflows/ci.yml)
 [![Secret scan](https://github.com/KardanovIR/claude-status-dashboard/actions/workflows/gitleaks.yml/badge.svg)](https://github.com/KardanovIR/claude-status-dashboard/actions/workflows/gitleaks.yml)
@@ -14,13 +14,14 @@
 
 ## How it works
 
-A tiny hook posts a webhook every time Claude Code starts a session, edits a
-file, runs tests, or needs your input. The server keeps a live board of every
-session — color-coded `idle / planning / coding / testing / blocked / done` —
-and streams changes to the web dashboard and the iOS app over Server-Sent
-Events. When an agent transitions into `blocked`, the server pushes a
-notification to your phone, so you step away from the keyboard without losing
-the thread.
+A tiny hook posts a webhook every time your agent starts a session, edits a
+file, runs tests, or needs your input — the same dependency-free script plugs
+into both Claude Code's hooks and OpenAI Codex's lifecycle hooks. The server
+keeps a live board of every session — color-coded
+`idle / planning / coding / testing / blocked / done` — and streams changes to
+the web dashboard and the iOS app over Server-Sent Events. When an agent
+transitions into `blocked`, the server pushes a notification to your phone,
+so you step away from the keyboard without losing the thread.
 
 ## Get started in 60 seconds
 
@@ -36,8 +37,9 @@ the thread.
 
    One command: creates a private board on the hosted instance, installs a
    dependency-free Node hook, registers it in `~/.claude/settings.json` (with
-   a backup), and prints your board URL plus a QR code to open it on your
-   phone.
+   a backup) — and in `~/.codex/hooks.json` when Codex is detected — then
+   prints your board URL plus a QR code to open it on your phone. (Codex asks
+   you to trust the new hook once: run `/hooks` inside Codex.)
 
    > Until the package is published to npm, run it from a clone:
    > `npm --prefix cli install && npm --prefix cli run build && node cli/dist/cli.js init`
@@ -50,6 +52,8 @@ Created the board in the app first? Pair your machine to it with a code:
 
 ## Features
 
+- **Claude Code + OpenAI Codex** — one hook script speaks both tools'
+  hook systems; sessions from both land on the same board.
 - **Live board** — SSE-streamed updates, no polling, no refresh.
 - **No accounts** — a board is a capability URL with an unguessable token,
   like a Slack webhook. The server stores only a hash of it.
@@ -106,4 +110,5 @@ claude-status/
 [MIT](LICENSE) © Inal Kardanov.
 
 AgStatus is an independent open-source project that works with Claude Code's
-hook system. It is not affiliated with or endorsed by Anthropic.
+and OpenAI Codex's hook systems. It is not affiliated with or endorsed by
+Anthropic or OpenAI.

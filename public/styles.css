@@ -57,12 +57,24 @@ body {
   box-shadow: 0 0 18px rgba(168, 85, 247, 0.55);
 }
 .conn {
-  font-size: 28px;
-  line-height: 1;
-  color: var(--done);
-  transition: color .3s;
+  position: fixed;
+  top: calc(12px + env(safe-area-inset-top));
+  right: calc(12px + env(safe-area-inset-right));
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--done);
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+  opacity: 0.9;
+  z-index: 20;
+  pointer-events: none;
+  transition: background .3s, box-shadow .3s;
 }
-.conn.disconnected { color: var(--blocked); animation: blink 1.2s infinite; }
+.conn.disconnected {
+  background: var(--testing);
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.55);
+  animation: blink 1.2s infinite;
+}
 
 /* stats */
 .stats {
@@ -150,6 +162,7 @@ main {
 }
 
 .dismiss {
+  position: relative;
   flex-shrink: 0;
   width: 36px;
   height: 36px;
@@ -175,6 +188,12 @@ main {
   outline: none;
 }
 .dismiss:active { transform: scale(0.94); }
+/* expand the touch target to ≥44×44px without growing the visual size */
+.dismiss::before {
+  content: '';
+  position: absolute;
+  inset: -8px;
+}
 
 .message {
   font-size: clamp(17px, 1.9vw, 22px);
@@ -215,6 +234,11 @@ main {
   font-size: 16px;
   line-height: 1.7;
 }
+.empty a {
+  color: var(--planning);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
 .empty code {
   background: #000;
   border: 1px solid var(--border);
@@ -223,6 +247,66 @@ main {
   font-size: 14px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: var(--text);
+}
+
+/* welcome state (multi-tenant landing) */
+.welcome {
+  grid-column: 1 / -1;
+  place-self: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 14px;
+  padding: 32px 24px;
+  max-width: 460px;
+}
+.welcome .logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  box-shadow: 0 0 32px rgba(168, 85, 247, 0.45);
+  margin-bottom: 6px;
+}
+.welcome h1 {
+  font-size: clamp(28px, 5vw, 36px);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.welcome p {
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1.5;
+}
+.create-board {
+  margin-top: 10px;
+  padding: 14px 26px;
+  min-height: 48px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, rgba(168, 85, 247, 0.25), rgba(59, 130, 246, 0.25)),
+    var(--card);
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 650;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.create-board:hover,
+.create-board:focus-visible {
+  border-color: var(--coding);
+  box-shadow: 0 0 24px rgba(168, 85, 247, 0.25);
+  outline: none;
+}
+.create-board:active { transform: scale(0.98); }
+.create-board:disabled { opacity: 0.6; cursor: default; }
+.welcome-error {
+  color: var(--blocked);
+  font-size: 14px;
+  min-height: 1.3em;
 }
 
 /* footer */
@@ -243,6 +327,7 @@ main {
   overflow-x: auto;
   white-space: nowrap;
 }
+.footer[hidden] { display: none; }
 .footer .label {
   color: var(--muted-2);
   text-transform: uppercase;
@@ -370,6 +455,39 @@ main {
 @media (min-width: 1024px) {
   body { padding: 28px; padding-bottom: 100px; gap: 22px; }
   .grid { gap: 26px; }
+}
+
+/* portrait phone — up to 4 cards fill the screen; beyond that, page scrolls */
+@media (orientation: portrait) and (max-width: 700px) {
+  /* let the page grow with content so overflow scrolls instead of squashing;
+     body min-height: 100dvh keeps the ≤4-card ambient layout full-bleed */
+  html, body { height: auto; }
+  body {
+    padding: 16px;
+    padding-bottom: calc(72px + env(safe-area-inset-bottom));
+    gap: 12px;
+  }
+  .grid {
+    gap: 10px;
+    /* rows never shrink below a readable height; extra rows overflow to scroll */
+    grid-auto-rows: minmax(min(22vh, 140px), 1fr);
+  }
+  .card {
+    min-height: 0;
+    padding: 14px 16px;
+    gap: 8px;
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .card-head { gap: 10px; }
+  .name      { font-size: clamp(17px, 4.6vw, 22px); }
+  .badge     { font-size: 11px; padding: 5px 9px; letter-spacing: 0.06em; }
+  .dismiss   { width: 30px; height: 30px; font-size: 18px; }
+  .message   { font-size: 14px; -webkit-line-clamp: 2; line-height: 1.4; }
+  .meta      { font-size: 12px; gap: 8px; }
+  .footer    { padding: 10px 14px; padding-bottom: calc(10px + env(safe-area-inset-bottom)); font-size: 12px; }
+  .footer code { font-size: 12px; padding: 4px 8px; }
+  .copy      { padding: 6px 12px; min-height: 32px; font-size: 12px; }
 }
 
 /* landscape phone — limited height, scale things down */

@@ -3,9 +3,15 @@
 
   const STATUSES = ['idle', 'planning', 'coding', 'testing', 'blocked', 'done'];
 
+  // Workspace-aware base path: on /w/<token> (or a sub-path), all API calls
+  // are prefixed with /w/<token>. Otherwise base is '' (legacy mode).
+  const wsMatch = location.pathname.match(/^\/w\/(ags_[A-Za-z0-9_-]{32})(?:\/|$)/);
+  const BASE = wsMatch ? `/w/${wsMatch[1]}` : '';
+
   const gridEl = document.getElementById('grid');
   const statsEl = document.getElementById('stats');
   const connEl = document.getElementById('conn');
+  const footerEl = document.getElementById('footer');
   const urlEl = document.getElementById('webhook-url');
   const copyBtn = document.getElementById('copy-btn');
   const authEl = document.getElementById('auth-note');
@@ -65,12 +71,30 @@
     `).join('');
   }
 
+  async function refreshSessions() {
+    try {
+      const res = await fetch(`${BASE}/api/sessions`);
+      if (!res.ok) return;
+      const list = await res.json();
+      // Merge, don't replace: the fetch may race newer SSE-delivered state.
+      // Deletions are handled by SSE remove/snapshot events, not here.
+      for (const s of list) {
+        const cur = state.get(s.id);
+        if (!cur || cur.updatedAt <= s.updatedAt) state.set(s.id, s);
+      }
+      renderGrid();
+    } catch { /* SSE snapshot will reconcile on reconnect */ }
+  }
+
   async function dismissSession(id) {
     state.delete(id);
     renderGrid();
     try {
-      await fetch(`/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    } catch { /* server will re-broadcast if it comes back */ }
+      const res = await fetch(`${BASE}/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (!res.ok) await refreshSessions();
+    } catch {
+      await refreshSessions();
+    }
   }
 
   gridEl.addEventListener('click', (e) => {
@@ -85,8 +109,40 @@
     connEl.title = ok ? 'Live' : 'Reconnecting…';
   }
 
+  // Deleted/expired workspace: stop reconnecting and say so.
+  function renderGone() {
+    state.clear();
+    webhookUrl = '';
+    urlEl.textContent = '—';
+    connEl.hidden = true;
+    if (footerEl) footerEl.hidden = true;
+    statsEl.innerHTML = '';
+    gridEl.innerHTML = `
+      <div class="empty">
+        This board no longer exists. It may have been deleted or expired.<br><br>
+        <a href="/">Create a new board</a>
+      </div>`;
+  }
+
+  // Only trust an explicit 404 (unknown workspace); anything else — network
+  // error, 200, 429 — means the workspace may still exist, so keep retrying.
+  async function workspaceGone() {
+    try {
+      const res = await fetch(`${BASE}/api/sessions`);
+      return res.status === 404;
+    } catch {
+      return false;
+    }
+  }
+
+  // SSE with reconnect: on error close the stream and retry with exponential
+  // backoff (1s, 2s, 4s… capped at 30s), reset on a successful open.
+  let backoff = 1000;
+  let sseErrors = 0;
+
   function connect() {
-    const es = new EventSource('/events');
+    const es = new EventSource(`${BASE}/events`);
+    let retried = false;
 
     es.addEventListener('snapshot', (e) => {
       const list = JSON.parse(e.data);
@@ -107,20 +163,66 @@
       renderGrid();
     });
 
-    es.onopen = () => setConnected(true);
-    es.onerror = () => setConnected(false);
+    es.onopen = () => {
+      backoff = 1000;
+      sseErrors = 0;
+      setConnected(true);
+    };
+
+    es.onerror = async () => {
+      if (retried) return;
+      retried = true;
+      es.close();
+      setConnected(false);
+      sseErrors += 1;
+      // After repeated failures on a workspace page, check whether the
+      // workspace itself is gone — if so, stop reconnecting for good.
+      if (BASE && sseErrors >= 2 && await workspaceGone()) {
+        renderGone();
+        return;
+      }
+      setTimeout(connect, backoff);
+      backoff = Math.min(backoff * 2, 30000);
+    };
   }
 
-  async function loadConfig() {
+  // Multi-tenant landing: on / with mode "multi", offer to create a board
+  // instead of showing an empty dashboard.
+  function renderWelcome() {
+    connEl.hidden = true;
+    if (footerEl) footerEl.hidden = true;
+    gridEl.innerHTML = `
+      <div class="welcome">
+        <div class="logo"></div>
+        <h1>AgStatus</h1>
+        <p>Live status board for your coding agents.</p>
+        <button class="create-board" id="create-board" type="button">Create a status board</button>
+        <div class="welcome-error" id="welcome-error" role="alert"></div>
+      </div>`;
+    document.getElementById('create-board').addEventListener('click', createBoard);
+  }
+
+  async function createBoard() {
+    const btn = document.getElementById('create-board');
+    const errEl = document.getElementById('welcome-error');
+    btn.disabled = true;
+    errEl.textContent = '';
     try {
-      const res = await fetch('/api/config');
-      const cfg = await res.json();
-      webhookUrl = cfg.webhookUrl;
-      urlEl.textContent = webhookUrl;
-      if (cfg.requiresSecret) authEl.textContent = '· requires X-Webhook-Secret';
+      const res = await fetch('/api/workspaces', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !(data.token || data.dashboardUrl)) {
+        errEl.textContent = res.status === 429
+          ? 'Too many boards created from this address. Try again later.'
+          : 'Could not create a board. Please try again.';
+        btn.disabled = false;
+        return;
+      }
+      // Prefer a same-origin path: a misconfigured server PUBLIC_URL in
+      // dashboardUrl would strand the user (and their new token) elsewhere.
+      location.href = data.token ? `/w/${encodeURIComponent(data.token)}` : data.dashboardUrl;
     } catch {
-      urlEl.textContent = `${location.origin}/webhook`;
-      webhookUrl = urlEl.textContent;
+      errEl.textContent = 'Could not create a board. Please try again.';
+      btn.disabled = false;
     }
   }
 
@@ -142,5 +244,44 @@
     });
   }, 15000);
 
-  loadConfig().then(connect);
+  // Neutral state while the root page can't tell legacy from multi yet.
+  function renderConnecting() {
+    setConnected(false);
+    if (footerEl) footerEl.hidden = true;
+    statsEl.innerHTML = '';
+    gridEl.innerHTML = '<div class="empty">Connecting…</div>';
+  }
+
+  let configBackoff = 1000;
+
+  async function init() {
+    let cfg = null;
+    try {
+      const res = await fetch('/api/config');
+      if (res.ok) cfg = await res.json();
+    } catch { /* handled below */ }
+
+    if (!cfg && !BASE) {
+      // On the root page a missing config could be either mode — don't guess
+      // (a legacy dashboard on a multi server 404s forever). Retry instead.
+      renderConnecting();
+      setTimeout(init, configBackoff);
+      configBackoff = Math.min(configBackoff * 2, 30000);
+      return;
+    }
+    configBackoff = 1000;
+
+    if (!BASE && cfg.mode === 'multi') {
+      renderWelcome();
+      return;
+    }
+
+    if (footerEl) footerEl.hidden = false;
+    webhookUrl = (cfg && cfg.webhookUrl) || `${location.origin}${BASE}/webhook`;
+    urlEl.textContent = webhookUrl;
+    if (cfg && cfg.requiresSecret) authEl.textContent = '· requires X-Webhook-Secret';
+    connect();
+  }
+
+  init();
 })();

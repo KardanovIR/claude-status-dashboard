@@ -1,0 +1,21 @@
+# Caddyfile for the claude-status dashboard.
+#
+# Usage:
+#   1. Point your domain's DNS (A/AAAA record) at this host and open ports 80/443.
+#   2. In .env set:
+#        DOMAIN=status.example.com
+#        PUBLIC_URL=https://status.example.com
+#        TRUST_PROXY=1
+#   3. Start the stack with the TLS profile:
+#        docker compose --profile tls up -d
+#
+# Caddy obtains and renews a Let's Encrypt certificate for $DOMAIN automatically.
+
+{$DOMAIN} {
+	# "dashboard" is the app service name in docker-compose.yml.
+	# flush_interval -1 disables response buffering so Server-Sent Events
+	# (/events and /w/<token>/events) stream immediately.
+	reverse_proxy dashboard:3000 {
+		flush_interval -1
+	}
+}

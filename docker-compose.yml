@@ -7,17 +7,57 @@ services:
     environment:
       PORT: 3000
       HOST: 0.0.0.0
-      # Override these for your deployment:
+      # Override these in .env (see .env.example for docs on every variable):
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
+      # Legacy (single-tenant) mode only; ignored when MULTI_TENANT=true.
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
-      SESSION_TTL_MS: ${SESSION_TTL_MS:-0}
+      # Empty = server default (0/keep-forever in legacy mode, 24h in multi mode).
+      SESSION_TTL_MS: ${SESSION_TTL_MS:-}
+      # Set MULTI_TENANT=true to enable workspace mode.
+      MULTI_TENANT: ${MULTI_TENANT:-}
+      # Set TRUST_PROXY=1 when running behind a reverse proxy (e.g. the caddy
+      # service below, enabled with --profile tls).
+      TRUST_PROXY: ${TRUST_PROXY:-}
+      # SQLite persistence. Defaults to a file inside the ./data volume mounted
+      # below. Set DB_PATH= (empty) in .env to run purely in-memory — sessions
+      # and workspaces are then lost on restart.
+      DB_PATH: ${DB_PATH-/app/data/agstatus.db}
     ports:
-      # No host port specified → Docker assigns a random free port.
-      # Find it with: docker compose port dashboard 3000
-      - "3000"
+      - "${PORT:-3000}:3000"
+    volumes:
+      # SQLite database lives here when DB_PATH points into /app/data.
+      # The container runs as the unprivileged "node" user (uid 1000); on Linux
+      # hosts create the directory first so it is writable:
+      #   mkdir -p data && sudo chown 1000:1000 data
+      - ./data:/app/data
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/healthz"]
       interval: 30s
       timeout: 3s
       retries: 3
       start_period: 5s
+
+  # Optional TLS-terminating reverse proxy with automatic Let's Encrypt certs.
+  # Enable with:  DOMAIN=status.example.com docker compose --profile tls up -d
+  caddy:
+    image: caddy:2-alpine
+    container_name: claude-status-caddy
+    restart: unless-stopped
+    profiles:
+      - tls
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    environment:
+      DOMAIN: ${DOMAIN:-}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - dashboard
+
+volumes:
+  caddy_data:
+  caddy_config:

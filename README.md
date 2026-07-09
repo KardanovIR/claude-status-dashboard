@@ -203,7 +203,35 @@ curl -X DELETE https://status.example.com/w/<token>
 
 ## Setting up Claude Code
 
-The repo includes a ready-to-use hook script at
+### The easy way: `agstatus init`
+
+The [`cli/`](cli/) package does the whole setup in one command — creates a
+private board, installs a dependency-free Node hook, and safely merges the
+hook registrations into `~/.claude/settings.json` (with a backup):
+
+```bash
+npx agstatus init                      # use the default hosted instance
+npx agstatus init --url https://your-server.example   # self-hosted
+npx agstatus init --code XXXX-XXXX    # pair with a board created elsewhere
+npx agstatus init --minimal           # send tool names only, never command text
+```
+
+It prints your board URL plus a QR code to open it on your phone. Also:
+`npx agstatus status` (check setup + server reachability) and
+`npx agstatus uninstall` (clean removal).
+
+> Until the package is published to npm, run it from the repo:
+> `npm --prefix cli install && npm --prefix cli run build && node cli/dist/cli.js init`
+
+Boards created elsewhere (e.g. a mobile app) can hand you a pairing code:
+the board owner calls `POST /w/<token>/pair` and gets a short-lived
+single-use code (15 min, max 3 outstanding per board); `agstatus init --code`
+exchanges it via `POST /api/pair/claim` for the board's URLs. Claims are rate
+limited to 10/min/IP.
+
+### The manual way (bash hook)
+
+The repo also includes the original bash hook at
 [`hooks/claude-status-hook.sh`](hooks/claude-status-hook.sh) that translates
 Claude Code [hook events](https://code.claude.com/docs/en/hooks) into webhook
 calls. Wire it up once and every Claude Code session you run will appear on the
@@ -383,7 +411,10 @@ claude-status/
 │   ├── styles.css               # Responsive, landscape-phone tuned
 │   └── app.js                   # SSE client + rendering
 ├── hooks/
-│   └── claude-status-hook.sh    # Claude Code hook → webhook
+│   └── claude-status-hook.sh    # Claude Code hook → webhook (manual/bash setup)
+├── cli/                         # `npx agstatus` — one-command setup CLI
+│   ├── src/                     # init/status/uninstall + settings.json merge
+│   └── assets/agstatus-hook.js  # dependency-free Node hook installed by init
 ├── deploy/
 │   └── Caddyfile                # TLS reverse proxy (compose --profile tls)
 ├── test/                        # Vitest suite (legacy, workspaces, limits, SSE, persistence)

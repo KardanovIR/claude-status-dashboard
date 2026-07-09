@@ -3,7 +3,7 @@ import rateLimit from 'express-rate-limit';
 import path from 'path';
 import crypto from 'crypto';
 import { AppConfig } from './config';
-import { LEGACY_WS, STATUSES, Status, Store, UpsertInput } from './store';
+import { LEGACY_WS, PAIR_CODE_TTL_MS, STATUSES, Status, Store, UpsertInput } from './store';
 
 export type { AppConfig } from './config';
 export { Store, STATUSES } from './store';
@@ -203,6 +203,38 @@ export function createApp(cfg: AppConfig): CreatedApp {
       });
     });
 
+    // Brute-force protection for pairing-code claims: the keyspace is large
+    // (31^8), but codes are short-lived secrets, so keep guessing expensive.
+    const claimLimiter = rateLimit({
+      windowMs: 60 * 1000,
+      limit: 10,
+      standardHeaders: true,
+      legacyHeaders: false,
+      skip: () => !cfg.rateLimit,
+    });
+
+    app.post('/api/pair/claim', claimLimiter, (req, res) => {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      if (typeof body.code !== 'string') {
+        res.status(400).json({ error: 'code is required' });
+        return;
+      }
+      const claimed = store.claimPairCode(body.code);
+      // The workspace may have been deleted after the code was escrowed; the
+      // claim above already consumed (dropped) the code either way.
+      if (!claimed || !store.resolveToken(claimed.rawToken)) {
+        res.status(404).json({ error: 'invalid or expired code' });
+        return;
+      }
+      const { rawToken: token } = claimed;
+      res.json({
+        ok: true,
+        token,
+        dashboardUrl: `${cfg.publicUrl}/w/${token}`,
+        webhookUrl: `${cfg.publicUrl}/w/${token}/webhook`,
+      });
+    });
+
     // CORS: the token in the path is the credential, so origins add nothing.
     app.use('/w', (req, res, next) => {
       res.set({
@@ -245,6 +277,21 @@ export function createApp(cfg: AppConfig): CreatedApp {
       const wsId = resolveWs(req, res);
       if (!wsId) return;
       handleWebhook(wsId, req, res);
+    });
+
+    app.post('/w/:token/pair', (req, res) => {
+      if (!resolveWs(req, res)) return;
+      // The raw token (not the hashed wsId) is what the claimer needs.
+      const code = store.createPairCode(req.params.token);
+      if (!code) {
+        res.status(429).json({ error: 'too many outstanding codes' });
+        return;
+      }
+      res.status(201).json({
+        ok: true,
+        code: `${code.slice(0, 4)}-${code.slice(4)}`,
+        expiresInSeconds: PAIR_CODE_TTL_MS / 1000,
+      });
     });
 
     app.delete('/w/:token/sessions/:id', (req, res) => {
@@ -323,6 +370,12 @@ export function createApp(cfg: AppConfig): CreatedApp {
     }, 6 * 60 * 60 * 1000);
     wsSweep.unref();
     timers.push(wsSweep);
+
+    // Pairing codes also expire lazily on create/claim; this keeps the map
+    // from holding escrowed tokens longer than the TTL when nobody touches it.
+    const pairSweep = setInterval(() => store.sweepExpiredPairCodes(), 60_000);
+    pairSweep.unref();
+    timers.push(pairSweep);
   }
 
   function shutdown(): void {

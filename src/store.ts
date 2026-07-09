@@ -31,6 +31,13 @@ export const TOKEN_RE = /^ags_[A-Za-z0-9_-]{32}$/;
 const WEBHOOKS_PER_MINUTE = 120;
 const LAST_SEEN_WRITE_THROTTLE_MS = 60_000;
 
+// Pairing codes: short-lived, single-use, in-memory only (never SQLite).
+// No I/L/O/0/1 to keep the codes unambiguous when read aloud or typed.
+const PAIR_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+const PAIR_CODE_LENGTH = 8;
+export const PAIR_CODE_TTL_MS = 15 * 60 * 1000;
+const MAX_PAIR_CODES_PER_WORKSPACE = 3;
+
 function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
@@ -44,6 +51,8 @@ export class Store {
   private sessions = new Map<string, Map<string, Session>>();
   private workspaces = new Map<string, WorkspaceMeta>();
   private webhookWindows = new Map<string, { windowStart: number; count: number }>();
+  // Escrowed pairing codes, keyed by the normalized (dash-less) code.
+  private pairCodes = new Map<string, { rawToken: string; expiresAt: number }>();
   private db: SqliteDatabase | null = null;
   private stmt: Record<string, Statement> = {};
 
@@ -239,6 +248,54 @@ export class Store {
     }
     win.count += 1;
     return win.count <= WEBHOOKS_PER_MINUTE;
+  }
+
+  /**
+   * Escrows rawToken under a fresh single-use pairing code (returned WITHOUT
+   * the display dash). Null when the workspace already has 3 outstanding
+   * unexpired codes. The raw token is the workspace identity here, so the
+   * cap counts codes escrowing the same rawToken.
+   */
+  createPairCode(rawToken: string): string | null {
+    this.sweepExpiredPairCodes();
+    let outstanding = 0;
+    for (const entry of this.pairCodes.values()) {
+      if (entry.rawToken === rawToken) outstanding += 1;
+    }
+    if (outstanding >= MAX_PAIR_CODES_PER_WORKSPACE) return null;
+
+    let code: string;
+    do {
+      code = '';
+      for (let i = 0; i < PAIR_CODE_LENGTH; i++) {
+        // randomInt uses rejection sampling, so no modulo bias.
+        code += PAIR_CODE_ALPHABET[crypto.randomInt(PAIR_CODE_ALPHABET.length)];
+      }
+    } while (this.pairCodes.has(code)); // 31^8 keyspace; collisions are ~impossible but cheap to rule out
+    this.pairCodes.set(code, { rawToken, expiresAt: Date.now() + PAIR_CODE_TTL_MS });
+    return code;
+  }
+
+  /**
+   * Consumes a pairing code (normalized: uppercase, dashes/whitespace
+   * stripped) and returns the escrowed token. Null for unknown or expired
+   * codes; either way the code is gone afterwards (single-use).
+   */
+  claimPairCode(code: string): { rawToken: string } | null {
+    const normalized = code.toUpperCase().replace(/[-\s]/g, '');
+    const entry = this.pairCodes.get(normalized);
+    if (!entry) return null;
+    this.pairCodes.delete(normalized);
+    if (Date.now() >= entry.expiresAt) return null;
+    return { rawToken: entry.rawToken };
+  }
+
+  /** Drops expired pairing codes. Also runs lazily inside create/claim. */
+  sweepExpiredPairCodes(): void {
+    const now = Date.now();
+    for (const [code, entry] of this.pairCodes) {
+      if (now >= entry.expiresAt) this.pairCodes.delete(code);
+    }
   }
 
   /** Removes sessions not updated within ttlMs. Returns what was removed, for broadcasting. */

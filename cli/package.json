@@ -1,0 +1,44 @@
+{
+  "name": "agstatus",
+  "version": "0.1.0",
+  "description": "One-command setup for AgStatus — live status board for your Claude Code agents",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KardanovIR/claude-status-dashboard.git",
+    "directory": "cli"
+  },
+  "bin": {
+    "agstatus": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "assets"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "claude-code",
+    "claude",
+    "codex",
+    "agent",
+    "status",
+    "dashboard",
+    "hooks"
+  ],
+  "dependencies": {
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "@types/qrcode-terminal": "^0.12.2",
+    "typescript": "^5.4.5",
+    "vitest": "^2.1.8"
+  }
+}

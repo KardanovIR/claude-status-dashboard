@@ -89,7 +89,7 @@ claude-status/
 ├── cli/              # `npx agstatus` setup CLI + the Node hook it installs
 ├── hooks/            # Original bash hook for manual setup
 ├── ios/              # AgStatus: native SwiftUI app (+ legacy ClaudeStatus WebView app)
-├── integrations/     # Android WebView client; Flipper Zero app + BLE daemon
+├── integrations/     # Android WebView client
 ├── deploy/           # Caddyfile for the TLS compose profile
 ├── test/             # Server test suite (Vitest)
 ├── docs/             # Guides, API reference, privacy policy, screenshots

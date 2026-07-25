@@ -22,6 +22,15 @@ services:
       # below. Set DB_PATH= (empty) in .env to run purely in-memory — sessions
       # and workspaces are then lost on restart.
       DB_PATH: ${DB_PATH-/app/data/agstatus.db}
+      # APNs push notifications (optional — see docs/self-hosting.md). Put the
+      # .p8 auth key in ./keys (mounted read-only at /app/keys below) and set
+      # these in .env. Left unset, push is simply disabled.
+      APNS_KEY_PATH: ${APNS_KEY_PATH:-}
+      APNS_KEY: ${APNS_KEY:-}
+      APNS_KEY_ID: ${APNS_KEY_ID:-}
+      APNS_TEAM_ID: ${APNS_TEAM_ID:-}
+      APNS_TOPIC: ${APNS_TOPIC:-}
+      APNS_ENV: ${APNS_ENV:-}
     ports:
       - "${PORT:-3000}:3000"
     volumes:
@@ -30,6 +39,8 @@ services:
       # hosts create the directory first so it is writable:
       #   mkdir -p data && sudo chown 1000:1000 data
       - ./data:/app/data
+      # APNs .p8 auth key lives here (see APNS_KEY_PATH above).
+      - ./keys:/app/keys:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/healthz"]
       interval: 30s

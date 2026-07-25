@@ -40,22 +40,23 @@ jobs:
   npm:
     name: Publish CLI to npm
     runs-on: ubuntu-latest
+    # Authenticates via OIDC trusted publishing — no NPM_TOKEN secret.
+    # Requires the trusted publisher to be configured in the package's
+    # settings on npmjs.com (repo + this workflow filename).
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           registry-url: https://registry.npmjs.org
-      # Skips gracefully until the NPM_TOKEN repo secret is configured.
+      # Trusted publishing needs npm >= 11.5.1.
+      - run: npm install -g npm@latest
       - name: Publish agstatus
         working-directory: cli
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "NPM_TOKEN secret not set — skipping npm publish."
-            exit 0
-          fi
           npm ci
           npm publish --access public
 

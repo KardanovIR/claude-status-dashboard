@@ -5,6 +5,10 @@ dist/
 *.log
 .DS_Store
 
+# APNs auth keys — never commit
+keys/
+*.p8
+
 # IDE / editor
 .idea/
 .vscode/

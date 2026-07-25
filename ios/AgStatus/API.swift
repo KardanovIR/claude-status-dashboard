@@ -106,6 +106,14 @@ enum AgStatusAPI {
         return try decode([Session].self, from: data)
     }
 
+    /// Plan usage limits reported by the board's agents. Older servers have
+    /// no /api/usage — treat their 404/HTML responses as "no usage data".
+    static func usage(for board: Board) async throws -> [UsageInfo] {
+        let url = board.boardURL.appendingPathComponent("api").appendingPathComponent("usage")
+        let data = try await send("GET", url)
+        return (try? decode([UsageInfo].self, from: data)) ?? []
+    }
+
     static func deleteSession(_ id: String, from board: Board) async throws {
         let url = board.boardURL.appendingPathComponent("sessions").appendingPathComponent(id)
         _ = try await send("DELETE", url)

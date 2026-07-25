@@ -20,6 +20,7 @@ The server runs in one of two modes:
   "status": "coding",
   "message": "Editing server.ts",
   "project": "my-repo",
+  "source": "claude",
   "createdAt": 1752096000000,
   "updatedAt": 1752096030000
 }
@@ -48,6 +49,7 @@ the same JSON body and upsert a session by `session_id`:
 | `name`       | string | no       | Human-readable title. Defaults to `session_id` if omitted. Truncated to 120 chars. |
 | `message`    | string | no       | Short description of the current activity (shown on the card). Truncated to 300 chars. |
 | `project`    | string | no       | Project or repo the session is working on. Truncated to 120 chars. |
+| `source`     | string | no       | Agent kind that owns the session, e.g. `claude` or `codex` (same regex as the usage `source`). Defaults to `claude`; omitted on update = carried forward. Dashboards use it to show only the limit bars of agents present on the board. |
 
 Control characters are stripped from all string fields. Omitted optional
 fields carry the previous value forward on update. The JSON body is capped at
@@ -64,13 +66,50 @@ fields carry the previous value forward on update. The JSON body is capped at
 workspace (multi-tenant); `413` on bodies over 16 KB; `429` over the
 per-workspace rate limit (multi-tenant).
 
+## Plan usage
+
+`POST /usage` (legacy, same secret rules as the webhook) and
+`POST /w/<token>/usage` (multi-tenant) let a hook report how much of an
+agent plan's rate limits is consumed, so dashboards can draw limit bars:
+
+```json
+{
+  "source": "claude",
+  "windows": [
+    { "id": "session", "label": "Current session", "usedPct": 42, "resetsAt": 1752100000000 },
+    { "id": "week", "label": "Weekly (all models)", "usedPct": 61.5, "resetsAt": 1752300000000 }
+  ]
+}
+```
+
+| Field      | Type   | Required | Notes |
+| ---------- | ------ | -------- | ----- |
+| `source`   | string | yes      | Agent kind, e.g. `claude` or `codex`. Must match `^[a-z][a-z0-9_-]{0,23}$`. |
+| `windows`  | array  | yes      | 1–6 windows with unique `id`s (`^[a-z][a-z0-9_-]{0,31}$`). |
+| `usedPct`  | number | yes      | Percent of the limit consumed. Clamped to 0–100. |
+| `label`    | string | no       | Display name; defaults to `id`. Truncated to 48 chars. |
+| `resetsAt` | number | no       | Epoch ms when the window resets; anything invalid becomes `null`. |
+
+The server keeps the latest report per `source` (a re-post replaces the
+previous one), broadcasts the full usage list as an SSE `usage` event, and
+answers `{ok: true}`. Usage posts share the webhook rate-limit budget.
+Reports older than 24 hours are dropped from reads — stale percentages
+mislead. `GET /api/usage` (legacy) and `GET /w/<token>/api/usage` return the
+current list:
+
+```json
+[ { "source": "claude", "windows": [ ... ], "updatedAt": 1752096030000 } ]
+```
+
 ## Legacy (single-tenant) endpoints
 
 | Method & path          | Purpose                                        | Auth |
 | ---------------------- | ---------------------------------------------- | ---- |
 | `POST /webhook`        | Create/update a session (see above).           | yes* |
+| `POST /usage`          | Report plan usage (see [Plan usage](#plan-usage)). | yes* |
 | `GET /events`          | SSE stream (see [format](#sse-event-format)).  | no   |
 | `GET /api/sessions`    | JSON list of all sessions.                     | no   |
+| `GET /api/usage`       | Current plan usage list.                       | no   |
 | `DELETE /sessions/:id` | Remove one session. Returns `{ok: boolean}`.   | no   |
 | `POST /sessions/clear` | Remove all sessions. Returns `{ok: true}`.     | yes* |
 
@@ -117,6 +156,8 @@ workspace:
 | `GET /w/<token>/api/sessions`    | JSON list of the workspace's sessions (newest first). |
 | `GET /w/<token>/events`          | SSE stream (see [format](#sse-event-format)). `429` past 10 concurrent connections. |
 | `POST /w/<token>/webhook`        | Create/update a session. `200` with `{ok, session}`; `400` on validation errors; `429` over the rate limit. |
+| `POST /w/<token>/usage`          | Report plan usage (see [Plan usage](#plan-usage)). |
+| `GET /w/<token>/api/usage`       | Current plan usage list. |
 | `DELETE /w/<token>/sessions/:id` | Remove one session. Returns `{ok: boolean}`. |
 | `POST /w/<token>/sessions/clear` | Remove all sessions in the workspace. Returns `{ok: true}`. |
 | `DELETE /w/<token>`              | Delete the whole workspace: all sessions and device registrations removed, event streams closed. Returns `{ok: true}`. |
@@ -168,6 +209,9 @@ data: { ...session }
 event: remove
 data: { "id": "sess-abc" }
 
+event: usage
+data: [ { "source": "claude", "windows": [ ... ], "updatedAt": 1752096030000 } ]
+
 : keepalive
 ```
 
@@ -175,6 +219,8 @@ data: { "id": "sess-abc" }
   after `sessions/clear` or workspace deletion.
 - `session` — a session was created or updated.
 - `remove` — a session was deleted, evicted, or expired.
+- `usage` — the full plan-usage list (see [Plan usage](#plan-usage)). Sent
+  on connect when non-empty, and after every usage report.
 - A `: keepalive` comment line is sent every 25 s.
 
 The server sets `Cache-Control: no-cache, no-transform` and

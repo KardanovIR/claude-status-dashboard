@@ -45,6 +45,29 @@ enum DemoData {
         ]
     }
 
+    /// Plan-limit bars matching a busy-but-not-throttled evening.
+    static func usage() -> [UsageInfo] {
+        let now = nowMillis()
+        return [
+            UsageInfo(source: "claude",
+                      windows: [
+                          UsageWindow(id: "session",
+                                      label: "Current session",
+                                      usedPct: 34,
+                                      resetsAt: now + 137 * 60_000),
+                          UsageWindow(id: "week",
+                                      label: "Weekly (all models)",
+                                      usedPct: 62,
+                                      resetsAt: now + 2 * 86_400_000 + 5 * 3_600_000),
+                          UsageWindow(id: "week_fable",
+                                      label: "Weekly (Fable)",
+                                      usedPct: 41,
+                                      resetsAt: now + 2 * 86_400_000 + 5 * 3_600_000),
+                      ],
+                      updatedAt: now),
+        ]
+    }
+
     /// Advances a random subset of sessions (at least one) along plausible
     /// transitions, refreshing messages and updatedAt. An emptied demo board
     /// re-seeds itself so the demo never dead-ends.

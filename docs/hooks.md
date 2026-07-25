@@ -100,6 +100,38 @@ Other tools and events are ignored. The card `name` and `project` default to
 the basename of the session's working directory, so multiple sessions are
 easy to tell apart.
 
+## Plan-usage bars
+
+The Node hook also feeds the dashboard's plan-limit bars (the 5-hour session
+window and the weekly caps you see in `/usage` inside Claude Code):
+
+1. On quiet events (`SessionStart`, `Stop`, `Notification` — never
+   `PreToolUse`), at most once every 5 minutes, the hook reads the Claude
+   Code OAuth token locally: `~/.claude/.credentials.json`, or the macOS
+   login keychain (`Claude Code-credentials`). macOS may ask once to allow
+   `security` access — choose "Always Allow".
+2. It asks Anthropic's usage endpoint (`api.anthropic.com/api/oauth/usage`)
+   for utilization percentages. The structured `limits` array is preferred
+   (it carries model-scoped weekly caps such as **Fable**, which the legacy
+   `five_hour`/`seven_day` keys never mention), with a fallback to those
+   legacy keys for older responses.
+3. It POSTs only the percentages and reset times to your board
+   (`POST <board>/usage` — see [docs/api.md](api.md#plan-usage)). **The
+   token itself never leaves your machine.**
+
+Set `AGSTATUS_USAGE=off` in the settings `env` block to turn this off
+entirely. The bash hook and Codex plans are not covered (the endpoint is
+Claude-specific); a board simply shows no bars until something reports usage.
+
+Dashboards only show the bars of agents that currently have sessions on the
+board (each session carries a `source` tag: `claude`, or `codex` via the
+`AGSTATUS_SOURCE=codex` prefix the Codex integration embeds) — a Claude-only
+evening doesn't display Codex limits, and vice versa.
+
+Caveat: the usage endpoint is undocumented and has changed before. The hook
+degrades silently — unknown response shapes mean missing bars, never a
+blocked agent.
+
 ## OpenAI Codex specifics
 
 `agstatus init` configures Codex automatically when `~/.codex` exists
@@ -125,6 +157,8 @@ a 10 s timeout (the script itself exits within ~4 s).
 | `CLAUDE_STATUS_URL`    | Required. Base URL the hook posts to — a board URL (`https://<host>/w/<token>`) or a legacy server origin. The hook appends `/webhook` and `/sessions/<id>` itself, and tolerates a trailing `/` or `/webhook`. |
 | `CLAUDE_STATUS_SECRET` | Optional. Sent as `X-Webhook-Secret` (legacy servers with `WEBHOOK_SECRET` set). Workspace boards don't need it — the token in the URL is the auth. |
 | `AGSTATUS_DETAIL=off`  | Node hook only. Send tool names instead of command text (what `--minimal` sets). |
+| `AGSTATUS_USAGE=off`   | Node hook only. Never read or report plan usage (see [Plan-usage bars](#plan-usage-bars)). |
+| `AGSTATUS_SOURCE`      | Node hook only. Agent kind tag on sessions (default `claude`; the Codex integration sets `codex`). Scopes which limit bars a dashboard shows. |
 
 ## Manual setup: the bash hook
 

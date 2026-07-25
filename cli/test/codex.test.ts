@@ -188,18 +188,29 @@ describe('init/uninstall with a detected Codex install', () => {
         .SessionStart[0].hooks[0].command;
       const url = /CLAUDE_STATUS_URL="([^"]+)"/.exec(cmd)?.[1] ?? '';
       expect(url).toMatch(new RegExp(`^${childBase}/w/ags_`));
+      // Codex sessions must be tagged so dashboards can scope limit bars.
+      expect(cmd).toContain('AGSTATUS_SOURCE=codex');
 
       // Drive the REAL hook with Codex-shaped payloads.
       const fire = (payload: Record<string, unknown>, extraEnv: Record<string, string> = {}): string => {
         return execFileSync(process.execPath, [hookFile], {
           input: JSON.stringify(payload),
-          env: { ...process.env, CLAUDE_STATUS_URL: url, ...extraEnv },
+          // AGSTATUS_USAGE=off: the usage path would read the developer's real
+          // Claude credentials and call Anthropic — never from a test.
+          // AGSTATUS_SOURCE mirrors the env prefix embedded in the real command.
+          env: {
+            ...process.env,
+            CLAUDE_STATUS_URL: url,
+            AGSTATUS_USAGE: 'off',
+            AGSTATUS_SOURCE: 'codex',
+            ...extraEnv,
+          },
           timeout: 8000,
         }).toString();
       };
       const sessionsAt = async (id: string) => {
         const all = (await (await fetch(`${url}/api/sessions`)).json()) as Array<{
-          id: string; status: string; message: string;
+          id: string; status: string; message: string; source: string;
         }>;
         return all.find((s) => s.id === id)!;
       };
@@ -212,6 +223,7 @@ describe('init/uninstall with a detected Codex install', () => {
       let s = await sessionsAt('codex-1');
       expect(s.status).toBe('coding');
       expect(s.message).toBe('Editing files');
+      expect(s.source).toBe('codex');
 
       // Codex exec tools deliver the command as an argv array — the test
       // detector must still classify `npm test` as testing (not empty → coding).

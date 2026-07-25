@@ -13,21 +13,31 @@ struct BoardView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if store.connection == .boardGone {
-                    boardGoneView
-                } else if store.sessions.isEmpty {
-                    // "No agents yet" is only true when we're actually live —
-                    // while (re)connecting, an empty list just means "unknown".
-                    if store.isDemo || store.connection == .live {
-                        emptyState
+            VStack(spacing: 0) {
+                if !visibleUsage.isEmpty && store.connection != .boardGone {
+                    UsageBarsView(usage: visibleUsage)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 10)
+                        .padding(.bottom, 2)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                Group {
+                    if store.connection == .boardGone {
+                        boardGoneView
+                    } else if store.sessions.isEmpty {
+                        // "No agents yet" is only true when we're actually live —
+                        // while (re)connecting, an empty list just means "unknown".
+                        if store.isDemo || store.connection == .live {
+                            emptyState
+                        } else {
+                            connectingState
+                        }
                     } else {
-                        connectingState
+                        sessionList
                     }
-                } else {
-                    sessionList
                 }
             }
+            .animation(.snappy, value: visibleUsage)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.background.ignoresSafeArea())
             .navigationTitle("AgStatus")
@@ -71,6 +81,15 @@ struct BoardView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Usage visibility
+
+    /// Only limits of agents that actually have sessions on the board — a
+    /// Claude-only evening doesn't need Codex bars.
+    private var visibleUsage: [UsageInfo] {
+        let active = Set(store.sessions.map(\.source))
+        return store.usage.filter { active.contains($0.source) }
     }
 
     // MARK: - Session list
@@ -342,5 +361,117 @@ struct BoardView: View {
             .background(Capsule().fill(Theme.color(for: .coding).opacity(0.15)))
             .overlay(Capsule().strokeBorder(Theme.color(for: .coding).opacity(0.35)))
             .accessibilityLabel("Demo mode")
+    }
+}
+
+// MARK: - Usage bars
+
+/// Full-width plan-limit bars pinned above the board: one row per reported
+/// window (current 5-hour session, weekly caps, …).
+struct UsageBarsView: View {
+    let usage: [UsageInfo]
+
+    /// Redraws every minute so the "resets in …" countdowns stay honest.
+    private static let clock = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
+    @State private var now = Date()
+
+    var body: some View {
+        VStack(spacing: 12) {
+            ForEach(usage) { info in
+                ForEach(info.windows) { window in
+                    UsageBarRow(sourceName: info.displayName, window: window, now: now)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Theme.card)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Theme.cardBorder)
+        )
+        .onReceive(Self.clock) { now = $0 }
+    }
+}
+
+private struct UsageBarRow: View {
+    let sourceName: String
+    let window: UsageWindow
+    let now: Date
+
+    private var fraction: Double {
+        min(max(window.usedPct / 100, 0), 1)
+    }
+
+    private var barColor: Color {
+        if window.usedPct >= 85 { return Theme.color(for: .blocked) }
+        if window.usedPct >= 60 { return Theme.color(for: .testing) }
+        return Theme.color(for: .done)
+    }
+
+    private var pctText: String {
+        "\(Int(window.usedPct.rounded()))%"
+    }
+
+    /// "resets in 2h 15m" — nil once the reset time is unknown or passed.
+    private var resetText: String? {
+        guard let date = window.resetsDate else { return nil }
+        let seconds = Int(date.timeIntervalSince(now))
+        guard seconds > 60 else { return seconds > 0 ? "resets soon" : nil }
+        // Derive units from one rounded minute total so 7199s is "2h", never "1h 60m".
+        let totalMinutes = (seconds + 30) / 60
+        if totalMinutes < 60 { return "resets in \(totalMinutes)m" }
+        let totalHours = totalMinutes / 60
+        if totalHours < 24 {
+            let minutes = totalMinutes % 60
+            return minutes > 0 ? "resets in \(totalHours)h \(minutes)m" : "resets in \(totalHours)h"
+        }
+        let days = totalHours / 24
+        let hours = totalHours % 24
+        return hours > 0 ? "resets in \(days)d \(hours)h" : "resets in \(days)d"
+    }
+
+    var body: some View {
+        VStack(spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("\(sourceName) · \(window.label)")
+                    .font(.system(.caption2, design: .rounded).weight(.semibold))
+                    .kerning(0.4)
+                    .textCase(.uppercase)
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Text(pctText)
+                    .font(.system(.caption, design: .rounded).weight(.bold))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.textPrimary)
+                if let resetText {
+                    Text("· \(resetText)")
+                        .font(.system(.caption2, design: .rounded))
+                        .foregroundStyle(Theme.textSecondary)
+                        .lineLimit(1)
+                        .layoutPriority(-1)
+                }
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.white.opacity(0.06))
+                    Capsule()
+                        .fill(barColor)
+                        // A hairline of progress stays visible even at ~0%.
+                        .frame(width: fraction > 0 ? max(geo.size.width * fraction, 4) : 0)
+                        .animation(.snappy, value: fraction)
+                }
+            }
+            .frame(height: 6)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            "\(sourceName) \(window.label): \(pctText) used\(resetText.map { ", \($0)" } ?? "")"
+        )
     }
 }

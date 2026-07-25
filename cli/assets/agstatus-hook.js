@@ -14,16 +14,40 @@
  *   CLAUDE_STATUS_URL     (required; exits silently when unset)
  *   CLAUDE_STATUS_SECRET  (optional; sent as x-webhook-secret, legacy servers)
  *   AGSTATUS_DETAIL=off   (optional; send tool names instead of command text)
+ *   AGSTATUS_USAGE=off    (optional; never report plan-usage percentages)
+ *   AGSTATUS_SOURCE       (optional; agent kind tag, defaults to "claude" —
+ *                          the Codex integration sets "codex")
+ *
+ * Besides session status, the hook reports Claude plan usage (the 5-hour
+ * session window and weekly limits) so the dashboard can show limit bars.
+ * It reads the Claude Code OAuth token locally and asks Anthropic's usage
+ * endpoint for utilization percentages; only those percentages and reset
+ * times ever reach the AgStatus server — never the token itself. Throttled
+ * to one attempt per 5 minutes, and only on quiet events (never PreToolUse).
  *
  * Never blocks Claude Code: always exits 0, prints nothing, hard 3s HTTP
  * timeout, and an overall ~4s safety timeout.
  */
 'use strict';
 
+const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const { execFile } = require('child_process');
 
 const HTTP_TIMEOUT_MS = 3000;
 const SAFETY_TIMEOUT_MS = 4000;
+const USAGE_THROTTLE_MS = 5 * 60 * 1000;
+const USAGE_FETCH_TIMEOUT_MS = 2500;
+const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
+
+// Which agent this hook invocation serves. Claude Code installs leave it
+// unset (→ "claude"); the Codex hooks.json command embeds AGSTATUS_SOURCE=codex.
+// Dashboards use it to show only the limit bars of agents actually running.
+const SOURCE = /^[a-z][a-z0-9_-]{0,23}$/.test(process.env.AGSTATUS_SOURCE || '')
+  ? process.env.AGSTATUS_SOURCE
+  : 'claude';
 // Only Bash command text is truncated client-side (matching the bash hook);
 // the server caps every message at 300.
 const COMMAND_MAX = 120;
@@ -70,6 +94,186 @@ async function send(method, url, body) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+// ---- plan-usage reporting ---------------------------------------------------
+
+function readCredentialsFile() {
+  try {
+    return JSON.parse(
+      fs.readFileSync(path.join(os.homedir(), '.claude', '.credentials.json'), 'utf8')
+    );
+  } catch {
+    return null;
+  }
+}
+
+// On macOS Claude Code keeps its OAuth credentials in the login keychain.
+function readCredentialsKeychain() {
+  return new Promise((resolve) => {
+    execFile(
+      'security',
+      ['find-generic-password', '-s', 'Claude Code-credentials', '-w'],
+      { timeout: 1500 },
+      (err, stdout) => {
+        if (err) return resolve(null);
+        try {
+          resolve(JSON.parse(String(stdout).trim()));
+        } catch {
+          resolve(null);
+        }
+      }
+    );
+  });
+}
+
+async function readClaudeOAuthToken() {
+  let creds = readCredentialsFile();
+  if (!creds && process.platform === 'darwin') creds = await readCredentialsKeychain();
+  const oauth = creds && creds.claudeAiOauth;
+  if (!oauth || typeof oauth.accessToken !== 'string' || oauth.accessToken === '') return null;
+  // An expired token would only 401; Claude Code refreshes it by itself.
+  if (typeof oauth.expiresAt === 'number' && oauth.expiresAt <= Date.now()) return null;
+  return oauth.accessToken;
+}
+
+// Legacy fallback windows of the usage endpoint → dashboard bars.
+const USAGE_WINDOWS = [
+  ['five_hour', 'session', 'Current session'],
+  ['seven_day', 'week', 'Weekly (all models)'],
+  ['seven_day_opus', 'week_opus', 'Weekly (Opus)'],
+  ['seven_day_sonnet', 'week_sonnet', 'Weekly (Sonnet)'],
+];
+
+// Window ids must satisfy the server's ^[a-z][a-z0-9_-]{0,31}$.
+function slugify(value) {
+  const s = String(value).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return (/^[a-z]/.test(s) ? s : `w_${s}`).slice(0, 20);
+}
+
+function parseResetsAt(value) {
+  const ms = typeof value === 'string' ? Date.parse(value) : NaN;
+  return Number.isNaN(ms) ? null : ms;
+}
+
+/**
+ * Modern response shape: a `limits` array of
+ * {kind, group, percent, resets_at, scope: {model: {display_name}}}.
+ * This is where model-scoped weekly limits (e.g. Fable) live — the legacy
+ * five_hour/seven_day keys never mention them.
+ */
+function windowsFromLimits(limits) {
+  const windows = [];
+  const seen = new Set();
+  for (const limit of limits) {
+    if (!limit || typeof limit.percent !== 'number' || !isFinite(limit.percent)) continue;
+    const scopeName =
+      limit.scope && limit.scope.model && typeof limit.scope.model.display_name === 'string'
+        ? limit.scope.model.display_name
+        : '';
+    let id;
+    let label;
+    if (limit.kind === 'session') {
+      id = 'session';
+      label = 'Current session';
+    } else if (limit.kind === 'weekly_all') {
+      id = 'week';
+      label = 'Weekly (all models)';
+    } else if (limit.group === 'weekly') {
+      id = `week_${slugify(scopeName || limit.kind || 'scoped')}`;
+      label = `Weekly (${scopeName || limit.kind || 'scoped'})`;
+    } else {
+      id = slugify(`${limit.kind || 'window'}${scopeName ? `_${scopeName}` : ''}`);
+      label = scopeName ? `${limit.kind} (${scopeName})` : String(limit.kind || 'window');
+    }
+    if (seen.has(id)) continue; // server rejects duplicate ids
+    seen.add(id);
+    windows.push({
+      id,
+      label,
+      usedPct: Math.min(100, Math.max(0, limit.percent)),
+      resetsAt: parseResetsAt(limit.resets_at),
+    });
+    if (windows.length >= 6) break; // server cap per report
+  }
+  return windows;
+}
+
+function windowsFromLegacyKeys(data) {
+  const windows = [];
+  for (const [key, id, label] of USAGE_WINDOWS) {
+    const w = data ? data[key] : undefined;
+    if (!w || typeof w.utilization !== 'number' || !isFinite(w.utilization)) continue;
+    windows.push({
+      id,
+      label,
+      usedPct: Math.min(100, Math.max(0, w.utilization)),
+      resetsAt: parseResetsAt(w.resets_at),
+    });
+  }
+  return windows;
+}
+
+async function fetchClaudeUsage(token) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), USAGE_FETCH_TIMEOUT_MS);
+  timer.unref();
+  try {
+    const res = await fetch(USAGE_URL, {
+      headers: {
+        authorization: `Bearer ${token}`,
+        'anthropic-beta': 'oauth-2025-04-20',
+        // Without a claude-code UA this endpoint lands in an aggressively
+        // rate-limited bucket (anthropics/claude-code#31021).
+        'user-agent': 'claude-code/2.0.0 (external; agstatus-hook)',
+      },
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const windows =
+      data && Array.isArray(data.limits) && data.limits.length > 0
+        ? windowsFromLimits(data.limits)
+        : windowsFromLegacyKeys(data);
+    return windows.length > 0 ? { source: 'claude', windows } : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function maybeReportUsage(base) {
+  if (process.env.AGSTATUS_USAGE === 'off') return;
+  // Only Claude Code invocations may touch Claude credentials — a Codex run
+  // has no business reading them, even on a machine that has both agents.
+  if (SOURCE !== 'claude') return;
+
+  // Throttle across hook invocations via a per-server tmp file. The slot is
+  // claimed before fetching so failures back off too instead of hammering.
+  const stateFile = path.join(
+    os.tmpdir(),
+    `agstatus-usage-${crypto.createHash('sha256').update(base).digest('hex').slice(0, 12)}.json`
+  );
+  try {
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    if (typeof state.lastAttemptAt === 'number' && Date.now() - state.lastAttemptAt < USAGE_THROTTLE_MS) {
+      return;
+    }
+  } catch {
+    // no state yet — proceed
+  }
+  try {
+    fs.writeFileSync(stateFile, JSON.stringify({ lastAttemptAt: Date.now() }));
+  } catch {
+    return; // unwritable tmp — skip rather than fetch unthrottled forever
+  }
+
+  const token = await readClaudeOAuthToken();
+  if (!token) return;
+  const usage = await fetchClaudeUsage(token);
+  if (!usage) return;
+  await send('POST', `${base}/usage`, usage);
 }
 
 async function main() {
@@ -145,13 +349,18 @@ async function main() {
   const cwd = typeof payload.cwd === 'string' && payload.cwd !== '' ? payload.cwd : process.cwd();
   const project = path.basename(cwd);
 
-  await send('POST', `${base}/webhook`, {
+  const statusPost = send('POST', `${base}/webhook`, {
     session_id: session,
     name: project,
     status,
     message,
     project,
+    source: SOURCE,
   });
+  // Piggyback plan-usage refresh on quiet events only — PreToolUse fires
+  // between every tool call and must stay as cheap as possible.
+  const usagePost = event === 'PreToolUse' ? Promise.resolve() : maybeReportUsage(base);
+  await Promise.all([statusPost, usagePost.catch(() => {})]);
 }
 
 main()

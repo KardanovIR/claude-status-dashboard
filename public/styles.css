@@ -76,6 +76,55 @@ body {
   animation: blink 1.2s infinite;
 }
 
+/* plan usage limit bars — full-width, at the very top */
+.usage {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+.usage[hidden] { display: none; }
+.usage-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.usage-label {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-val {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.usage-reset { color: var(--muted-2); font-weight: 400; }
+.usage-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.usage-fill {
+  height: 100%;
+  border-radius: inherit;
+  transition: width .4s ease;
+}
+.usage-fill.low  { background: linear-gradient(90deg, var(--done), #34d399); }
+.usage-fill.mid  { background: linear-gradient(90deg, var(--testing), #fbbf24); }
+.usage-fill.high { background: linear-gradient(90deg, var(--blocked), #f87171); }
+
 /* stats */
 .stats {
   display: flex; gap: 8px; flex-wrap: wrap;
@@ -472,6 +521,10 @@ main {
     /* rows never shrink below a readable height; extra rows overflow to scroll */
     grid-auto-rows: minmax(min(22vh, 140px), 1fr);
   }
+  .usage { gap: 8px; }
+  .usage-label { font-size: 11px; }
+  .usage-head { margin-bottom: 4px; }
+  .usage-track { height: 6px; }
   .card {
     min-height: 0;
     padding: 14px 16px;

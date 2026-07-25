@@ -35,6 +35,8 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
     var status: AgentStatus
     var message: String
     var project: String
+    /// Agent kind that owns the session ("claude", "codex", …).
+    var source: String
     var createdAt: Int64 // epoch milliseconds
     var updatedAt: Int64 // epoch milliseconds
 
@@ -47,6 +49,7 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
          status: AgentStatus,
          message: String,
          project: String,
+         source: String = "claude",
          createdAt: Int64,
          updatedAt: Int64) {
         self.id = id
@@ -54,12 +57,13 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
         self.status = status
         self.message = message
         self.project = project
+        self.source = source
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, status, message, project, createdAt, updatedAt
+        case id, name, status, message, project, source, createdAt, updatedAt
     }
 
     /// Tolerant decoding: unknown status strings become `.idle`, missing
@@ -72,6 +76,8 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
         status = AgentStatus(rawValue: rawStatus) ?? .idle
         message = (try? container.decode(String.self, forKey: .message)) ?? ""
         project = (try? container.decode(String.self, forKey: .project)) ?? ""
+        let rawSource = (try? container.decode(String.self, forKey: .source)) ?? ""
+        source = rawSource.isEmpty ? "claude" : rawSource
         createdAt = Self.decodeMillis(container, .createdAt) ?? 0
         updatedAt = Self.decodeMillis(container, .updatedAt) ?? createdAt
     }
@@ -88,6 +94,84 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
             return millis
         }
         return nil
+    }
+}
+
+// MARK: - Usage
+
+/// One plan-limit window (the 5-hour session window or a weekly cap).
+struct UsageWindow: Identifiable, Codable, Equatable, Sendable {
+    let id: String
+    var label: String
+    /// Percent of the limit consumed, 0–100.
+    var usedPct: Double
+    /// Epoch milliseconds when the window resets; nil when unknown.
+    var resetsAt: Int64?
+
+    var resetsDate: Date? {
+        resetsAt.map { Date(timeIntervalSince1970: Double($0) / 1000) }
+    }
+
+    init(id: String, label: String, usedPct: Double, resetsAt: Int64?) {
+        self.id = id
+        self.label = label
+        self.usedPct = usedPct
+        self.resetsAt = resetsAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, label, usedPct, resetsAt
+    }
+
+    /// Tolerant decoding, mirroring Session: only `id` is required, the
+    /// percentage is clamped, and a malformed reset time becomes nil.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        let rawLabel = (try? container.decode(String.self, forKey: .label)) ?? ""
+        label = rawLabel.isEmpty ? id : rawLabel
+        let rawPct = (try? container.decode(Double.self, forKey: .usedPct)) ?? 0
+        usedPct = rawPct.isFinite ? min(max(rawPct, 0), 100) : 0
+        if let millis = try? container.decode(Int64.self, forKey: .resetsAt), millis > 0 {
+            resetsAt = millis
+        } else {
+            resetsAt = nil
+        }
+    }
+}
+
+/// Plan usage reported by one agent kind ("claude", "codex", …).
+struct UsageInfo: Identifiable, Codable, Equatable, Sendable {
+    let source: String
+    var windows: [UsageWindow]
+    var updatedAt: Int64
+
+    var id: String { source }
+
+    /// Human name for the source, e.g. "Claude".
+    var displayName: String {
+        switch source {
+        case "claude": return "Claude"
+        case "codex": return "Codex"
+        default: return source.capitalized
+        }
+    }
+
+    init(source: String, windows: [UsageWindow], updatedAt: Int64) {
+        self.source = source
+        self.windows = windows
+        self.updatedAt = updatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case source, windows, updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        source = try container.decode(String.self, forKey: .source)
+        windows = (try? container.decode([UsageWindow].self, forKey: .windows)) ?? []
+        updatedAt = (try? container.decode(Int64.self, forKey: .updatedAt)) ?? 0
     }
 }
 

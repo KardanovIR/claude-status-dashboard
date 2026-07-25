@@ -135,7 +135,9 @@ describe('agstatus init against a real multi-tenant server', () => {
       });
       execFileSync(process.execPath, [hookFile], {
         input: payload,
-        env: { ...process.env, CLAUDE_STATUS_URL: env.CLAUDE_STATUS_URL },
+        // AGSTATUS_USAGE=off: the usage path would read the developer's real
+        // Claude credentials and call Anthropic — never from a test.
+        env: { ...process.env, CLAUDE_STATUS_URL: env.CLAUDE_STATUS_URL, AGSTATUS_USAGE: 'off' },
         timeout: 8000,
       });
 

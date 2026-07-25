@@ -10,6 +10,8 @@ export interface Session {
   status: Status;
   message: string;
   project: string;
+  /** Agent kind that owns the session ("claude", "codex", …). */
+  source: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -21,12 +23,33 @@ export interface UpsertInput {
   name?: string;
   message?: string;
   project?: string;
+  source?: string;
 }
 
 export interface Device {
   deviceToken: string;
   notifyDone: boolean;
 }
+
+/** One plan-limit window (e.g. the 5-hour session window or a weekly cap). */
+export interface UsageWindow {
+  id: string;
+  label: string;
+  /** Percent of the limit consumed, 0–100. */
+  usedPct: number;
+  /** Epoch ms when the window resets; null when unknown. */
+  resetsAt: number | null;
+}
+
+/** Plan usage reported by an agent's hook, one entry per source ("claude", …). */
+export interface Usage {
+  source: string;
+  windows: UsageWindow[];
+  updatedAt: number;
+}
+
+/** Usage older than this is dropped from reads — stale percentages mislead. */
+export const USAGE_TTL_MS = 24 * 60 * 60 * 1000;
 
 /** Reserved workspace key for single-tenant (legacy) mode. */
 export const LEGACY_WS = '_legacy';
@@ -59,6 +82,8 @@ export class Store {
   // Push-notification device tokens per workspace (token → notifyDone + createdAt).
   private deviceTokens = new Map<string, Map<string, { notifyDone: boolean; createdAt: number }>>();
   private webhookWindows = new Map<string, { windowStart: number; count: number }>();
+  // Plan-limit usage per workspace, keyed by source ("claude", "codex", …).
+  private usageBySource = new Map<string, Map<string, Usage>>();
   // Escrowed pairing codes, keyed by the normalized (dash-less) code.
   private pairCodes = new Map<string, { rawToken: string; expiresAt: number }>();
   private db: SqliteDatabase | null = null;
@@ -84,6 +109,7 @@ export class Store {
         status TEXT NOT NULL,
         message TEXT NOT NULL,
         project TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'claude',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (workspace_id, id)
@@ -97,7 +123,20 @@ export class Store {
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (workspace_id, device_token)
       );
+      CREATE TABLE IF NOT EXISTS usage_limits (
+        workspace_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        windows TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (workspace_id, source)
+      );
     `);
+    // Databases created before the source column existed: add it in place.
+    try {
+      this.db.exec("ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'claude'");
+    } catch {
+      // column already exists
+    }
     this.stmt = {
       insertWs: this.db.prepare(
         'INSERT OR IGNORE INTO workspaces (id, created_at, last_seen_at) VALUES (?, ?, ?)'
@@ -105,11 +144,11 @@ export class Store {
       touchWs: this.db.prepare('UPDATE workspaces SET last_seen_at = ? WHERE id = ?'),
       deleteWs: this.db.prepare('DELETE FROM workspaces WHERE id = ?'),
       upsertSession: this.db.prepare(`
-        INSERT INTO sessions (workspace_id, id, name, status, message, project, created_at, updated_at)
-        VALUES (@workspaceId, @id, @name, @status, @message, @project, @createdAt, @updatedAt)
+        INSERT INTO sessions (workspace_id, id, name, status, message, project, source, created_at, updated_at)
+        VALUES (@workspaceId, @id, @name, @status, @message, @project, @source, @createdAt, @updatedAt)
         ON CONFLICT (workspace_id, id) DO UPDATE SET
           name = excluded.name, status = excluded.status, message = excluded.message,
-          project = excluded.project, updated_at = excluded.updated_at
+          project = excluded.project, source = excluded.source, updated_at = excluded.updated_at
       `),
       deleteSession: this.db.prepare('DELETE FROM sessions WHERE workspace_id = ? AND id = ?'),
       clearSessions: this.db.prepare('DELETE FROM sessions WHERE workspace_id = ?'),
@@ -121,6 +160,13 @@ export class Store {
       `),
       deleteDevice: this.db.prepare('DELETE FROM devices WHERE workspace_id = ? AND device_token = ?'),
       clearDevices: this.db.prepare('DELETE FROM devices WHERE workspace_id = ?'),
+      upsertUsage: this.db.prepare(`
+        INSERT INTO usage_limits (workspace_id, source, windows, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT (workspace_id, source) DO UPDATE SET
+          windows = excluded.windows, updated_at = excluded.updated_at
+      `),
+      clearUsage: this.db.prepare('DELETE FROM usage_limits WHERE workspace_id = ?'),
     };
     for (const row of this.db
       .prepare('SELECT id, created_at, last_seen_at FROM workspaces')
@@ -142,6 +188,7 @@ export class Store {
         status: row.status as Status,
         message: row.message as string,
         project: row.project as string,
+        source: (row.source as string) || 'claude',
         createdAt: row.created_at as number,
         updatedAt: row.updated_at as number,
       });
@@ -158,6 +205,22 @@ export class Store {
         notifyDone: row.notify_done === 1,
         createdAt: row.created_at,
       });
+    }
+    for (const row of this.db
+      .prepare('SELECT workspace_id, source, windows, updated_at FROM usage_limits')
+      .all() as Array<{ workspace_id: string; source: string; windows: string; updated_at: number }>) {
+      let windows: UsageWindow[];
+      try {
+        windows = JSON.parse(row.windows) as UsageWindow[];
+      } catch {
+        continue; // corrupt row — skip, it will be overwritten on the next report
+      }
+      let map = this.usageBySource.get(row.workspace_id);
+      if (!map) {
+        map = new Map();
+        this.usageBySource.set(row.workspace_id, map);
+      }
+      map.set(row.source, { source: row.source, windows, updatedAt: row.updated_at });
     }
   }
 
@@ -197,9 +260,11 @@ export class Store {
     this.sessions.delete(wsId);
     this.webhookWindows.delete(wsId);
     this.deviceTokens.delete(wsId);
+    this.usageBySource.delete(wsId);
     if (existed) {
       this.stmt.clearSessions?.run(wsId);
       this.stmt.clearDevices?.run(wsId);
+      this.stmt.clearUsage?.run(wsId);
       this.stmt.deleteWs?.run(wsId);
     }
     return existed;
@@ -230,6 +295,7 @@ export class Store {
       status: input.status,
       message: input.message !== undefined ? input.message : prev?.message ?? '',
       project: input.project !== undefined ? input.project : prev?.project ?? '',
+      source: input.source ?? prev?.source ?? 'claude',
       createdAt: prev?.createdAt ?? now,
       updatedAt: now,
     };
@@ -255,6 +321,7 @@ export class Store {
       status: session.status,
       message: session.message,
       project: session.project,
+      source: session.source,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
     });
@@ -297,6 +364,35 @@ export class Store {
 
   deviceCount(wsId: string): number {
     return this.deviceTokens.get(wsId)?.size ?? 0;
+  }
+
+  /** Stores the latest plan usage for one source and returns the stamped record. */
+  setUsage(wsId: string, source: string, windows: UsageWindow[]): Usage {
+    let map = this.usageBySource.get(wsId);
+    if (!map) {
+      map = new Map();
+      this.usageBySource.set(wsId, map);
+      // Same legacy-mode concern as upsertSession: keep the workspace row
+      // present so persisted usage satisfies the workspace_id relationship.
+      if (this.db && !this.workspaces.has(wsId)) {
+        const now = Date.now();
+        this.stmt.insertWs.run(wsId, now, now);
+      }
+    }
+    const usage: Usage = { source, windows, updatedAt: Date.now() };
+    map.set(source, usage);
+    this.stmt.upsertUsage?.run(wsId, source, JSON.stringify(windows), usage.updatedAt);
+    return usage;
+  }
+
+  /** Current plan usage for a workspace, freshest first. Stale entries are dropped. */
+  getUsage(wsId: string): Usage[] {
+    const map = this.usageBySource.get(wsId);
+    if (!map) return [];
+    const cutoff = Date.now() - USAGE_TTL_MS;
+    return Array.from(map.values())
+      .filter((u) => u.updatedAt >= cutoff)
+      .sort((a, b) => a.source.localeCompare(b.source));
   }
 
   getSessions(wsId: string): Session[] {

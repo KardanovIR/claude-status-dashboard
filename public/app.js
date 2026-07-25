@@ -9,6 +9,7 @@
   const BASE = wsMatch ? `/w/${wsMatch[1]}` : '';
 
   const gridEl = document.getElementById('grid');
+  const usageEl = document.getElementById('usage');
   const statsEl = document.getElementById('stats');
   const connEl = document.getElementById('conn');
   const footerEl = document.getElementById('footer');
@@ -33,6 +34,57 @@
     return `${Math.floor(s / 86400)}d ago`;
   };
 
+  // ---- plan usage limit bars ------------------------------------------------
+
+  const SOURCE_NAMES = { claude: 'Claude', codex: 'Codex' };
+  let usage = [];
+
+  const fmtReset = (ts) => {
+    const s = Math.floor((ts - Date.now()) / 1000);
+    if (s <= 60) return 'resets soon';
+    // Derive units from one rounded minute total so 7199s is "2h", never "1h 60m".
+    const minutes = Math.round(s / 60);
+    if (minutes < 60) return `resets in ${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) {
+      const m = minutes % 60;
+      return `resets in ${hours}h${m ? ` ${m}m` : ''}`;
+    }
+    const d = Math.floor(hours / 24);
+    const h = hours % 24;
+    return `resets in ${d}d${h ? ` ${h}h` : ''}`;
+  };
+
+  const usageLevel = (pct) => (pct >= 85 ? 'high' : pct >= 60 ? 'mid' : 'low');
+
+  function renderUsage() {
+    // Only show limits for agents that actually have sessions on the board —
+    // a Claude-only evening doesn't need Codex bars.
+    const active = new Set();
+    for (const s of state.values()) active.add(s.source || 'claude');
+    const rows = [];
+    for (const u of usage) {
+      if (!active.has(u.source)) continue;
+      const src = SOURCE_NAMES[u.source] || u.source;
+      for (const w of u.windows || []) {
+        const pct = Math.min(100, Math.max(0, Number(w.usedPct) || 0));
+        const pctText = pct % 1 ? pct.toFixed(1) : String(pct);
+        rows.push(`
+          <div class="usage-row">
+            <div class="usage-head">
+              <span class="usage-label">${escape(src)} · ${escape(w.label || w.id)}</span>
+              <span class="usage-val">${pctText}%${
+                w.resetsAt ? ` <span class="usage-reset">· ${escape(fmtReset(w.resetsAt))}</span>` : ''
+              }</span>
+            </div>
+            <div class="usage-track"><div class="usage-fill ${usageLevel(pct)}" style="width:${pct}%"></div></div>
+          </div>`);
+      }
+    }
+    usageEl.innerHTML = rows.join('');
+    usageEl.hidden = rows.length === 0;
+  }
+
   function renderStats(list) {
     const counts = Object.fromEntries(STATUSES.map((s) => [s, 0]));
     for (const s of list) counts[s.status] = (counts[s.status] || 0) + 1;
@@ -53,6 +105,7 @@
   function renderGrid() {
     const list = Array.from(state.values()).sort((a, b) => b.updatedAt - a.updatedAt);
     renderStats(list);
+    renderUsage(); // session changes can change which sources' bars are shown
     if (list.length === 0) { renderEmpty(); return; }
 
     gridEl.innerHTML = list.map((s) => `
@@ -112,6 +165,8 @@
   // Deleted/expired workspace: stop reconnecting and say so.
   function renderGone() {
     state.clear();
+    usage = [];
+    renderUsage();
     webhookUrl = '';
     urlEl.textContent = '—';
     connEl.hidden = true;
@@ -161,6 +216,11 @@
       const { id } = JSON.parse(e.data);
       state.delete(id);
       renderGrid();
+    });
+
+    es.addEventListener('usage', (e) => {
+      usage = JSON.parse(e.data);
+      renderUsage();
     });
 
     es.onopen = () => {
@@ -242,6 +302,7 @@
     document.querySelectorAll('[data-ts]').forEach((el) => {
       el.textContent = relTime(Number(el.dataset.ts));
     });
+    renderUsage(); // keeps the "resets in …" countdowns honest
   }, 15000);
 
   // Neutral state while the root page can't tell legacy from multi yet.

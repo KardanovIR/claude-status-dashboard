@@ -37,6 +37,12 @@ characters) so the board is informative. If you prefer not to send command
 text, run `npx agstatus init --minimal` — messages then contain only tool
 names (e.g. "Bash").
 
+The hook can also report **plan usage** so the board can show limit bars:
+utilization percentages (e.g. "42% of the 5-hour window") and reset times,
+nothing more. The credentials used to look this up are read locally and
+never sent to the AgStatus server. Set `AGSTATUS_USAGE=off` to disable
+usage reporting entirely.
+
 Data is stored under your board's token and is visible to anyone who has
 your board URL. Treat the URL like a secret.
 

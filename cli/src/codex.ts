@@ -84,7 +84,7 @@ export function codexHookCommand(url: string, minimal: boolean, secret?: string)
   const script = dest.startsWith(home + path.sep)
     ? `$HOME${dest.slice(home.length)}`
     : dest;
-  const parts = [`CLAUDE_STATUS_URL="${url}"`];
+  const parts = [`CLAUDE_STATUS_URL="${url}"`, 'AGSTATUS_SOURCE=codex'];
   if (secret) parts.push(`CLAUDE_STATUS_SECRET=${shSingleQuote(secret)}`);
   if (minimal) parts.push('AGSTATUS_DETAIL=off');
   return `${parts.join(' ')} node "${script}"`;

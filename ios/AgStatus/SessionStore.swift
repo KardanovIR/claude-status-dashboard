@@ -20,6 +20,7 @@ final class SessionStore {
     // MARK: State
 
     private(set) var sessions: [Session] = []
+    private(set) var usage: [UsageInfo] = []
     private(set) var connection: Connection = .idle
     private(set) var board: Board?
 
@@ -70,6 +71,7 @@ final class SessionStore {
         self.board = board
         BoardKeychain.save(board)
         sessions = []
+        usage = []
         cachedPairCode = nil
         connect()
     }
@@ -85,6 +87,7 @@ final class SessionStore {
         board = nil
         BoardKeychain.clear()
         sessions = []
+        usage = []
         cachedPairCode = nil
         connection = .idle
     }
@@ -147,6 +150,8 @@ final class SessionStore {
                         sessions = Self.sortedByUpdate(next)
                     case .remove(let id):
                         sessions.removeAll { $0.id == id }
+                    case .usage(let list):
+                        usage = list
                     }
                 }
                 // Stream ended cleanly (server closed) — fall through to retry.
@@ -183,6 +188,11 @@ final class SessionStore {
             return
         } catch {
             return // transient — keep what we have
+        }
+
+        // Usage is a best-effort side fetch — a failure changes nothing.
+        if let fetchedUsage = try? await AgStatusAPI.usage(for: board) {
+            usage = fetchedUsage
         }
 
         var merged: [String: Session] = [:]
@@ -248,6 +258,7 @@ final class SessionStore {
         cancelStream()
         stopDemoTask()
         sessions = Self.sortedByUpdate(DemoData.initialSessions())
+        usage = DemoData.usage()
         connection = .demo
         demoTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -262,6 +273,7 @@ final class SessionStore {
         stopDemoTask()
         guard connection == .demo else { return }
         sessions = []
+        usage = []
         connection = .idle
         if board != nil {
             connect()

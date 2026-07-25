@@ -16,6 +16,7 @@ enum SSEEvent: Sendable {
     case snapshot([Session])
     case upsert(Session)
     case remove(id: String)
+    case usage([UsageInfo])
 }
 
 // MARK: - SSEClient
@@ -165,6 +166,9 @@ private struct SSEParser {
         case "remove":
             guard let removal = try? decoder.decode(RemovePayload.self, from: payload) else { return nil }
             return .remove(id: removal.id)
+        case "usage":
+            guard let usage = try? decoder.decode([UsageInfo].self, from: payload) else { return nil }
+            return .usage(usage)
         default:
             return nil
         }

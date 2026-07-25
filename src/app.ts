@@ -4,7 +4,15 @@ import path from 'path';
 import crypto from 'crypto';
 import { AppConfig } from './config';
 import { Pusher } from './push';
-import { LEGACY_WS, PAIR_CODE_TTL_MS, STATUSES, Status, Store, UpsertInput } from './store';
+import {
+  LEGACY_WS,
+  PAIR_CODE_TTL_MS,
+  STATUSES,
+  Status,
+  Store,
+  UpsertInput,
+  UsageWindow,
+} from './store';
 
 export type { AppConfig } from './config';
 export { Store, STATUSES } from './store';
@@ -18,6 +26,10 @@ const MAX_SSE_PER_WORKSPACE = 10;
 const WORKSPACE_IDLE_MS = 60 * 24 * 60 * 60 * 1000; // 60 days
 const NAME_MAX = 120;
 const MESSAGE_MAX = 300;
+const USAGE_SOURCE_RE = /^[a-z][a-z0-9_-]{0,23}$/;
+const USAGE_WINDOW_ID_RE = /^[a-z][a-z0-9_-]{0,31}$/;
+const USAGE_LABEL_MAX = 48;
+const MAX_USAGE_WINDOWS = 6;
 
 const INDEX_HTML = path.join(__dirname, '..', 'public', 'index.html');
 
@@ -27,6 +39,34 @@ const isStatus = (s: unknown): s is Status =>
 /** Strips control characters and truncates; non-strings become undefined (carry-forward). */
 const clean = (v: unknown, max: number): string | undefined =>
   typeof v === 'string' ? v.replace(CONTROL_CHARS_RE, '').slice(0, max) : undefined;
+
+/**
+ * Validates and normalizes the `windows` array of a usage report. Returns null
+ * when the shape is unacceptable; individual values are clamped, not rejected.
+ */
+function parseUsageWindows(raw: unknown): UsageWindow[] | null {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_USAGE_WINDOWS) return null;
+  const seen = new Set<string>();
+  const windows: UsageWindow[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) return null;
+    const w = item as Record<string, unknown>;
+    if (typeof w.id !== 'string' || !USAGE_WINDOW_ID_RE.test(w.id) || seen.has(w.id)) return null;
+    if (typeof w.usedPct !== 'number' || !Number.isFinite(w.usedPct)) return null;
+    seen.add(w.id);
+    const resetsAt =
+      typeof w.resetsAt === 'number' && Number.isFinite(w.resetsAt) && w.resetsAt > 0
+        ? Math.floor(w.resetsAt)
+        : null;
+    windows.push({
+      id: w.id,
+      label: clean(w.label, USAGE_LABEL_MAX) || w.id,
+      usedPct: Math.min(100, Math.max(0, w.usedPct)),
+      resetsAt,
+    });
+  }
+  return windows;
+}
 
 export interface CreatedApp {
   app: Express;
@@ -107,12 +147,18 @@ export function createApp(cfg: AppConfig): CreatedApp {
       res.status(400).json({ error: `status must be one of: ${STATUSES.join(', ')}` });
       return;
     }
+    if (body.source !== undefined
+        && (typeof body.source !== 'string' || !USAGE_SOURCE_RE.test(body.source))) {
+      res.status(400).json({ error: `source must match ${USAGE_SOURCE_RE}` });
+      return;
+    }
     const input: UpsertInput = {
       id,
       status: body.status,
       name: clean(body.name, NAME_MAX),
       message: clean(body.message, MESSAGE_MAX),
       project: clean(body.project, NAME_MAX),
+      source: body.source as string | undefined,
     };
     const max = cfg.multiTenant ? MAX_SESSIONS_PER_WORKSPACE : Infinity;
     const { session, evictedId, prevStatus } = store.upsertSession(wsId, input, max);
@@ -121,6 +167,29 @@ export function createApp(cfg: AppConfig): CreatedApp {
     // Fire-and-forget: enqueues async APNs work, never throws or blocks.
     pusher.notifyTransition(wsId, session, prevStatus);
     res.json({ ok: true, session });
+  }
+
+  function handleUsage(wsId: string, req: Request, res: Response): void {
+    if (cfg.multiTenant && cfg.rateLimit && !store.allowWebhook(wsId)) {
+      res.status(429).json({ error: 'rate limit exceeded' });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const source = typeof body.source === 'string' ? body.source : '';
+    if (!USAGE_SOURCE_RE.test(source)) {
+      res.status(400).json({ error: `source must match ${USAGE_SOURCE_RE}` });
+      return;
+    }
+    const windows = parseUsageWindows(body.windows);
+    if (!windows) {
+      res.status(400).json({
+        error: `windows must be 1-${MAX_USAGE_WINDOWS} objects with unique id and numeric usedPct`,
+      });
+      return;
+    }
+    store.setUsage(wsId, source, windows);
+    broadcast(wsId, 'usage', store.getUsage(wsId));
+    res.json({ ok: true });
   }
 
   function handleEvents(wsId: string, req: Request, res: Response): void {
@@ -142,6 +211,10 @@ export function createApp(cfg: AppConfig): CreatedApp {
     res.flushHeaders();
     clients.add(res);
     safeWrite(clients, res, `event: snapshot\ndata: ${JSON.stringify(store.getSessions(wsId))}\n\n`);
+    const usage = store.getUsage(wsId);
+    if (usage.length > 0) {
+      safeWrite(clients, res, `event: usage\ndata: ${JSON.stringify(usage)}\n\n`);
+    }
     req.on('close', () => {
       sseClients.get(wsId)?.delete(res);
     });
@@ -163,6 +236,12 @@ export function createApp(cfg: AppConfig): CreatedApp {
     };
 
     app.post('/webhook', requireSecret, (req, res) => handleWebhook(LEGACY_WS, req, res));
+
+    app.post('/usage', requireSecret, (req, res) => handleUsage(LEGACY_WS, req, res));
+
+    app.get('/api/usage', (_req, res) => {
+      res.json(store.getUsage(LEGACY_WS));
+    });
 
     app.delete('/sessions/:id', (req, res) => {
       const removed = store.deleteSession(LEGACY_WS, req.params.id);
@@ -282,6 +361,18 @@ export function createApp(cfg: AppConfig): CreatedApp {
       const wsId = resolveWs(req, res);
       if (!wsId) return;
       handleWebhook(wsId, req, res);
+    });
+
+    app.post('/w/:token/usage', (req, res) => {
+      const wsId = resolveWs(req, res);
+      if (!wsId) return;
+      handleUsage(wsId, req, res);
+    });
+
+    app.get('/w/:token/api/usage', (req, res) => {
+      const wsId = resolveWs(req, res);
+      if (!wsId) return;
+      res.json(store.getUsage(wsId));
     });
 
     app.post('/w/:token/pair', (req, res) => {

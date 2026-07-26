@@ -1,8 +1,8 @@
 # Self-hosting AgStatus
 
 The server is a single Node.js process; the only external state is an optional
-SQLite file. It runs anywhere that can expose a port — a VPS, Fly.io, Render,
-Railway, Cloud Run, a Raspberry Pi.
+PostgreSQL database. It runs anywhere that can expose a port — a VPS, Fly.io,
+Render, Railway, Cloud Run, a Raspberry Pi.
 
 ## Quick start
 
@@ -61,7 +61,7 @@ webhook URL, and event stream, identified by an unguessable token in the URL
 Slack webhook URLs. No accounts, no passwords; the server stores only a
 SHA-256 hash of each token. Per-workspace caps and rate limits keep the
 instance healthy (see [docs/api.md](api.md#limits)). This is what the hosted
-instance at `https://claude-status.kardan.ddns.net` runs.
+instance at `https://agstatus.online` runs.
 
 In multi-tenant mode the global `/webhook`, `/events`, `/api/sessions`, and
 `/sessions/...` endpoints return `404`; everything lives under `/w/<token>/...`
@@ -80,7 +80,8 @@ or set them in your deployment environment.
 | `MULTI_TENANT`   | _(unset)_                         | Set to `true` for multi-tenant workspace mode (see above). |
 | `WEBHOOK_SECRET` | _(unset)_                         | Legacy mode only: if set, `POST /webhook` and `POST /sessions/clear` must send `X-Webhook-Secret: <value>`. `DELETE /sessions/:id` and the read endpoints stay open so the dashboard can list and dismiss cards — don't expose a legacy instance publicly if that matters (use multi-tenant mode instead). Ignored in multi-tenant mode. |
 | `SESSION_TTL_MS` | `0` (legacy) / `86400000` (multi) | Auto-remove sessions not updated for this many ms. `0` disables expiry. |
-| `DB_PATH`        | _(empty — in-memory)_             | SQLite file path (better-sqlite3, WAL mode) for persistence across restarts. Empty keeps everything in memory. docker-compose defaults it to `/app/data/agstatus.db` in the `./data` volume; set `DB_PATH=` (empty) in `.env` to opt out. |
+| `DATABASE_URL`   | _(empty — in-memory)_             | PostgreSQL connection string (`postgres://user:pass@host:5432/db`) for persistence across restarts. Empty keeps everything in memory. docker-compose defaults it to the bundled `postgres` service; set `DATABASE_URL=` (empty) in `.env` to opt out. (`DB_PATH`/SQLite is no longer supported — see the migration note below.) |
+| `POSTGRES_PASSWORD` | `agstatus`                     | docker-compose only: password for the bundled `postgres` service (baked into the default `DATABASE_URL`). Not read by the app itself. |
 | `MAX_WORKSPACES` | `10000`                           | Multi-tenant only: hard ceiling on live workspaces; creation returns `503` at the cap. |
 | `TRUST_PROXY`    | _(unset)_                         | Set to `1` behind a reverse proxy (Caddy, nginx, a load balancer) so client IPs come from `X-Forwarded-For`. Required for correct per-IP rate limiting on a public instance. |
 | `DOMAIN`         | _(unset)_                         | Domain for the bundled Caddy proxy (`--profile tls` only; not read by the app). |
@@ -90,18 +91,55 @@ or set them in your deployment environment.
 | `APNS_TOPIC`     | _(unset)_                         | The iOS app's bundle id (sent as the `apns-topic` header), e.g. `com.kardanov.agstatus`. |
 | `APNS_ENV`       | `sandbox`                         | `sandbox` targets `api.sandbox.push.apple.com` (development builds); `production` targets `api.push.apple.com` (TestFlight/App Store). `APNS_SERVER` overrides the URL explicitly. |
 
-## Persistence and the data/ directory
+## Persistence (PostgreSQL)
 
-With Docker Compose the SQLite database lives in `./data` on the host
-(`DB_PATH=/app/data/agstatus.db`). The container runs as the unprivileged
-`node` user (uid 1000), so on Linux create the directory first:
+Persistence is PostgreSQL, enabled by `DATABASE_URL`. With Docker Compose a
+`postgres:16` service is bundled and wired up automatically (data lives in the
+`pg_data` named volume; set `POSTGRES_PASSWORD` in `.env` for anything
+non-local). Set `DATABASE_URL=` (empty) in `.env` to run purely in-memory —
+sessions (and workspaces, in multi-tenant mode) are then lost on restart.
+
+The server treats memory as authoritative and writes through to Postgres in
+the background, so a database hiccup degrades to "not persisted for a moment",
+never to a down dashboard. Rows are **soft-deleted**: deletions set a
+`deleted_at` timestamp instead of removing the row, and flagged rows are
+invisible to the app. If you need data actually gone (e.g. a deletion
+request), purge flagged rows yourself:
+`DELETE FROM sessions WHERE deleted_at IS NOT NULL;` (same for `workspaces`,
+`devices`, `usage_limits`).
+
+### Migrating from SQLite (pre-PostgreSQL versions)
+
+Earlier versions persisted to SQLite via `DB_PATH`. Copy that data over once,
+then drop `DB_PATH` from your `.env`:
 
 ```bash
-mkdir -p data && sudo chown 1000:1000 data
+npm install   # better-sqlite3 is a dev dependency now
+node scripts/migrate-sqlite-to-postgres.js ./data/agstatus.db "$DATABASE_URL"
 ```
 
-Set `DB_PATH=` (empty) in `.env` to run purely in-memory — sessions (and
-workspaces, in multi-tenant mode) are then lost on restart.
+Re-running is safe — rows that already exist in Postgres are left untouched.
+
+## Production deploy (GitHub Actions → droplet)
+
+The hosted instance at `https://agstatus.online` deploys itself from this
+repo: every push to `master` runs
+[`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), which
+SSHes into the droplet, fast-forwards the checkout at `/opt/agstatus`, and
+rebuilds the stack (`docker compose --profile tls up -d --build`), then waits
+for `/healthz`.
+
+Server-side setup is one command as root (idempotent):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/KardanovIR/claude-status-dashboard/master/deploy/bootstrap-droplet.sh | bash
+```
+
+It installs Docker, authorizes the workflow's deploy key, clones the repo,
+writes a production `.env` (random Postgres password), and starts
+app + PostgreSQL + Caddy. The private deploy key lives in the repo's
+`DEPLOY_SSH_KEY` secret; rotating it means generating a new keypair, updating
+the secret, and re-running the bootstrap.
 
 ## TLS with the bundled Caddy profile
 

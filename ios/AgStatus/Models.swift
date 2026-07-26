@@ -201,7 +201,7 @@ struct Board: Codable, Equatable, Sendable {
     }
 
     /// The public default server. Constant lives here, in one place.
-    static let defaultServer = URL(string: "https://claude-status.kardan.ddns.net")!
+    static let defaultServer = URL(string: "https://agstatus.online")!
 }
 
 // MARK: - PairCode

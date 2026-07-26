@@ -48,7 +48,7 @@ What it does, in order:
 
 | Flag               | Purpose |
 | ------------------ | ------- |
-| `--url <base>`     | Server to use (default: `https://claude-status.kardan.ddns.net`; the `AGSTATUS_URL` env var also overrides it, with `--url` winning). |
+| `--url <base>`     | Server to use (default: `https://agstatus.online`; the `AGSTATUS_URL` env var also overrides it, with `--url` winning). |
 | `--code XXXX-XXXX` | Pair with a board created elsewhere (e.g. the iOS app) instead of creating a new one. Case and dashes don't matter. |
 | `--secret <s>`     | Webhook secret for self-hosted single-tenant servers that set `WEBHOOK_SECRET` (stored as `CLAUDE_STATUS_SECRET`). |
 | `--minimal`        | Privacy mode: send tool names only, never command text (sets `AGSTATUS_DETAIL=off`; re-running without the flag removes it). |
@@ -251,7 +251,7 @@ card transitioning through `idle → coding → idle` as you work. If it doesn't
 npx agstatus status
 
 # Run the Node hook manually with a fake payload (put your board URL first):
-export CLAUDE_STATUS_URL='https://claude-status.kardan.ddns.net/w/ags_yourtoken'
+export CLAUDE_STATUS_URL='https://agstatus.online/w/ags_yourtoken'
 echo '{"hook_event_name":"SessionStart","session_id":"manual-test","cwd":"'"$PWD"'"}' \
   | node ~/.claude/hooks/agstatus-hook.js
 

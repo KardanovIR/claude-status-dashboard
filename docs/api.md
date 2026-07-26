@@ -7,7 +7,7 @@ The server runs in one of two modes:
 - **Multi-tenant** (`MULTI_TENANT=true`) — boards ("workspaces") live under
   `/w/<token>/...`. The global `/webhook`, `/events`, `/api/sessions`, and
   `/sessions/...` endpoints return `404`. The hosted instance at
-  `https://claude-status.kardan.ddns.net` runs in this mode.
+  `https://agstatus.online` runs in this mode.
 
 `GET /api/config` tells you which mode a server is in.
 
@@ -128,7 +128,7 @@ once, at creation.
 ### Create a workspace
 
 ```bash
-curl -X POST https://claude-status.kardan.ddns.net/api/workspaces
+curl -X POST https://agstatus.online/api/workspaces
 ```
 
 **Response** — `201 Created`:

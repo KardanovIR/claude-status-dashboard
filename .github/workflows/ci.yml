@@ -9,6 +9,20 @@ jobs:
   server:
     name: Server (build + tests)
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: agstatus_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -18,6 +32,8 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npx vitest run
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/agstatus_test
 
   cli:
     name: CLI (build + tests)
@@ -46,7 +62,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck hooks/claude-status-hook.sh
+      - run: shellcheck hooks/claude-status-hook.sh deploy/bootstrap-droplet.sh
 
   docker:
     name: Docker image (build only)

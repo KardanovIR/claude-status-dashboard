@@ -1,4 +1,4 @@
-export const DEFAULT_URL = 'https://claude-status.kardan.ddns.net';
+export const DEFAULT_URL = 'https://agstatus.online';
 
 export interface ServerConfig {
   mode: 'multi' | 'legacy';

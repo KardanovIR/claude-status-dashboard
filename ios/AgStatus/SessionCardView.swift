@@ -5,17 +5,31 @@ import SwiftUI
 struct SessionCardView: View {
     let session: Session
 
+    /// An active card gone quiet for this long is probably a dead agent
+    /// (killed mid-turn, crashed machine) — stop pulsing and dim it.
+    static let staleAfter: TimeInterval = 10 * 60
+
     private var statusColor: Color { Theme.color(for: session.status) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        // One shared clock: refreshes the relative timestamp and re-evaluates
+        // staleness every 30 s.
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            card(now: context.date)
+        }
+    }
+
+    private func card(now: Date) -> some View {
+        let stale = session.status.isActive
+            && now.timeIntervalSince(session.updatedDate) > Self.staleAfter
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(session.name)
                     .font(.system(.title3, design: .rounded).weight(.semibold))
                     .foregroundStyle(Theme.textPrimary)
                     .lineLimit(1)
                 Spacer(minLength: 8)
-                statusBadge
+                statusBadge(pulsing: session.status.isActive && !stale)
             }
 
             if !session.project.isEmpty && session.project != session.name {
@@ -35,11 +49,9 @@ struct SessionCardView: View {
                     .lineLimit(2)
             }
 
-            TimelineView(.periodic(from: .now, by: 30)) { context in
-                Text(Self.relativeTime(from: session.updatedDate, to: context.date))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(Theme.textSecondary.opacity(0.75))
-            }
+            Text(Self.relativeTime(from: session.updatedDate, to: now))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(Theme.textSecondary.opacity(0.75))
         }
         .padding(.leading, 18)
         .padding([.top, .bottom, .trailing], 14)
@@ -48,6 +60,14 @@ struct SessionCardView: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(Theme.card)
         )
+        // A plain full-height stripe, clipped by the card's own shape so it
+        // hugs the rounded left edge instead of floating beside it.
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(statusColor)
+                .frame(width: 4)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(
@@ -56,28 +76,19 @@ struct SessionCardView: View {
                         : Theme.cardBorder
                 )
         )
-        .overlay(alignment: .leading) {
-            UnevenRoundedRectangle(
-                topLeadingRadius: 16,
-                bottomLeadingRadius: 16,
-                style: .continuous
-            )
-            .fill(statusColor)
-            .frame(width: 4)
-        }
         .shadow(
             color: session.status == .blocked ? statusColor.opacity(0.4) : .clear,
             radius: 12
         )
-        .opacity(session.status == .done ? 0.55 : 1)
+        .opacity(session.status == .done || stale ? 0.55 : 1)
         .accessibilityElement(children: .combine)
     }
 
     // MARK: - Status badge
 
     @ViewBuilder
-    private var statusBadge: some View {
-        if session.status.isActive {
+    private func statusBadge(pulsing: Bool) -> some View {
+        if pulsing {
             badgeContent
                 .phaseAnimator([1.0, 0.45]) { view, phase in
                     view.opacity(phase)

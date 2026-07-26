@@ -2,6 +2,10 @@
   'use strict';
 
   const STATUSES = ['idle', 'planning', 'coding', 'testing', 'blocked', 'done'];
+  const ACTIVE_STATUSES = new Set(['planning', 'coding', 'testing']);
+  // An active card gone quiet for this long is probably a dead agent
+  // (killed mid-turn, crashed machine) — stop pulsing and dim it.
+  const STALE_MS = 10 * 60 * 1000;
 
   // Workspace-aware base path: on /w/<token> (or a sub-path), all API calls
   // are prefixed with /w/<token>. Otherwise base is '' (legacy mode).
@@ -109,7 +113,11 @@
     if (list.length === 0) { renderEmpty(); return; }
 
     gridEl.innerHTML = list.map((s) => `
-      <article class="card status-${escape(s.status)}" data-id="${escape(s.id)}">
+      <article class="card status-${escape(s.status)}${
+        ACTIVE_STATUSES.has(s.status) && Date.now() - s.updatedAt > STALE_MS ? ' stale' : ''
+      }" data-id="${escape(s.id)}"${
+        ACTIVE_STATUSES.has(s.status) ? ` data-active-since="${s.updatedAt}"` : ''
+      }>
         <div class="card-head">
           <div class="name" title="${escape(s.name)}">${escape(s.name)}</div>
           <span class="badge status-${escape(s.status)}">${escape(s.status)}</span>
@@ -301,6 +309,10 @@
   setInterval(() => {
     document.querySelectorAll('[data-ts]').forEach((el) => {
       el.textContent = relTime(Number(el.dataset.ts));
+    });
+    // Active cards cross the staleness threshold without any new event.
+    document.querySelectorAll('.card[data-active-since]').forEach((el) => {
+      el.classList.toggle('stale', Date.now() - Number(el.dataset.activeSince) > STALE_MS);
     });
     renderUsage(); // keeps the "resets in …" countdowns honest
   }, 15000);

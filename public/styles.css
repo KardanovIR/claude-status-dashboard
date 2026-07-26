@@ -473,6 +473,10 @@ main {
 .card.status-testing  .badge {
   animation: pulse 1.8s ease-in-out infinite;
 }
+
+/* an active card gone quiet for 10+ min is probably a dead agent */
+.card.stale { opacity: 0.55; }
+.card.stale .badge { animation: none; }
 @keyframes pulse {
   0%, 100% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
   50%      { opacity: 0.72; }

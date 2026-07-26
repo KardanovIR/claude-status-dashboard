@@ -2,11 +2,15 @@ import { describe, it, expect, afterEach } from 'vitest';
 import request from 'supertest';
 import crypto from 'crypto';
 import http2 from 'http2';
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
 import type { AddressInfo } from 'net';
-import { makeApp, createWorkspace, webhookBody, sleep } from './helpers';
+import {
+  makeApp,
+  createWorkspace,
+  webhookBody,
+  sleep,
+  TEST_PG_URL,
+  suiteDatabaseUrl,
+} from './helpers';
 import { Pusher } from '../src/push';
 import { configFromEnv } from '../src/config';
 import type { AppConfig, Session } from '../src/app';
@@ -223,25 +227,23 @@ describe('device registration (multi mode)', () => {
     expect(store.deviceCount(wsId)).toBe(0);
   });
 
-  it('devices persist across a restart with the same dbPath', async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-push-'));
-    const dbPath = path.join(tmpDir, 'agstatus.db');
-    try {
-      const first = makeApp({ dbPath });
-      const token = await createWorkspace(first.app);
-      await request(first.app)
-        .post(`/w/${token}/devices`)
-        .send(registerBody(DEVICE_A, { notify_done: true }))
-        .expect(200);
-      first.shutdown();
+  it.skipIf(!TEST_PG_URL)('devices persist across a restart against the same database', async () => {
+    const dbUrl = await suiteDatabaseUrl('push');
+    const first = makeApp({ databaseUrl: dbUrl });
+    await first.ready;
+    const token = await createWorkspace(first.app);
+    await request(first.app)
+      .post(`/w/${token}/devices`)
+      .send(registerBody(DEVICE_A, { notify_done: true }))
+      .expect(200);
+    await first.store.flush();
+    first.shutdown();
 
-      const second = makeApp({ dbPath });
-      const wsId = second.store.resolveToken(token)!;
-      expect(second.store.devices(wsId)).toEqual([{ deviceToken: DEVICE_A, notifyDone: true }]);
-      second.shutdown();
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
+    const second = makeApp({ databaseUrl: dbUrl });
+    await second.ready;
+    const wsId = second.store.resolveToken(token)!;
+    expect(second.store.devices(wsId)).toEqual([{ deviceToken: DEVICE_A, notifyDone: true }]);
+    second.shutdown();
   });
 });
 

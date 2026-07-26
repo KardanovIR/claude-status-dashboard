@@ -14,7 +14,7 @@ const created = createApp({
   webhookSecret: '',
   publicUrl: 'http://misconfigured.example', // deliberately wrong: CLI must not trust it
   sessionTtlMs: 0,
-  dbPath: '',
+  databaseUrl: '',
   trustProxy: false,
   rateLimit: false,
   maxWorkspaces: 10_000,

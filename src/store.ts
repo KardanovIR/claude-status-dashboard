@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import type { Database as SqliteDatabase, Statement } from 'better-sqlite3';
+import type { Pool } from 'pg';
 
 export const STATUSES = ['idle', 'planning', 'coding', 'testing', 'blocked', 'done'] as const;
 export type Status = (typeof STATUSES)[number];
@@ -86,21 +86,40 @@ export class Store {
   private usageBySource = new Map<string, Map<string, Usage>>();
   // Escrowed pairing codes, keyed by the normalized (dash-less) code.
   private pairCodes = new Map<string, { rawToken: string; expiresAt: number }>();
-  private db: SqliteDatabase | null = null;
-  private stmt: Record<string, Statement> = {};
+  private pool: Pool | null = null;
+  // Writes are fire-and-forget but strictly ordered: each is chained onto this
+  // queue so an upsert can never overtake the delete that preceded it.
+  private writeQueue: Promise<void> = Promise.resolve();
+  /** Resolves once the schema exists and persisted state is loaded into memory. */
+  readonly ready: Promise<void>;
 
-  constructor(dbPath: string) {
-    if (!dbPath) return;
-    // Lazy require keeps the native module optional for pure in-memory use.
+  constructor(databaseUrl: string) {
+    if (!databaseUrl) {
+      this.ready = Promise.resolve();
+      return;
+    }
+    // Lazy require keeps the module optional for pure in-memory use.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const Database = require('better-sqlite3') as typeof import('better-sqlite3');
-    this.db = new Database(dbPath);
-    if (dbPath !== ':memory:') this.db.pragma('journal_mode = WAL');
-    this.db.exec(`
+    const { Pool } = require('pg') as typeof import('pg');
+    this.pool = new Pool({ connectionString: databaseUrl, max: 4 });
+    // Idle-client errors surface on the pool; a dropped connection must not
+    // take the server down (the pool reconnects on the next query).
+    this.pool.on('error', (err) => console.warn(`Postgres pool error: ${err.message}`));
+    this.ready = this.init();
+    this.writeQueue = this.ready.catch(() => undefined);
+  }
+
+  private async init(): Promise<void> {
+    const pool = this.pool!;
+    // Soft deletes only: rows are never removed, deletion sets deleted_at and
+    // every load filters on it. Upserts resurrect a flagged row (deleted_at
+    // back to NULL) so a re-posted session or re-registered device just works.
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS workspaces (
         id TEXT PRIMARY KEY,
-        created_at INTEGER NOT NULL,
-        last_seen_at INTEGER NOT NULL
+        created_at BIGINT NOT NULL,
+        last_seen_at BIGINT NOT NULL,
+        deleted_at BIGINT
       );
       CREATE TABLE IF NOT EXISTS sessions (
         workspace_id TEXT NOT NULL,
@@ -110,8 +129,9 @@ export class Store {
         message TEXT NOT NULL,
         project TEXT NOT NULL,
         source TEXT NOT NULL DEFAULT 'claude',
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL,
+        deleted_at BIGINT,
         PRIMARY KEY (workspace_id, id)
       );
       CREATE TABLE IF NOT EXISTS devices (
@@ -119,63 +139,35 @@ export class Store {
         device_token TEXT NOT NULL,
         platform TEXT NOT NULL,
         notify_done INTEGER NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL,
+        deleted_at BIGINT,
         PRIMARY KEY (workspace_id, device_token)
       );
       CREATE TABLE IF NOT EXISTS usage_limits (
         workspace_id TEXT NOT NULL,
         source TEXT NOT NULL,
         windows TEXT NOT NULL,
-        updated_at INTEGER NOT NULL,
+        updated_at BIGINT NOT NULL,
+        deleted_at BIGINT,
         PRIMARY KEY (workspace_id, source)
       );
     `);
-    // Databases created before the source column existed: add it in place.
-    try {
-      this.db.exec("ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'claude'");
-    } catch {
-      // column already exists
+
+    // node-postgres returns BIGINT as string to avoid precision loss; every
+    // epoch-ms value here fits a double, so Number() them on the way in.
+    const workspaces = await pool.query(
+      'SELECT id, created_at, last_seen_at FROM workspaces WHERE deleted_at IS NULL'
+    );
+    for (const row of workspaces.rows as Array<{ id: string; created_at: string; last_seen_at: string }>) {
+      this.workspaces.set(row.id, {
+        createdAt: Number(row.created_at),
+        lastSeenAt: Number(row.last_seen_at),
+      });
     }
-    this.stmt = {
-      insertWs: this.db.prepare(
-        'INSERT OR IGNORE INTO workspaces (id, created_at, last_seen_at) VALUES (?, ?, ?)'
-      ),
-      touchWs: this.db.prepare('UPDATE workspaces SET last_seen_at = ? WHERE id = ?'),
-      deleteWs: this.db.prepare('DELETE FROM workspaces WHERE id = ?'),
-      upsertSession: this.db.prepare(`
-        INSERT INTO sessions (workspace_id, id, name, status, message, project, source, created_at, updated_at)
-        VALUES (@workspaceId, @id, @name, @status, @message, @project, @source, @createdAt, @updatedAt)
-        ON CONFLICT (workspace_id, id) DO UPDATE SET
-          name = excluded.name, status = excluded.status, message = excluded.message,
-          project = excluded.project, source = excluded.source, updated_at = excluded.updated_at
-      `),
-      deleteSession: this.db.prepare('DELETE FROM sessions WHERE workspace_id = ? AND id = ?'),
-      clearSessions: this.db.prepare('DELETE FROM sessions WHERE workspace_id = ?'),
-      upsertDevice: this.db.prepare(`
-        INSERT INTO devices (workspace_id, device_token, platform, notify_done, created_at, updated_at)
-        VALUES (?, ?, 'ios', ?, ?, ?)
-        ON CONFLICT (workspace_id, device_token) DO UPDATE SET
-          notify_done = excluded.notify_done, updated_at = excluded.updated_at
-      `),
-      deleteDevice: this.db.prepare('DELETE FROM devices WHERE workspace_id = ? AND device_token = ?'),
-      clearDevices: this.db.prepare('DELETE FROM devices WHERE workspace_id = ?'),
-      upsertUsage: this.db.prepare(`
-        INSERT INTO usage_limits (workspace_id, source, windows, updated_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT (workspace_id, source) DO UPDATE SET
-          windows = excluded.windows, updated_at = excluded.updated_at
-      `),
-      clearUsage: this.db.prepare('DELETE FROM usage_limits WHERE workspace_id = ?'),
-    };
-    for (const row of this.db
-      .prepare('SELECT id, created_at, last_seen_at FROM workspaces')
-      .all() as Array<{ id: string; created_at: number; last_seen_at: number }>) {
-      this.workspaces.set(row.id, { createdAt: row.created_at, lastSeenAt: row.last_seen_at });
-    }
-    for (const row of this.db
-      .prepare('SELECT * FROM sessions')
-      .all() as Array<Record<string, unknown>>) {
+
+    const sessions = await pool.query('SELECT * FROM sessions WHERE deleted_at IS NULL');
+    for (const row of sessions.rows as Array<Record<string, unknown>>) {
       const wsId = row.workspace_id as string;
       let map = this.sessions.get(wsId);
       if (!map) {
@@ -189,13 +181,17 @@ export class Store {
         message: row.message as string,
         project: row.project as string,
         source: (row.source as string) || 'claude',
-        createdAt: row.created_at as number,
-        updatedAt: row.updated_at as number,
+        createdAt: Number(row.created_at),
+        updatedAt: Number(row.updated_at),
       });
     }
-    for (const row of this.db
-      .prepare('SELECT workspace_id, device_token, notify_done, created_at FROM devices')
-      .all() as Array<{ workspace_id: string; device_token: string; notify_done: number; created_at: number }>) {
+
+    const devices = await pool.query(
+      'SELECT workspace_id, device_token, notify_done, created_at FROM devices WHERE deleted_at IS NULL'
+    );
+    for (const row of devices.rows as Array<{
+      workspace_id: string; device_token: string; notify_done: number; created_at: string;
+    }>) {
       let map = this.deviceTokens.get(row.workspace_id);
       if (!map) {
         map = new Map();
@@ -203,12 +199,16 @@ export class Store {
       }
       map.set(row.device_token, {
         notifyDone: row.notify_done === 1,
-        createdAt: row.created_at,
+        createdAt: Number(row.created_at),
       });
     }
-    for (const row of this.db
-      .prepare('SELECT workspace_id, source, windows, updated_at FROM usage_limits')
-      .all() as Array<{ workspace_id: string; source: string; windows: string; updated_at: number }>) {
+
+    const usage = await pool.query(
+      'SELECT workspace_id, source, windows, updated_at FROM usage_limits WHERE deleted_at IS NULL'
+    );
+    for (const row of usage.rows as Array<{
+      workspace_id: string; source: string; windows: string; updated_at: string;
+    }>) {
       let windows: UsageWindow[];
       try {
         windows = JSON.parse(row.windows) as UsageWindow[];
@@ -220,16 +220,42 @@ export class Store {
         map = new Map();
         this.usageBySource.set(row.workspace_id, map);
       }
-      map.set(row.source, { source: row.source, windows, updatedAt: row.updated_at });
+      map.set(row.source, { source: row.source, windows, updatedAt: Number(row.updated_at) });
     }
   }
+
+  /**
+   * Enqueues a persistence write. Failures are logged, never thrown — memory
+   * stays authoritative and the dashboard keeps working through DB outages.
+   */
+  private exec(text: string, values: unknown[]): void {
+    // Capture the pool now: close() nulls the field, but writes already
+    // enqueued must still drain against the live pool.
+    const pool = this.pool;
+    if (!pool) return;
+    this.writeQueue = this.writeQueue
+      .then(() => pool.query(text, values))
+      .then(() => undefined)
+      .catch((err: unknown) =>
+        console.warn(`Postgres write failed: ${err instanceof Error ? err.message : String(err)}`)
+      );
+  }
+
+  /** Resolves when every write enqueued so far has been flushed to Postgres. */
+  flush(): Promise<void> {
+    return this.writeQueue;
+  }
+
+  private static readonly INSERT_WS =
+    `INSERT INTO workspaces (id, created_at, last_seen_at) VALUES ($1, $2, $3)
+     ON CONFLICT (id) DO UPDATE SET deleted_at = NULL`;
 
   createWorkspace(): { token: string } {
     const token = 'ags_' + crypto.randomBytes(24).toString('base64url');
     const wsId = hashToken(token);
     const now = Date.now();
     this.workspaces.set(wsId, { createdAt: now, lastSeenAt: now });
-    this.stmt.insertWs?.run(wsId, now, now);
+    this.exec(Store.INSERT_WS, [wsId, now, now]);
     return { token };
   }
 
@@ -242,7 +268,7 @@ export class Store {
     const now = Date.now();
     if (now - meta.lastSeenAt > LAST_SEEN_WRITE_THROTTLE_MS) {
       meta.lastSeenAt = now;
-      this.stmt.touchWs?.run(now, wsId);
+      this.exec('UPDATE workspaces SET last_seen_at = $1 WHERE id = $2', [now, wsId]);
     }
     return wsId;
   }
@@ -262,10 +288,11 @@ export class Store {
     this.deviceTokens.delete(wsId);
     this.usageBySource.delete(wsId);
     if (existed) {
-      this.stmt.clearSessions?.run(wsId);
-      this.stmt.clearDevices?.run(wsId);
-      this.stmt.clearUsage?.run(wsId);
-      this.stmt.deleteWs?.run(wsId);
+      const now = Date.now();
+      this.exec('UPDATE sessions SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
+      this.exec('UPDATE devices SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
+      this.exec('UPDATE usage_limits SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
+      this.exec('UPDATE workspaces SET deleted_at = $2 WHERE id = $1', [wsId, now]);
     }
     return existed;
   }
@@ -281,9 +308,9 @@ export class Store {
       this.sessions.set(wsId, map);
       // Legacy mode has no createWorkspace() call; keep the DB row present so
       // persisted sessions satisfy the workspace_id relationship.
-      if (this.db && !this.workspaces.has(wsId)) {
+      if (this.pool && !this.workspaces.has(wsId)) {
         const now = Date.now();
-        this.stmt.insertWs.run(wsId, now, now);
+        this.exec(Store.INSERT_WS, [wsId, now, now]);
       }
     }
 
@@ -308,23 +335,34 @@ export class Store {
       }
       if (oldest) {
         map.delete(oldest.id);
-        this.stmt.deleteSession?.run(wsId, oldest.id);
+        this.exec(
+          'UPDATE sessions SET deleted_at = $3 WHERE workspace_id = $1 AND id = $2',
+          [wsId, oldest.id, now]
+        );
         evictedId = oldest.id;
       }
     }
 
     map.set(session.id, session);
-    this.stmt.upsertSession?.run({
-      workspaceId: wsId,
-      id: session.id,
-      name: session.name,
-      status: session.status,
-      message: session.message,
-      project: session.project,
-      source: session.source,
-      createdAt: session.createdAt,
-      updatedAt: session.updatedAt,
-    });
+    this.exec(
+      `INSERT INTO sessions (workspace_id, id, name, status, message, project, source, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (workspace_id, id) DO UPDATE SET
+         name = EXCLUDED.name, status = EXCLUDED.status, message = EXCLUDED.message,
+         project = EXCLUDED.project, source = EXCLUDED.source, updated_at = EXCLUDED.updated_at,
+         deleted_at = NULL`,
+      [
+        wsId,
+        session.id,
+        session.name,
+        session.status,
+        session.message,
+        session.project,
+        session.source,
+        session.createdAt,
+        session.updatedAt,
+      ]
+    );
     return { session, evictedId, prevStatus: prev?.status ?? null };
   }
 
@@ -345,14 +383,25 @@ export class Store {
     const now = Date.now();
     const createdAt = existing?.createdAt ?? now;
     map.set(token, { notifyDone, createdAt });
-    this.stmt.upsertDevice?.run(wsId, token, notifyDone ? 1 : 0, createdAt, now);
+    this.exec(
+      `INSERT INTO devices (workspace_id, device_token, platform, notify_done, created_at, updated_at)
+       VALUES ($1, $2, 'ios', $3, $4, $5)
+       ON CONFLICT (workspace_id, device_token) DO UPDATE SET
+         notify_done = EXCLUDED.notify_done, updated_at = EXCLUDED.updated_at, deleted_at = NULL`,
+      [wsId, token, notifyDone ? 1 : 0, createdAt, now]
+    );
     return 'ok';
   }
 
   deleteDevice(wsId: string, deviceToken: string): boolean {
     const token = deviceToken.toLowerCase();
     const removed = this.deviceTokens.get(wsId)?.delete(token) ?? false;
-    if (removed) this.stmt.deleteDevice?.run(wsId, token);
+    if (removed) {
+      this.exec(
+        'UPDATE devices SET deleted_at = $3 WHERE workspace_id = $1 AND device_token = $2',
+        [wsId, token, Date.now()]
+      );
+    }
     return removed;
   }
 
@@ -374,14 +423,20 @@ export class Store {
       this.usageBySource.set(wsId, map);
       // Same legacy-mode concern as upsertSession: keep the workspace row
       // present so persisted usage satisfies the workspace_id relationship.
-      if (this.db && !this.workspaces.has(wsId)) {
+      if (this.pool && !this.workspaces.has(wsId)) {
         const now = Date.now();
-        this.stmt.insertWs.run(wsId, now, now);
+        this.exec(Store.INSERT_WS, [wsId, now, now]);
       }
     }
     const usage: Usage = { source, windows, updatedAt: Date.now() };
     map.set(source, usage);
-    this.stmt.upsertUsage?.run(wsId, source, JSON.stringify(windows), usage.updatedAt);
+    this.exec(
+      `INSERT INTO usage_limits (workspace_id, source, windows, updated_at)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (workspace_id, source) DO UPDATE SET
+         windows = EXCLUDED.windows, updated_at = EXCLUDED.updated_at, deleted_at = NULL`,
+      [wsId, source, JSON.stringify(windows), usage.updatedAt]
+    );
     return usage;
   }
 
@@ -403,13 +458,21 @@ export class Store {
 
   deleteSession(wsId: string, id: string): boolean {
     const removed = this.sessions.get(wsId)?.delete(id) ?? false;
-    if (removed) this.stmt.deleteSession?.run(wsId, id);
+    if (removed) {
+      this.exec(
+        'UPDATE sessions SET deleted_at = $3 WHERE workspace_id = $1 AND id = $2',
+        [wsId, id, Date.now()]
+      );
+    }
     return removed;
   }
 
   clearSessions(wsId: string): void {
     this.sessions.get(wsId)?.clear();
-    this.stmt.clearSessions?.run(wsId);
+    this.exec(
+      'UPDATE sessions SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL',
+      [wsId, Date.now()]
+    );
   }
 
   /** Fixed-window webhook rate limit per workspace. */
@@ -480,7 +543,10 @@ export class Store {
       for (const [id, s] of map) {
         if (s.updatedAt < cutoff) {
           map.delete(id);
-          this.stmt.deleteSession?.run(wsId, id);
+          this.exec(
+            'UPDATE sessions SET deleted_at = $3 WHERE workspace_id = $1 AND id = $2',
+            [wsId, id, Date.now()]
+          );
           removed.push({ wsId, id });
         }
       }
@@ -501,8 +567,11 @@ export class Store {
     return deleted;
   }
 
-  close(): void {
-    this.db?.close();
-    this.db = null;
+  /** Drains pending writes, then closes the connection pool. */
+  async close(): Promise<void> {
+    const pool = this.pool;
+    this.pool = null; // no new writes may be enqueued past this point
+    await this.writeQueue;
+    await pool?.end();
   }
 }

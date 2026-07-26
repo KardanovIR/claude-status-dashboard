@@ -6,7 +6,8 @@ export interface AppConfig {
   webhookSecret: string;
   publicUrl: string;
   sessionTtlMs: number;
-  dbPath: string;
+  /** PostgreSQL connection string; empty = in-memory only (no persistence). */
+  databaseUrl: string;
   trustProxy: boolean;
   rateLimit: boolean;
   maxWorkspaces: number;
@@ -122,12 +123,19 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AppConfig {
     }
   }
 
+  if (env.DB_PATH) {
+    console.warn(
+      'DB_PATH (SQLite) is no longer supported and was ignored — set DATABASE_URL to a ' +
+      'PostgreSQL connection string instead (see docs/self-hosting.md for migration).'
+    );
+  }
+
   return {
     multiTenant,
     webhookSecret: env.WEBHOOK_SECRET || '',
     publicUrl: (env.PUBLIC_URL || `http://localhost:${port}`).replace(/\/$/, ''),
     sessionTtlMs,
-    dbPath: env.DB_PATH || '',
+    databaseUrl: env.DATABASE_URL || '',
     trustProxy: boolFromEnv(env.TRUST_PROXY),
     rateLimit: true,
     maxWorkspaces,

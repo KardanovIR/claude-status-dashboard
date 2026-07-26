@@ -71,11 +71,13 @@ function parseUsageWindows(raw: unknown): UsageWindow[] | null {
 export interface CreatedApp {
   app: Express;
   store: Store;
+  /** Resolves once persisted state (if any) is loaded; reject = DB unreachable. */
+  ready: Promise<void>;
   shutdown(): void;
 }
 
 export function createApp(cfg: AppConfig): CreatedApp {
-  const store = new Store(cfg.dbPath);
+  const store = new Store(cfg.databaseUrl);
   const pusher = new Pusher(cfg.apns, store);
   const sseClients = new Map<string, Set<Response>>();
   const timers: NodeJS.Timeout[] = [];
@@ -507,8 +509,9 @@ export function createApp(cfg: AppConfig): CreatedApp {
     for (const t of timers) clearInterval(t);
     for (const wsId of Array.from(sseClients.keys())) closeStreams(wsId);
     pusher.shutdown();
-    store.close();
+    // Drains queued writes then closes the pool; nothing left to surface here.
+    void store.close().catch(() => undefined);
   }
 
-  return { app, store, shutdown };
+  return { app, store, ready: store.ready, shutdown };
 }

@@ -63,7 +63,7 @@ pushing a `v*` tag, which builds the Docker image, publishes the CLI to npm
 ## Code style
 
 - **No new runtime dependencies without discussion.** The server ships with
-  exactly three (`express`, `express-rate-limit`, `better-sqlite3`), the CLI
+  exactly three (`express`, `express-rate-limit`, `pg`), the CLI
   with one (`qrcode-terminal`), and the hooks and iOS app with zero. That's a
   feature — open an issue before adding anything.
 - TypeScript, strict; match the style of the file you're editing.

@@ -63,7 +63,7 @@ Created the board in the app first? Pair your machine to it with a code:
   app hands out short-lived codes to pair more machines.
 - **Demo mode** — try the iOS app with fake sessions, no server, no data sent.
 - **Privacy switch** — `--minimal` sends tool names only, never command text.
-- **Self-hostable** — one Node process, optional SQLite file, Docker image,
+- **Self-hostable** — one Node process, optional PostgreSQL persistence, Docker image,
   bundled TLS proxy. Single-user and multi-tenant modes.
 - **MIT licensed** — server, dashboard, CLI, and apps.
 
@@ -84,7 +84,7 @@ environment-variable reference are in **[docs/self-hosting.md](docs/self-hosting
 
 ```
 claude-status/
-├── src/              # Server: Express + SSE + SQLite store + APNs push (TypeScript)
+├── src/              # Server: Express + SSE + PostgreSQL store + APNs push (TypeScript)
 ├── public/           # Web dashboard: vanilla JS, no build step
 ├── cli/              # `npx agstatus` setup CLI + the Node hook it installs
 ├── hooks/            # Original bash hook for manual setup

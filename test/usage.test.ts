@@ -1,9 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import request from 'supertest';
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
-import { makeApp, createWorkspace } from './helpers';
+import { makeApp, createWorkspace, TEST_PG_URL, suiteDatabaseUrl } from './helpers';
 
 const windows = [
   { id: 'session', label: 'Current session', usedPct: 42, resetsAt: Date.now() + 3_600_000 },
@@ -234,61 +231,26 @@ describe('session source', () => {
       .expect(400);
   });
 
-  it('migrates a pre-source database in place (rows default to claude)', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-migrate-'));
-    const dbPath = path.join(dir, 'old.db');
-    try {
-      // Build a DB with the old sessions schema (no source column).
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const Database = require('better-sqlite3') as typeof import('better-sqlite3');
-      const db = new Database(dbPath);
-      db.exec(`
-        CREATE TABLE workspaces (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL);
-        CREATE TABLE sessions (
-          workspace_id TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL,
-          status TEXT NOT NULL, message TEXT NOT NULL, project TEXT NOT NULL,
-          created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-          PRIMARY KEY (workspace_id, id)
-        );
-        INSERT INTO workspaces VALUES ('ws1', 1, 1);
-        INSERT INTO sessions VALUES ('ws1', 'old-1', 'Old', 'idle', '', 'proj', 1, 1);
-      `);
-      db.close();
-
-      const { store } = makeApp({ dbPath });
-      const loaded = store.getSessions('ws1');
-      expect(loaded).toHaveLength(1);
-      expect(loaded[0].source).toBe('claude');
-
-      // Upserting into the migrated table works and persists source.
-      store.upsertSession('ws1', { id: 'new-1', status: 'coding', source: 'codex' }, Infinity);
-      expect(store.getSessions('ws1').find((s) => s.id === 'new-1')?.source).toBe('codex');
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
 });
 
-describe('plan usage (persistence)', () => {
+describe.skipIf(!TEST_PG_URL)('plan usage (persistence)', () => {
   it('survives a store restart', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-usage-'));
-    const dbPath = path.join(dir, 'test.db');
-    try {
-      const first = makeApp({ dbPath });
-      const token = await createWorkspace(first.app);
-      await request(first.app)
-        .post(`/w/${token}/usage`)
-        .send({ source: 'claude', windows })
-        .expect(200);
-      first.shutdown();
+    const dbUrl = await suiteDatabaseUrl('usage');
+    const first = makeApp({ databaseUrl: dbUrl });
+    await first.ready;
+    const token = await createWorkspace(first.app);
+    await request(first.app)
+      .post(`/w/${token}/usage`)
+      .send({ source: 'claude', windows })
+      .expect(200);
+    await first.store.flush();
+    first.shutdown();
 
-      const second = makeApp({ dbPath });
-      const res = await request(second.app).get(`/w/${token}/api/usage`).expect(200);
-      expect(res.body).toHaveLength(1);
-      expect(res.body[0].windows).toEqual(windows);
-      second.shutdown();
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    const second = makeApp({ databaseUrl: dbUrl });
+    await second.ready;
+    const res = await request(second.app).get(`/w/${token}/api/usage`).expect(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].windows).toEqual(windows);
+    second.shutdown();
   });
 });

@@ -18,10 +18,10 @@ services:
       # Set TRUST_PROXY=1 when running behind a reverse proxy (e.g. the caddy
       # service below, enabled with --profile tls).
       TRUST_PROXY: ${TRUST_PROXY:-}
-      # SQLite persistence. Defaults to a file inside the ./data volume mounted
-      # below. Set DB_PATH= (empty) in .env to run purely in-memory — sessions
-      # and workspaces are then lost on restart.
-      DB_PATH: ${DB_PATH-/app/data/agstatus.db}
+      # PostgreSQL persistence (the postgres service below). Set DATABASE_URL=
+      # (empty) in .env to run purely in-memory — sessions and workspaces are
+      # then lost on restart. Rows are soft-deleted (flagged, never removed).
+      DATABASE_URL: ${DATABASE_URL-postgres://agstatus:${POSTGRES_PASSWORD:-agstatus}@postgres:5432/agstatus}
       # APNs push notifications (optional — see docs/self-hosting.md). Put the
       # .p8 auth key in ./keys (mounted read-only at /app/keys below) and set
       # these in .env. Left unset, push is simply disabled.
@@ -34,18 +34,33 @@ services:
     ports:
       - "${PORT:-3000}:3000"
     volumes:
-      # SQLite database lives here when DB_PATH points into /app/data.
-      # The container runs as the unprivileged "node" user (uid 1000); on Linux
-      # hosts create the directory first so it is writable:
-      #   mkdir -p data && sudo chown 1000:1000 data
-      - ./data:/app/data
       # APNs .p8 auth key lives here (see APNS_KEY_PATH above).
       - ./keys:/app/keys:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/healthz"]
       interval: 30s
       timeout: 3s
       retries: 3
+      start_period: 5s
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: claude-status-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: agstatus
+      POSTGRES_USER: agstatus
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agstatus}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agstatus -d agstatus"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
       start_period: 5s
 
   # Optional TLS-terminating reverse proxy with automatic Let's Encrypt certs.
@@ -70,5 +85,6 @@ services:
       - dashboard
 
 volumes:
+  pg_data:
   caddy_data:
   caddy_config:

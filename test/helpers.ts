@@ -14,7 +14,7 @@ export const TEST_DEFAULTS: AppConfig = {
   webhookSecret: '',
   publicUrl: 'http://test.local',
   sessionTtlMs: 0,
-  dbPath: '',
+  databaseUrl: '',
   trustProxy: false,
   rateLimit: false,
   maxWorkspaces: 10_000,
@@ -52,7 +52,56 @@ export function makeApp(overrides: Partial<AppConfig> = {}): TestApp {
     created.shutdown();
   };
   cleanups.push(shutdown);
-  return { app: created.app, store: created.store, shutdown };
+  return { app: created.app, store: created.store, ready: created.ready, shutdown };
+}
+
+/**
+ * Postgres-backed tests run only when TEST_DATABASE_URL points at a disposable
+ * Postgres server (CI provides one; locally e.g.
+ * `docker run -e POSTGRES_PASSWORD=t -p 5433:5432 postgres:16-alpine` and
+ * TEST_DATABASE_URL=postgres://postgres:t@127.0.0.1:5433/postgres). Without it
+ * they are skipped.
+ */
+export const TEST_PG_URL = process.env.TEST_DATABASE_URL || '';
+
+/**
+ * Vitest runs test files in parallel workers, so suites sharing one database
+ * would race on schema creation and drop each other's tables mid-test. Each
+ * suite therefore gets its own database (created on demand, tables dropped)
+ * derived from TEST_DATABASE_URL.
+ */
+export async function suiteDatabaseUrl(suite: string): Promise<string> {
+  if (!TEST_PG_URL) return '';
+  const url = new URL(TEST_PG_URL);
+  const base = url.pathname.replace(/^\//, '') || 'postgres';
+  const dbName = `${base}_${suite}`.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+
+  const { Pool } = await import('pg');
+  const admin = new Pool({ connectionString: TEST_PG_URL, max: 1 });
+  try {
+    const exists = await admin.query('SELECT 1 FROM pg_database WHERE datname = $1', [dbName]);
+    if (exists.rowCount === 0) {
+      await admin.query(`CREATE DATABASE ${dbName}`); // dbName is sanitized above
+    }
+  } finally {
+    await admin.end();
+  }
+  url.pathname = `/${dbName}`;
+  const suiteUrl = url.toString();
+  await resetTables(suiteUrl);
+  return suiteUrl;
+}
+
+/** Drops all AgStatus tables so a Postgres test starts from nothing. */
+export async function resetTables(databaseUrl: string): Promise<void> {
+  if (!databaseUrl) return;
+  const { Pool } = await import('pg');
+  const pool = new Pool({ connectionString: databaseUrl, max: 1 });
+  try {
+    await pool.query('DROP TABLE IF EXISTS workspaces, sessions, devices, usage_limits');
+  } finally {
+    await pool.end();
+  }
 }
 
 /** Create a workspace via the public API and return its raw token. */

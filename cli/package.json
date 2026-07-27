@@ -1,6 +1,6 @@
 {
   "name": "agstatus",
-  "version": "0.1.0",
+  "version": "1.1.0",
   "description": "One-command setup for AgStatus — live status board for your Claude Code agents",
   "license": "MIT",
   "repository": {

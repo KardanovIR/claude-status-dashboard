@@ -126,3 +126,187 @@ struct SessionCardView: View {
         }
     }
 }
+
+// MARK: - SessionHistoryView
+
+/// The timeline of one agent session: every status/message transition with
+/// its timestamp, newest first, in the board's color scheme.
+struct SessionHistoryView: View {
+    @Environment(SessionStore.self) private var store
+    let sessionId: String
+
+    @State private var events: [HistoryEvent] = []
+    @State private var loaded = false
+
+    /// The live session, if it is still on the board.
+    private var session: Session? {
+        store.sessions.first { $0.id == sessionId }
+    }
+
+    var body: some View {
+        Group {
+            if events.isEmpty && loaded {
+                emptyState
+            } else {
+                timeline
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.background.ignoresSafeArea())
+        .navigationTitle(session?.name ?? sessionId)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(Theme.background, for: .navigationBar)
+        .task { await load() }
+        // Live: any update to this session (new SSE event) refreshes the list.
+        .onChange(of: session?.updatedAt) {
+            Task { await load() }
+        }
+        .refreshable { await load() }
+    }
+
+    private func load() async {
+        if store.isDemo {
+            if let session {
+                events = DemoData.history(for: session)
+            }
+            loaded = true
+            return
+        }
+        guard let board = store.board else {
+            loaded = true
+            return
+        }
+        if let fetched = try? await AgStatusAPI.history(of: sessionId, for: board) {
+            events = fetched
+        }
+        loaded = true
+    }
+
+    // MARK: Timeline
+
+    private var timeline: some View {
+        List {
+            if let session {
+                headerRow(session)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 4, trailing: 16))
+            }
+            ForEach(Array(events.enumerated()), id: \.element.id) { index, event in
+                HistoryRow(
+                    event: event,
+                    isFirst: index == 0,
+                    isLast: index == events.count - 1
+                )
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .animation(.snappy, value: events)
+    }
+
+    private func headerRow(_ session: Session) -> some View {
+        HStack(spacing: 10) {
+            if !session.project.isEmpty {
+                Text(session.project)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(Theme.textSecondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Theme.cardBorder))
+            }
+            Spacer()
+            Text(session.status.label)
+                .font(.system(.caption, design: .rounded).weight(.semibold))
+                .foregroundStyle(Theme.color(for: session.status))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(Theme.color(for: session.status).opacity(0.16)))
+                .overlay(Capsule().strokeBorder(Theme.color(for: session.status).opacity(0.35)))
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.system(size: 40))
+                .foregroundStyle(Theme.textSecondary)
+                .accessibilityHidden(true)
+            Text("No history yet")
+                .font(.system(.title3, design: .rounded).weight(.semibold))
+                .foregroundStyle(Theme.textPrimary)
+            Text("Events appear here as the agent works.")
+                .font(.subheadline)
+                .foregroundStyle(Theme.textSecondary)
+        }
+        .padding(32)
+    }
+}
+
+// MARK: - HistoryRow
+
+private struct HistoryRow: View {
+    let event: HistoryEvent
+    let isFirst: Bool
+    let isLast: Bool
+
+    private var color: Color { Theme.color(for: event.status) }
+
+    /// "18:42" for today, "Jul 26, 18:42" otherwise.
+    private var timeText: String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(event.date) {
+            return event.date.formatted(date: .omitted, time: .shortened)
+        }
+        return event.date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            // Timeline gutter: colored dot on a continuous line.
+            VStack(spacing: 0) {
+                Rectangle()
+                    .fill(isFirst ? Color.clear : Theme.cardBorder)
+                    .frame(width: 2, height: 10)
+                Circle()
+                    .fill(color)
+                    .frame(width: 9, height: 9)
+                    .shadow(color: color.opacity(isFirst ? 0.6 : 0), radius: 3)
+                Rectangle()
+                    .fill(isLast ? Color.clear : Theme.cardBorder)
+                    .frame(width: 2)
+                    .frame(maxHeight: .infinity)
+            }
+            .frame(width: 12)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(event.status.label)
+                        .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                        .foregroundStyle(color)
+                    Spacer(minLength: 8)
+                    Text(timeText)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(Theme.textSecondary)
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        Text(SessionCardView.relativeTime(from: event.date, to: context.date))
+                            .font(.caption2)
+                            .foregroundStyle(Theme.textSecondary.opacity(0.6))
+                    }
+                }
+                if !event.message.isEmpty {
+                    Text(event.message)
+                        .font(.subheadline)
+                        .foregroundStyle(isFirst ? Theme.textPrimary : Theme.textSecondary)
+                        .lineLimit(3)
+                }
+            }
+            .padding(.vertical, 10)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(event.status.label), \(event.message), \(timeText)")
+    }
+}

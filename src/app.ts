@@ -245,6 +245,10 @@ export function createApp(cfg: AppConfig): CreatedApp {
       res.json(store.getUsage(LEGACY_WS));
     });
 
+    app.get('/api/sessions/:id/history', (req, res) => {
+      res.json(store.getHistory(LEGACY_WS, req.params.id));
+    });
+
     app.delete('/sessions/:id', (req, res) => {
       const removed = store.deleteSession(LEGACY_WS, req.params.id);
       if (removed) broadcast(LEGACY_WS, 'remove', { id: req.params.id });
@@ -375,6 +379,12 @@ export function createApp(cfg: AppConfig): CreatedApp {
       const wsId = resolveWs(req, res);
       if (!wsId) return;
       res.json(store.getUsage(wsId));
+    });
+
+    app.get('/w/:token/api/sessions/:id/history', (req, res) => {
+      const wsId = resolveWs(req, res);
+      if (!wsId) return;
+      res.json(store.getHistory(wsId, req.params.id));
     });
 
     app.post('/w/:token/pair', (req, res) => {

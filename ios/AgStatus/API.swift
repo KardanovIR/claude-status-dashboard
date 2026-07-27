@@ -114,6 +114,18 @@ enum AgStatusAPI {
         return (try? decode([UsageInfo].self, from: data)) ?? []
     }
 
+    /// A session's timeline, newest first. Older servers without the
+    /// endpoint just yield an empty history.
+    static func history(of sessionId: String, for board: Board) async throws -> [HistoryEvent] {
+        let url = board.boardURL
+            .appendingPathComponent("api")
+            .appendingPathComponent("sessions")
+            .appendingPathComponent(sessionId)
+            .appendingPathComponent("history")
+        let data = try await send("GET", url)
+        return (try? decode([HistoryEvent].self, from: data)) ?? []
+    }
+
     static func deleteSession(_ id: String, from board: Board) async throws {
         let url = board.boardURL.appendingPathComponent("sessions").appendingPathComponent(id)
         _ = try await send("DELETE", url)

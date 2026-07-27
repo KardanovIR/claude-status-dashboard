@@ -101,6 +101,26 @@ current list:
 [ { "source": "claude", "windows": [ ... ], "updatedAt": 1752096030000 } ]
 ```
 
+## Session history
+
+`GET /api/sessions/:id/history` (legacy) and
+`GET /w/<token>/api/sessions/:id/history` return a session's timeline —
+one entry per status/message transition, newest first (identical
+keep-alive re-posts are not recorded):
+
+```json
+[
+  { "seq": 2, "status": "testing", "message": "npm test", "at": 1752096030000 },
+  { "seq": 1, "status": "coding", "message": "Editing server.ts", "at": 1752096010000 },
+  { "seq": 0, "status": "idle", "message": "Session started", "at": 1752096000000 }
+]
+```
+
+`seq` increases monotonically per session and is a stable identity for
+clients. The last 100 entries are kept per session (older ones are
+soft-deleted); dismissing or expiring a session drops its history. Unknown
+sessions return `[]`.
+
 ## Legacy (single-tenant) endpoints
 
 | Method & path          | Purpose                                        | Auth |
@@ -110,6 +130,7 @@ current list:
 | `GET /events`          | SSE stream (see [format](#sse-event-format)).  | no   |
 | `GET /api/sessions`    | JSON list of all sessions.                     | no   |
 | `GET /api/usage`       | Current plan usage list.                       | no   |
+| `GET /api/sessions/:id/history` | Session timeline (see [Session history](#session-history)). | no |
 | `DELETE /sessions/:id` | Remove one session. Returns `{ok: boolean}`.   | no   |
 | `POST /sessions/clear` | Remove all sessions. Returns `{ok: true}`.     | yes* |
 
@@ -158,6 +179,7 @@ workspace:
 | `POST /w/<token>/webhook`        | Create/update a session. `200` with `{ok, session}`; `400` on validation errors; `429` over the rate limit. |
 | `POST /w/<token>/usage`          | Report plan usage (see [Plan usage](#plan-usage)). |
 | `GET /w/<token>/api/usage`       | Current plan usage list. |
+| `GET /w/<token>/api/sessions/:id/history` | Session timeline (see [Session history](#session-history)). |
 | `DELETE /w/<token>/sessions/:id` | Remove one session. Returns `{ok: boolean}`. |
 | `POST /w/<token>/sessions/clear` | Remove all sessions in the workspace. Returns `{ok: true}`. |
 | `DELETE /w/<token>`              | Delete the whole workspace: all sessions and device registrations removed, event streams closed. Returns `{ok: true}`. |

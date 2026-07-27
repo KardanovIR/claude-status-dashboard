@@ -51,6 +51,18 @@ export interface Usage {
 /** Usage older than this is dropped from reads — stale percentages mislead. */
 export const USAGE_TTL_MS = 24 * 60 * 60 * 1000;
 
+/** One entry in a session's timeline: what the agent switched to, and when. */
+export interface SessionEvent {
+  /** Monotonically increasing per session; stable identity for clients. */
+  seq: number;
+  status: Status;
+  message: string;
+  at: number;
+}
+
+/** History kept per session; older entries are soft-deleted, newest wins. */
+export const MAX_EVENTS_PER_SESSION = 100;
+
 /** Reserved workspace key for single-tenant (legacy) mode. */
 export const LEGACY_WS = '_legacy';
 
@@ -84,6 +96,11 @@ export class Store {
   private webhookWindows = new Map<string, { windowStart: number; count: number }>();
   // Plan-limit usage per workspace, keyed by source ("claude", "codex", …).
   private usageBySource = new Map<string, Map<string, Usage>>();
+  // Per-session timelines (ascending seq), wsId → sessionId → events.
+  private events = new Map<string, Map<string, SessionEvent[]>>();
+  // Next seq per `${wsId}\n${sessionId}` — spans soft-deleted rows so a
+  // restarted server never reuses a primary key.
+  private eventSeq = new Map<string, number>();
   // Escrowed pairing codes, keyed by the normalized (dash-less) code.
   private pairCodes = new Map<string, { rawToken: string; expiresAt: number }>();
   private pool: Pool | null = null;
@@ -151,6 +168,16 @@ export class Store {
         updated_at BIGINT NOT NULL,
         deleted_at BIGINT,
         PRIMARY KEY (workspace_id, source)
+      );
+      CREATE TABLE IF NOT EXISTS session_events (
+        workspace_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        seq BIGINT NOT NULL,
+        status TEXT NOT NULL,
+        message TEXT NOT NULL,
+        at BIGINT NOT NULL,
+        deleted_at BIGINT,
+        PRIMARY KEY (workspace_id, session_id, seq)
       );
     `);
 
@@ -222,6 +249,38 @@ export class Store {
       }
       map.set(row.source, { source: row.source, windows, updatedAt: Number(row.updated_at) });
     }
+
+    const events = await pool.query(
+      `SELECT workspace_id, session_id, seq, status, message, at FROM session_events
+       WHERE deleted_at IS NULL ORDER BY seq`
+    );
+    for (const row of events.rows as Array<{
+      workspace_id: string; session_id: string; seq: string; status: string; message: string; at: string;
+    }>) {
+      let ws = this.events.get(row.workspace_id);
+      if (!ws) {
+        ws = new Map();
+        this.events.set(row.workspace_id, ws);
+      }
+      let list = ws.get(row.session_id);
+      if (!list) {
+        list = [];
+        ws.set(row.session_id, list);
+      }
+      list.push({
+        seq: Number(row.seq),
+        status: row.status as Status,
+        message: row.message,
+        at: Number(row.at),
+      });
+    }
+    // Seq counters continue past soft-deleted rows, so take MAX over all rows.
+    const seqs = await pool.query(
+      'SELECT workspace_id, session_id, MAX(seq) AS max_seq FROM session_events GROUP BY workspace_id, session_id'
+    );
+    for (const row of seqs.rows as Array<{ workspace_id: string; session_id: string; max_seq: string }>) {
+      this.eventSeq.set(`${row.workspace_id}\n${row.session_id}`, Number(row.max_seq) + 1);
+    }
   }
 
   /**
@@ -287,11 +346,13 @@ export class Store {
     this.webhookWindows.delete(wsId);
     this.deviceTokens.delete(wsId);
     this.usageBySource.delete(wsId);
+    this.events.delete(wsId);
     if (existed) {
       const now = Date.now();
       this.exec('UPDATE sessions SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
       this.exec('UPDATE devices SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
       this.exec('UPDATE usage_limits SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
+      this.exec('UPDATE session_events SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
       this.exec('UPDATE workspaces SET deleted_at = $2 WHERE id = $1', [wsId, now]);
     }
     return existed;
@@ -339,11 +400,17 @@ export class Store {
           'UPDATE sessions SET deleted_at = $3 WHERE workspace_id = $1 AND id = $2',
           [wsId, oldest.id, now]
         );
+        this.dropEvents(wsId, oldest.id);
         evictedId = oldest.id;
       }
     }
 
     map.set(session.id, session);
+    // Timeline: record real transitions, not keep-alive re-posts of the same
+    // status+message (PreToolUse fires between every tool call).
+    if (!prev || prev.status !== session.status || prev.message !== session.message) {
+      this.recordEvent(wsId, session.id, session.status, session.message, now);
+    }
     this.exec(
       `INSERT INTO sessions (workspace_id, id, name, status, message, project, source, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -450,6 +517,57 @@ export class Store {
       .sort((a, b) => a.source.localeCompare(b.source));
   }
 
+  /** Appends a timeline entry, trimming (soft-deleting) beyond the cap. */
+  private recordEvent(wsId: string, sessionId: string, status: Status, message: string, at: number): void {
+    let ws = this.events.get(wsId);
+    if (!ws) {
+      ws = new Map();
+      this.events.set(wsId, ws);
+    }
+    let list = ws.get(sessionId);
+    if (!list) {
+      list = [];
+      ws.set(sessionId, list);
+    }
+    const seqKey = `${wsId}\n${sessionId}`;
+    const seq = this.eventSeq.get(seqKey) ?? 0;
+    this.eventSeq.set(seqKey, seq + 1);
+
+    list.push({ seq, status, message, at });
+    this.exec(
+      `INSERT INTO session_events (workspace_id, session_id, seq, status, message, at)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (workspace_id, session_id, seq) DO UPDATE SET
+         status = EXCLUDED.status, message = EXCLUDED.message, at = EXCLUDED.at, deleted_at = NULL`,
+      [wsId, sessionId, seq, status, message, at]
+    );
+    while (list.length > MAX_EVENTS_PER_SESSION) {
+      const trimmed = list.shift()!;
+      this.exec(
+        'UPDATE session_events SET deleted_at = $4 WHERE workspace_id = $1 AND session_id = $2 AND seq = $3',
+        [wsId, sessionId, trimmed.seq, at]
+      );
+    }
+  }
+
+  /** The session's timeline, newest first. Empty for unknown sessions. */
+  getHistory(wsId: string, sessionId: string): SessionEvent[] {
+    const list = this.events.get(wsId)?.get(sessionId);
+    if (!list) return [];
+    return [...list].reverse();
+  }
+
+  /** Drops a session's timeline (memory now, rows via soft-delete flags). */
+  private dropEvents(wsId: string, sessionId: string): void {
+    const removed = this.events.get(wsId)?.delete(sessionId) ?? false;
+    if (removed) {
+      this.exec(
+        'UPDATE session_events SET deleted_at = $3 WHERE workspace_id = $1 AND session_id = $2 AND deleted_at IS NULL',
+        [wsId, sessionId, Date.now()]
+      );
+    }
+  }
+
   getSessions(wsId: string): Session[] {
     const map = this.sessions.get(wsId);
     if (!map) return [];
@@ -463,12 +581,17 @@ export class Store {
         'UPDATE sessions SET deleted_at = $3 WHERE workspace_id = $1 AND id = $2',
         [wsId, id, Date.now()]
       );
+      this.dropEvents(wsId, id);
     }
     return removed;
   }
 
   clearSessions(wsId: string): void {
-    this.sessions.get(wsId)?.clear();
+    const map = this.sessions.get(wsId);
+    if (map) {
+      for (const id of map.keys()) this.dropEvents(wsId, id);
+      map.clear();
+    }
     this.exec(
       'UPDATE sessions SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL',
       [wsId, Date.now()]
@@ -547,6 +670,7 @@ export class Store {
             'UPDATE sessions SET deleted_at = $3 WHERE workspace_id = $1 AND id = $2',
             [wsId, id, Date.now()]
           );
+          this.dropEvents(wsId, id);
           removed.push({ wsId, id });
         }
       }

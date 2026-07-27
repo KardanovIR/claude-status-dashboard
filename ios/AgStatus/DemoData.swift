@@ -87,6 +87,30 @@ enum DemoData {
         return updated
     }
 
+    /// A believable timeline for a demo session, ending in its current state.
+    static func history(for session: Session) -> [HistoryEvent] {
+        let steps: [(AgentStatus, String, Int64)] = [
+            (.idle, "Session started", 42),
+            (.planning, "Reading the codebase…", 39),
+            (.coding, "Editing src/auth/token.ts", 31),
+            (.testing, "npm test — 41 passing, 2 failing", 24),
+            (.coding, "Fixing null check in parser.js", 18),
+            (.testing, "npm test — 42 passing, 1 pending", 9),
+        ]
+        var events: [HistoryEvent] = []
+        for (index, step) in steps.enumerated() {
+            events.append(HistoryEvent(seq: Int64(index),
+                                       status: step.0,
+                                       message: step.1,
+                                       at: session.updatedAt - step.2 * 60_000))
+        }
+        events.append(HistoryEvent(seq: Int64(steps.count),
+                                   status: session.status,
+                                   message: session.message,
+                                   at: session.updatedAt))
+        return events.reversed() // newest first, like the server
+    }
+
     // MARK: Internals
 
     private static func advance(_ session: Session, at now: Int64) -> Session {

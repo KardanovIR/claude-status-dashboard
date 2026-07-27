@@ -98,6 +98,12 @@ struct BoardView: View {
         List {
             ForEach(store.sessions) { session in
                 SessionCardView(session: session)
+                    // Invisible link keeps the card design chevron-free while
+                    // making the whole card open the session's history.
+                    .overlay {
+                        NavigationLink(value: session.id) { EmptyView() }
+                            .opacity(0)
+                    }
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
@@ -113,6 +119,9 @@ struct BoardView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .navigationDestination(for: String.self) { sessionId in
+            SessionHistoryView(sessionId: sessionId)
+        }
         .refreshable { await store.refresh() }
         .animation(.snappy, value: store.sessions)
         .safeAreaInset(edge: .bottom) {

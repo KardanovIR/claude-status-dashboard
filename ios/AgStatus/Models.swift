@@ -97,6 +97,45 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - HistoryEvent
+
+/// One entry in a session's timeline: what the agent switched to, and when.
+struct HistoryEvent: Identifiable, Codable, Equatable, Sendable {
+    /// Server-assigned, monotonically increasing per session.
+    let seq: Int64
+    var status: AgentStatus
+    var message: String
+    /// Epoch milliseconds.
+    var at: Int64
+
+    var id: Int64 { seq }
+
+    var date: Date {
+        Date(timeIntervalSince1970: Double(at) / 1000)
+    }
+
+    init(seq: Int64, status: AgentStatus, message: String, at: Int64) {
+        self.seq = seq
+        self.status = status
+        self.message = message
+        self.at = at
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case seq, status, message, at
+    }
+
+    /// Tolerant decoding, mirroring Session: unknown statuses become .idle.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        seq = try container.decode(Int64.self, forKey: .seq)
+        let rawStatus = (try? container.decode(String.self, forKey: .status)) ?? ""
+        status = AgentStatus(rawValue: rawStatus) ?? .idle
+        message = (try? container.decode(String.self, forKey: .message)) ?? ""
+        at = (try? container.decode(Int64.self, forKey: .at)) ?? 0
+    }
+}
+
 // MARK: - Usage
 
 /// One plan-limit window (the 5-hour session window or a weekly cap).

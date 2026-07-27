@@ -12,6 +12,8 @@ jobs:
   docker:
     name: Docker image → ghcr
     runs-on: ubuntu-latest
+    # The arm64 half builds under QEMU; a wedge must fail, not hang for hours.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
@@ -40,6 +42,7 @@ jobs:
   npm:
     name: Publish CLI to npm
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # Authenticates via OIDC trusted publishing — no NPM_TOKEN secret.
     # Requires the trusted publisher to be configured in the package's
     # settings on npmjs.com (repo + this workflow filename).
@@ -63,6 +66,7 @@ jobs:
   github-release:
     name: GitHub release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [docker]
     steps:
       - uses: actions/checkout@v4

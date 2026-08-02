@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>Privacy Policy — AgStatus</title>
+<meta name="description" content="What the AgStatus app and hosted server store, and what they never collect." />
+<meta name="theme-color" content="#0b0d12" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23a855f7'/></svg>" />
+<style>
+  :root {
+    --bg: #0b0d12;
+    --surface: #151923;
+    --line: #232836;
+    --text: #e6e8ee;
+    --muted: #8a91a4;
+    --muted-2: #5b6278;
+    --planning: #3b82f6;
+    --coding: #a855f7;
+    --done: #10b981;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  :focus-visible { outline: 2px solid var(--coding); outline-offset: 3px; border-radius: 4px; }
+  .nav { border-bottom: 1px solid var(--line); }
+  .nav-inner {
+    width: min(760px, 100% - 48px);
+    margin: 0 auto;
+    height: 60px;
+    display: flex;
+    align-items: center;
+  }
+  .brand {
+    display: inline-flex; align-items: center; gap: 10px;
+    font-family: var(--mono); font-weight: 600; font-size: 15px;
+    letter-spacing: -0.02em; text-decoration: none;
+  }
+  .mark {
+    width: 16px; height: 16px; border-radius: 5px;
+    background: linear-gradient(135deg, var(--coding), var(--planning));
+    box-shadow: 0 0 16px rgba(168, 85, 247, 0.5);
+  }
+  main { width: min(760px, 100% - 48px); margin: 0 auto; padding: 56px 0 96px; }
+  h1 {
+    font-family: var(--mono);
+    font-size: clamp(26px, 4.4vw, 38px);
+    letter-spacing: -0.03em;
+    font-weight: 600;
+    line-height: 1.12;
+  }
+  .updated { color: var(--muted-2); font-size: 14px; margin-top: 12px; font-family: var(--mono); }
+  h2 {
+    font-family: var(--mono);
+    font-size: 18px;
+    letter-spacing: -0.02em;
+    font-weight: 600;
+    margin: 44px 0 14px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+  }
+  p { color: var(--muted); margin-bottom: 14px; }
+  strong { color: var(--text); font-weight: 650; }
+  ul { color: var(--muted); margin: 0 0 14px 20px; }
+  li { margin-bottom: 9px; }
+  a { color: var(--planning); text-decoration: none; }
+  a:hover { text-decoration: underline; text-underline-offset: 3px; }
+  code {
+    font-family: var(--mono);
+    font-size: 0.9em;
+    background: #05070b;
+    border: 1px solid var(--line);
+    padding: 2px 7px;
+    border-radius: 6px;
+    color: var(--text);
+  }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 18px; font-size: 14.5px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted-2); font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; }
+  td { color: var(--muted); }
+  td:first-child { color: var(--text); white-space: nowrap; }
+  .lede { font-size: 17px; color: var(--muted); margin-top: 22px; }
+  .callout {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--done);
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin-bottom: 18px;
+  }
+  .callout p:last-child { margin-bottom: 0; }
+  footer { border-top: 1px solid var(--line); }
+  .foot {
+    width: min(760px, 100% - 48px);
+    margin: 0 auto;
+    padding: 26px 0 40px;
+    font-size: 13.5px;
+    color: var(--muted-2);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+  }
+  .foot a { color: var(--muted); }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/"><span class="mark" aria-hidden="true"></span>AgStatus</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Privacy Policy</h1>
+  <p class="updated">Last updated: August 2, 2026</p>
+
+  <p class="lede">
+    AgStatus is an open-source status board for coding agents such as Claude Code and OpenAI Codex.
+    This policy covers the AgStatus iOS app and the hosted server at agstatus.online, operated by
+    the project maintainer.
+  </p>
+
+  <div class="callout">
+    <p><strong>The short version.</strong> There are no accounts and no tracking. The server stores
+      only the small status updates your own machine sends it, deletes them automatically after
+      24 hours, and you can delete everything at any time.</p>
+  </div>
+
+  <h2>What the server stores</h2>
+  <p>When you set up the hooks (<code>npx agstatus init</code>), your machine sends the server a
+    small update each time an agent changes what it is doing:</p>
+  <table>
+    <thead>
+      <tr><th>Field</th><th>Example</th><th>Notes</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Session id</td><td>9f3c…</td><td>Generated by your coding tool</td></tr>
+      <tr><td>Project</td><td>my-repo</td><td>The folder name of the project</td></tr>
+      <tr><td>Status</td><td>coding</td><td>One of six fixed words</td></tr>
+      <tr><td>Message</td><td>npm test</td><td>A short activity line, truncated</td></tr>
+      <tr><td>Timestamps</td><td>—</td><td>When each change happened, for the session timeline</td></tr>
+    </tbody>
+  </table>
+  <p>By default the message can include a <strong>truncated command line</strong> (up to 120
+    characters) so the board is useful at a glance. If you would rather not send command text, run
+    <code>npx agstatus init --minimal</code> — messages then contain only tool names, such as
+    "Bash".</p>
+  <p>A board is identified only by an unguessable random token in its URL. Anyone who has that URL
+    can view the board, so treat it like a password.</p>
+
+  <h2>Plan usage</h2>
+  <p>The hook can also report how much of your plan's rate limits you have used, so the board can
+    show limit bars. The credentials used to look this up are read <strong>on your own
+    machine</strong> and never sent to the server — only the resulting percentages and reset times
+    are. Set <code>AGSTATUS_USAGE=off</code> to turn this off entirely.</p>
+
+  <h2>What we do not collect</h2>
+  <ul>
+    <li>No accounts, email addresses, or passwords.</li>
+    <li>No analytics, advertising identifiers, or third-party SDKs.</li>
+    <li>No source code, file contents, or agent conversations.</li>
+    <li>No credentials or API keys of any kind.</li>
+  </ul>
+
+  <h2>Push notifications</h2>
+  <p>If you turn on notifications in the iOS app, they are delivered through Apple's push service
+    (APNs). A notification contains only the session name and its short status message — the same
+    text your hook already sent to your board. Your device's push token is stored with your board
+    and is removed when you turn notifications off, when the token expires, or when the board is
+    deleted.</p>
+
+  <h2>What the app stores on your device</h2>
+  <p>The iOS app keeps your board's URL and token in the iOS Keychain on your device. It makes
+    network requests only to the board server you configure. Demo mode runs entirely on-device and
+    sends nothing anywhere. The app requests camera access only when you choose to scan a setup QR
+    code, and the camera is used for nothing else.</p>
+
+  <h2>Retention and deletion</h2>
+  <ul>
+    <li>Sessions are deleted automatically <strong>24 hours</strong> after their last update.</li>
+    <li>Boards untouched for <strong>60 days</strong> are deleted with all their data.</li>
+    <li>You can delete a board and everything in it at any time, from the app
+      (Settings → "Delete board") or with one request:
+      <code>curl -X DELETE https://agstatus.online/w/&lt;token&gt;</code></li>
+  </ul>
+  <p>Deleted data is removed from the service immediately: it stops being served, shown, or
+    returned by the API. Records are first flagged as deleted rather than erased on the spot, and
+    are cleared from the database during routine maintenance.</p>
+
+  <h2>Self-hosting</h2>
+  <p>AgStatus is open source under the MIT license. You can run the entire server yourself, in
+    which case no data reaches the hosted instance at all. See the
+    <a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/docs/self-hosting.md">self-hosting guide</a>.</p>
+
+  <h2>Children</h2>
+  <p>AgStatus is a developer tool and is not directed at children under 13.</p>
+
+  <h2>Changes</h2>
+  <p>If this policy changes, the date at the top of this page is updated. The full history is
+    public in the project repository.</p>
+
+  <h2>Contact</h2>
+  <p>Questions or requests: open an issue at
+    <a href="https://github.com/KardanovIR/claude-status-dashboard/issues">github.com/KardanovIR/claude-status-dashboard</a>.</p>
+</main>
+
+<footer>
+  <div class="foot">
+    <span>MIT licensed · AgStatus</span>
+    <a href="/">Home</a>
+    <a href="https://github.com/KardanovIR/claude-status-dashboard">GitHub</a>
+  </div>
+</footer>
+
+</body>
+</html>

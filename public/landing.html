@@ -1,0 +1,706 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>AgStatus — live status for your coding agents</title>
+<meta name="description" content="See what Claude Code and Codex are doing right now, from your phone. Live status board, plan-limit bars, and session history. Open source, self-hostable." />
+<meta name="theme-color" content="#0b0d12" />
+<meta property="og:title" content="AgStatus — live status for your coding agents" />
+<meta property="og:description" content="See what Claude Code and Codex are doing right now, from your phone." />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://agstatus.online" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23a855f7'/></svg>" />
+<style>
+  :root {
+    --bg: #0b0d12;
+    --surface: #151923;
+    --surface-2: #1a1f2c;
+    --line: #232836;
+    --text: #e6e8ee;
+    --muted: #8a91a4;
+    --muted-2: #5b6278;
+
+    --idle: #6b7280;
+    --planning: #3b82f6;
+    --coding: #a855f7;
+    --testing: #f59e0b;
+    --blocked: #ef4444;
+    --done: #10b981;
+
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+
+    --page: min(1080px, 100% - 48px);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  a { color: inherit; }
+
+  :focus-visible {
+    outline: 2px solid var(--coding);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+
+  /* ── the status spectrum: hard stops, because statuses are discrete ── */
+  .spectrum {
+    height: 2px;
+    border: 0;
+    background: linear-gradient(90deg,
+      var(--idle) 0 16.66%, var(--planning) 16.66% 33.33%, var(--coding) 33.33% 50%,
+      var(--testing) 50% 66.66%, var(--blocked) 66.66% 83.33%, var(--done) 83.33% 100%);
+    opacity: 0.85;
+  }
+
+  /* ── nav ── */
+  .nav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: rgba(11, 13, 18, 0.78);
+    backdrop-filter: saturate(160%) blur(12px);
+    -webkit-backdrop-filter: saturate(160%) blur(12px);
+    border-bottom: 1px solid var(--line);
+  }
+  .nav-inner {
+    width: var(--page);
+    margin: 0 auto;
+    height: 60px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+  }
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--mono);
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    text-decoration: none;
+    font-size: 15px;
+  }
+  .mark {
+    width: 16px; height: 16px; border-radius: 5px;
+    background: linear-gradient(135deg, var(--coding), var(--planning));
+    box-shadow: 0 0 16px rgba(168, 85, 247, 0.5);
+    flex-shrink: 0;
+  }
+  .nav-links {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .nav-links a { text-decoration: none; transition: color .15s; }
+  .nav-links a:hover { color: var(--text); }
+  @media (max-width: 620px) { .nav-links .hide-sm { display: none; } }
+
+  /* ── hero ── */
+  .hero {
+    width: var(--page);
+    margin: 0 auto;
+    padding: clamp(48px, 9vw, 104px) 0 clamp(32px, 5vw, 56px);
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted-2);
+    margin-bottom: 22px;
+  }
+  h1 {
+    font-family: var(--mono);
+    font-size: clamp(28px, 5.6vw, 60px);
+    line-height: 1.06;
+    letter-spacing: -0.035em;
+    font-weight: 600;
+    /* Balanced wrapping keeps the accent phrase from stranding a single word,
+       without a nowrap that could overflow narrow phones. */
+    max-width: 19ch;
+    text-wrap: balance;
+  }
+  h1 .accent { color: var(--coding); }
+  .lede {
+    margin-top: 22px;
+    font-size: clamp(16px, 1.9vw, 19px);
+    color: var(--muted);
+    max-width: 56ch;
+  }
+  .lede strong { color: var(--text); font-weight: 600; }
+
+  .actions {
+    margin-top: 34px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+  }
+  .cmd {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    padding: 13px 16px;
+    background: #05070b;
+    border: 1px solid var(--line);
+    border-radius: 11px;
+    font-family: var(--mono);
+    font-size: 14.5px;
+    color: var(--text);
+    cursor: pointer;
+    transition: border-color .15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .cmd:hover { border-color: var(--coding); }
+  .cmd .prompt { color: var(--done); user-select: none; }
+  .cmd .copy { color: var(--muted-2); font-size: 12px; margin-left: 2px; }
+  .cmd.copied .copy { color: var(--done); }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 13px 22px;
+    min-height: 48px;
+    border-radius: 11px;
+    border: 1px solid var(--line);
+    background: linear-gradient(135deg, rgba(168,85,247,0.28), rgba(59,130,246,0.28)), var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 15px;
+    font-weight: 600;
+    text-decoration: none;
+    cursor: pointer;
+    transition: border-color .15s, box-shadow .15s, transform .12s;
+  }
+  .btn:hover { border-color: var(--coding); box-shadow: 0 0 28px rgba(168,85,247,0.22); }
+  .btn:active { transform: scale(0.985); }
+  .btn:disabled { opacity: 0.6; cursor: default; }
+  .btn-ghost {
+    background: transparent;
+    color: var(--muted);
+    font-weight: 500;
+  }
+  .btn-ghost:hover { color: var(--text); }
+  .err { color: var(--blocked); font-size: 14px; min-height: 1.2em; margin-top: 10px; }
+
+  /* ── signature: the live board ── */
+  .board-frame {
+    width: var(--page);
+    margin: 0 auto clamp(56px, 8vw, 96px);
+    background: linear-gradient(180deg, #12161f 0%, #0d1017 100%);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: clamp(14px, 2.2vw, 22px);
+    box-shadow: 0 30px 80px rgba(0,0,0,0.55);
+  }
+  .board-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-bottom: 14px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .live-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--done);
+    box-shadow: 0 0 10px rgba(16,185,129,0.7);
+    animation: blink 2.4s ease-in-out infinite;
+  }
+  .board-bar span {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted-2);
+  }
+
+  .usage-row { margin-bottom: 11px; }
+  .usage-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 5px;
+  }
+  .usage-label {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .usage-val { font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .usage-track { height: 6px; border-radius: 999px; background: #0a0d13; border: 1px solid var(--line); overflow: hidden; }
+  .usage-fill { height: 100%; border-radius: inherit; transition: width .8s ease; }
+
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 12px;
+    margin-top: 18px;
+  }
+  .card {
+    position: relative;
+    background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+    border: 1px solid var(--line);
+    border-radius: 13px;
+    padding: 15px 16px 15px 18px;
+    overflow: hidden;
+    transition: border-color .5s;
+  }
+  .card::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: var(--status);
+    transition: background .5s;
+  }
+  .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .card-name { font-weight: 650; font-size: 15.5px; letter-spacing: -0.01em; }
+  .badge {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-weight: 700;
+    padding: 4px 8px;
+    border-radius: 7px;
+    color: var(--status);
+    background: color-mix(in srgb, var(--status) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--status) 34%, transparent);
+    white-space: nowrap;
+    transition: color .5s, background .5s, border-color .5s;
+  }
+  .card-msg {
+    margin-top: 9px;
+    font-size: 13.5px;
+    color: var(--muted);
+    font-family: var(--mono);
+    line-height: 1.45;
+    min-height: 2.9em;
+    word-break: break-word;
+  }
+  .card-meta {
+    margin-top: 10px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 11.5px;
+    color: var(--muted-2);
+    font-family: var(--mono);
+  }
+  .card[data-status="blocked"] {
+    border-color: rgba(239, 68, 68, 0.5);
+    box-shadow: 0 0 26px rgba(239, 68, 68, 0.16);
+  }
+
+  /* ── sections ── */
+  section { width: var(--page); margin: 0 auto; padding: clamp(56px, 8vw, 92px) 0; }
+  .sec-head { max-width: 60ch; margin-bottom: clamp(28px, 4vw, 44px); }
+  h2 {
+    font-family: var(--mono);
+    font-size: clamp(22px, 3vw, 30px);
+    letter-spacing: -0.025em;
+    font-weight: 600;
+    line-height: 1.2;
+  }
+  .sec-head p { margin-top: 12px; color: var(--muted); font-size: 16.5px; }
+
+  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(255px, 1fr)); gap: 16px; }
+  .feature {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 22px;
+    transition: border-color .2s, transform .2s;
+  }
+  .feature:hover { border-color: color-mix(in srgb, var(--status) 45%, var(--line)); transform: translateY(-2px); }
+  .feature-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--status);
+    margin-bottom: 13px;
+  }
+  .feature-tag i { width: 8px; height: 8px; border-radius: 50%; background: var(--status); font-style: normal; }
+  .feature h3 { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; margin-bottom: 7px; }
+  .feature p { color: var(--muted); font-size: 14.5px; }
+
+  /* ── setup: a real sequence, so it is numbered ── */
+  .steps { display: grid; gap: 2px; background: var(--line); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  .step { background: var(--bg); padding: 24px clamp(18px, 3vw, 30px); display: grid; grid-template-columns: auto 1fr; gap: 20px; align-items: start; }
+  .step-n {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted-2);
+    padding-top: 3px;
+    font-variant-numeric: tabular-nums;
+  }
+  .step h3 { font-size: 16.5px; font-weight: 650; margin-bottom: 6px; }
+  .step p { color: var(--muted); font-size: 14.5px; }
+  .step code {
+    display: inline-block;
+    margin-top: 10px;
+    padding: 9px 13px;
+    background: #05070b;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    font-family: var(--mono);
+    font-size: 13.5px;
+    color: var(--text);
+    user-select: all;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  /* ── self-host strip ── */
+  .strip {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: clamp(26px, 4vw, 40px);
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 26px;
+  }
+  .strip h3 { font-family: var(--mono); font-size: 14px; font-weight: 600; margin-bottom: 8px; letter-spacing: -0.01em; }
+  .strip p { color: var(--muted); font-size: 14px; }
+  .strip a { color: var(--planning); text-decoration: none; }
+  .strip a:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+  /* ── closing ── */
+  .close { text-align: center; padding-top: clamp(20px, 3vw, 32px); padding-bottom: clamp(64px, 9vw, 104px); }
+  .close h2 { max-width: 22ch; margin: 0 auto 26px; }
+  .close .actions { justify-content: center; }
+
+  footer { border-top: 1px solid var(--line); }
+  .foot-inner {
+    width: var(--page);
+    margin: 0 auto;
+    padding: 30px 0 40px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px 26px;
+    align-items: center;
+    font-size: 13.5px;
+    color: var(--muted-2);
+  }
+  .foot-inner a { color: var(--muted); text-decoration: none; }
+  .foot-inner a:hover { color: var(--text); }
+  .foot-links { margin-left: auto; display: flex; flex-wrap: wrap; gap: 20px; }
+
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.62; } }
+  .badge.active { animation: pulse 1.9s ease-in-out infinite; }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/"><span class="mark" aria-hidden="true"></span>AgStatus</a>
+    <div class="nav-links">
+      <a href="#features" class="hide-sm">Features</a>
+      <a href="#setup" class="hide-sm">Setup</a>
+      <a href="https://github.com/KardanovIR/claude-status-dashboard">GitHub</a>
+      <a href="https://www.npmjs.com/package/agstatus" class="hide-sm">npm</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <p class="eyebrow">Claude Code &amp; Codex</p>
+  <h1>A dashboard for <span class="accent">many agent statuses</span> at once.</h1>
+  <p class="lede">
+    Agents run for a long time and then quietly wait for you. AgStatus shows what each one is
+    doing right now — and <strong>tells you the moment one needs your approval</strong>.
+  </p>
+  <div class="actions">
+    <button class="cmd" id="copy-cmd" type="button" aria-label="Copy install command">
+      <span class="prompt" aria-hidden="true">$</span>npx agstatus init<span class="copy">copy</span>
+    </button>
+    <button class="btn" id="create-board" type="button">Create a board</button>
+    <a class="btn btn-ghost" href="https://github.com/KardanovIR/claude-status-dashboard">Source</a>
+  </div>
+  <p class="err" id="err" role="alert"></p>
+</header>
+
+<!-- Signature: a real board, driving itself. Not a screenshot. -->
+<div class="board-frame">
+  <div class="board-bar">
+    <span class="live-dot" aria-hidden="true"></span>
+    <span>Live board</span>
+  </div>
+  <div id="usage"></div>
+  <div class="cards" id="cards"></div>
+</div>
+
+<hr class="spectrum" />
+
+<section id="features">
+  <div class="sec-head">
+    <h2>Six states, one glance.</h2>
+    <p>Every session reports as it works. The board is ordered by what changed last, so the thing that needs you rises to the top.</p>
+  </div>
+  <div class="features">
+    <article class="feature" style="--status: var(--blocked)">
+      <div class="feature-tag"><i></i>Blocked</div>
+      <h3>Know when you're the bottleneck</h3>
+      <p>An agent that hits a permission prompt turns red and sends a push notification, so a five-second approval doesn't cost you an hour.</p>
+    </article>
+    <article class="feature" style="--status: var(--testing)">
+      <div class="feature-tag"><i></i>Limits</div>
+      <h3>Watch your plan, not the clock</h3>
+      <p>Full-width bars for the current session window and weekly caps — per model, including Opus, Sonnet and Fable — with the time until each resets.</p>
+    </article>
+    <article class="feature" style="--status: var(--coding)">
+      <div class="feature-tag"><i></i>History</div>
+      <h3>Replay what happened</h3>
+      <p>Tap any session for its timeline: every status change and command, timestamped, so you can see where a long run actually went.</p>
+    </article>
+    <article class="feature" style="--status: var(--done)">
+      <div class="feature-tag"><i></i>Yours</div>
+      <h3>Open source, self-hostable</h3>
+      <p>MIT licensed, one Node process and a Postgres database. Use the hosted board or run the whole thing on your own machine.</p>
+    </article>
+  </div>
+</section>
+
+<section id="setup">
+  <div class="sec-head">
+    <h2>Running in about a minute.</h2>
+    <p>One command wires up the hooks. No account, no sign-up — a board is just an unguessable URL.</p>
+  </div>
+  <div class="steps">
+    <div class="step">
+      <div class="step-n">01</div>
+      <div>
+        <h3>Install the hook</h3>
+        <p>Sets up Claude Code, and OpenAI Codex too when it finds it. Your existing settings are preserved.</p>
+        <code>npx agstatus init</code>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-n">02</div>
+      <div>
+        <h3>Open the board</h3>
+        <p>The CLI prints your private board URL and a QR code — scan it to carry the board on your phone.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-n">03</div>
+      <div>
+        <h3>Get back to work</h3>
+        <p>Sessions appear the moment your agents report in, and update live. Nothing else to configure.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="strip">
+    <div>
+      <h3>What it sends</h3>
+      <p>A session id, project folder name, status word, and a short activity line. Run <code>init --minimal</code> to send tool names only.</p>
+    </div>
+    <div>
+      <h3>Plan usage stays local</h3>
+      <p>Your Claude credentials are read on your machine. Only percentages and reset times reach the board — never a token.</p>
+    </div>
+    <div>
+      <h3>Your data, deletable</h3>
+      <p>Sessions expire after 24 hours; a board can be deleted at any time. <a href="/privacy">Privacy policy</a>.</p>
+    </div>
+  </div>
+</section>
+
+<section class="close">
+  <h2>Stop tabbing back to check.</h2>
+  <div class="actions">
+    <button class="btn" id="create-board-2" type="button">Create a board</button>
+    <a class="btn btn-ghost" href="https://github.com/KardanovIR/claude-status-dashboard#readme">Read the docs</a>
+  </div>
+</section>
+
+<footer>
+  <div class="foot-inner">
+    <span>MIT licensed · Built by Inal Kardanov</span>
+    <div class="foot-links">
+      <a href="https://github.com/KardanovIR/claude-status-dashboard">GitHub</a>
+      <a href="https://www.npmjs.com/package/agstatus">npm</a>
+      <a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/docs/self-hosting.md">Self-hosting</a>
+      <a href="/privacy">Privacy</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+(() => {
+  'use strict';
+
+  // ── copy the install command ──────────────────────────────────────────
+  const cmdBtn = document.getElementById('copy-cmd');
+  cmdBtn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText('npx agstatus init');
+      cmdBtn.classList.add('copied');
+      cmdBtn.querySelector('.copy').textContent = 'copied';
+      setTimeout(() => {
+        cmdBtn.classList.remove('copied');
+        cmdBtn.querySelector('.copy').textContent = 'copy';
+      }, 1600);
+    } catch { /* clipboard unavailable — the text is selectable anyway */ }
+  });
+
+  // ── create a board (same call the dashboard makes) ────────────────────
+  const errEl = document.getElementById('err');
+  async function createBoard(btn) {
+    btn.disabled = true;
+    errEl.textContent = '';
+    try {
+      const res = await fetch('/api/workspaces', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.token) {
+        errEl.textContent = res.status === 429
+          ? 'Too many boards created from this address. Try again in an hour.'
+          : 'Could not create a board. Please try again.';
+        btn.disabled = false;
+        return;
+      }
+      location.href = '/w/' + encodeURIComponent(data.token);
+    } catch {
+      errEl.textContent = 'Could not create a board. Please try again.';
+      btn.disabled = false;
+    }
+  }
+  for (const id of ['create-board', 'create-board-2']) {
+    const btn = document.getElementById(id);
+    if (btn) btn.addEventListener('click', () => createBoard(btn));
+  }
+
+  // ── the live board ────────────────────────────────────────────────────
+  const ACTIVE = new Set(['planning', 'coding', 'testing']);
+  const MESSAGES = {
+    idle: ['Waiting for input', 'Session started'],
+    planning: ['Reading the codebase…', 'Drafting an implementation plan', 'Exploring src/ for entry points'],
+    coding: ['Editing src/auth/token.ts', 'Refactoring api/routes.ts', 'Implementing retry with backoff'],
+    testing: ['npm test — 42 passing', 'pytest -q — 87 passed', 'vitest run — 3 suites'],
+    blocked: ['Needs permission approval', 'Waiting for your input'],
+    done: ['All tasks complete', 'PR ready for review'],
+  };
+  const NEXT = {
+    idle: ['planning', 'planning', 'idle'],
+    planning: ['coding', 'coding', 'planning'],
+    coding: ['coding', 'coding', 'testing'],
+    testing: ['testing', 'done', 'blocked'],
+    blocked: ['blocked', 'coding'],
+    done: ['done', 'planning'],
+  };
+
+  const sessions = [
+    { name: 'api-server', project: 'acme-api', status: 'coding', msg: 'Editing src/auth/token.ts', age: 0 },
+    { name: 'webapp', project: 'acme-web', status: 'testing', msg: 'npm test — 42 passing', age: 1 },
+    { name: 'data-pipeline', project: 'etl-jobs', status: 'blocked', msg: 'Needs permission approval', age: 3 },
+  ];
+  const usage = [
+    { label: 'Claude · current session', pct: 34 },
+    { label: 'Claude · weekly (all models)', pct: 61 },
+  ];
+
+  const cardsEl = document.getElementById('cards');
+  const usageEl = document.getElementById('usage');
+  const pick = (a) => a[Math.floor(Math.random() * a.length)];
+  const level = (p) => (p >= 85 ? 'blocked' : p >= 60 ? 'testing' : 'done');
+  const escape = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  function renderUsage() {
+    usageEl.innerHTML = usage.map((u) => `
+      <div class="usage-row">
+        <div class="usage-head">
+          <span class="usage-label">${escape(u.label)}</span>
+          <span class="usage-val">${u.pct}%</span>
+        </div>
+        <div class="usage-track">
+          <div class="usage-fill" style="width:${u.pct}%;background:var(--${level(u.pct)})"></div>
+        </div>
+      </div>`).join('');
+  }
+
+  function renderCards() {
+    cardsEl.innerHTML = sessions.map((s) => `
+      <article class="card" data-status="${s.status}" style="--status: var(--${s.status})">
+        <div class="card-head">
+          <span class="card-name">${escape(s.name)}</span>
+          <span class="badge ${ACTIVE.has(s.status) ? 'active' : ''}">${s.status}</span>
+        </div>
+        <p class="card-msg">${escape(s.msg)}</p>
+        <div class="card-meta">
+          <span>${escape(s.project)}</span>
+          <span>${s.age === 0 ? 'just now' : s.age + 'm ago'}</span>
+        </div>
+      </article>`).join('');
+  }
+
+  renderUsage();
+  renderCards();
+
+  // Calm cadence: one session advances at a time. Frozen for reduced motion,
+  // and paused while the tab is hidden.
+  const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!still) {
+    let tick = 0;
+    setInterval(() => {
+      if (document.hidden) return;
+      tick += 1;
+      const s = pick(sessions);
+      // "Blocked" is the whole point of the product, so make sure a visitor
+      // sees one regularly instead of waiting on the random walk.
+      const forceBlocked = tick % 7 === 0 && !sessions.some((x) => x.status === 'blocked');
+      const next = forceBlocked ? 'blocked' : pick(NEXT[s.status] || ['idle']);
+      s.status = next;
+      s.msg = pick(MESSAGES[next]);
+      s.age = 0;
+      for (const other of sessions) if (other !== s) other.age += 1;
+      renderCards();
+    }, 2600);
+
+    setInterval(() => {
+      if (document.hidden) return;
+      usage[0].pct = Math.min(99, usage[0].pct + 1);
+      renderUsage();
+    }, 7000);
+  }
+})();
+</script>
+</body>
+</html>

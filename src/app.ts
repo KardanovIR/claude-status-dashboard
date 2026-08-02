@@ -31,7 +31,10 @@ const USAGE_WINDOW_ID_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 const USAGE_LABEL_MAX = 48;
 const MAX_USAGE_WINDOWS = 6;
 
-const INDEX_HTML = path.join(__dirname, '..', 'public', 'index.html');
+const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const INDEX_HTML = path.join(PUBLIC_DIR, 'index.html');
+const LANDING_HTML = path.join(PUBLIC_DIR, 'landing.html');
+const PRIVACY_HTML = path.join(PUBLIC_DIR, 'privacy.html');
 
 const isStatus = (s: unknown): s is Status =>
   typeof s === 'string' && (STATUSES as readonly string[]).includes(s);
@@ -126,7 +129,18 @@ export function createApp(cfg: AppConfig): CreatedApp {
   app.disable('x-powered-by');
   if (cfg.trustProxy) app.set('trust proxy', 1);
   app.use(express.json({ limit: '16kb' }));
-  app.use(express.static(path.join(__dirname, '..', 'public'), { maxAge: 0, etag: true }));
+
+  // Registered before the static handler, which would otherwise answer "/"
+  // with index.html. On a multi-tenant server "/" is the marketing landing
+  // page; a legacy (single-tenant) server's root IS its dashboard, so it
+  // keeps index.html.
+  if (cfg.multiTenant) {
+    app.get('/', (_req, res) => res.sendFile(LANDING_HTML));
+  }
+  // Stable URL for the privacy policy — the App Store listing points here.
+  app.get('/privacy', (_req, res) => res.sendFile(PRIVACY_HTML));
+
+  app.use(express.static(PUBLIC_DIR, { maxAge: 0, etag: true }));
 
   // ---- shared handlers -----------------------------------------------------
 

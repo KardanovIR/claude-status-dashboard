@@ -10,9 +10,10 @@ struct BoardView: View {
     @State private var showPairSheet = false
     @State private var showSettings = false
     @State private var copiedWebhook = false
+    @State private var path = NavigationPath()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             VStack(spacing: 0) {
                 if !visibleUsage.isEmpty && store.connection != .boardGone {
                     UsageBarsView(usage: visibleUsage)
@@ -73,6 +74,7 @@ struct BoardView: View {
                     .accessibilityLabel("Settings")
                 }
             }
+            .task { await openHistoryForScreenshots() }
             .sheet(isPresented: $showPairSheet) { PairSheet() }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .task(id: store.board) {
@@ -81,6 +83,22 @@ struct BoardView: View {
                 }
             }
         }
+    }
+
+    /// Debug-only deep link so screenshot automation can reach the history
+    /// screen, which has no launch argument and cannot be tapped by simctl.
+    private func openHistoryForScreenshots() async {
+        #if DEBUG
+        guard ProcessInfo.processInfo.environment["AGSTATUS_OPEN_HISTORY"] == "1" else { return }
+        // Demo sessions are seeded synchronously; a real board arrives over SSE.
+        for _ in 0..<40 {
+            if !store.sessions.isEmpty { break }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        if let first = store.sessions.first, path.isEmpty {
+            path.append(first.id)
+        }
+        #endif
     }
 
     // MARK: - Usage visibility

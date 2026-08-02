@@ -57,6 +57,57 @@ const COMMAND_MAX = 120;
 const TEST_RE =
   /\b(pytest|jest|vitest|mocha|rspec|phpunit|(?:go|cargo)\s+test|npm\s+(?:run\s+)?test|yarn\s+test|pnpm\s+test)\b/;
 
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'apply_patch']);
+
+/** Trimmed string, or '' for anything else. */
+const str = (v) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : '');
+
+/** Bash commands may arrive as a string (Claude Code) or argv (Codex). */
+function commandText(input) {
+  const raw = input.command;
+  if (Array.isArray(raw)) return raw.filter((a) => typeof a === 'string').join(' ');
+  return typeof raw === 'string' ? raw : '';
+}
+
+/**
+ * Agents write their own one-line description of each Bash command ("Run the
+ * test suite"), which reads far better on a board than the raw shell line —
+ * and incidentally leaks less. Not every caller supplies one, so fall back.
+ */
+function describeBash(input) {
+  return str(input.description) || commandText(input);
+}
+
+/** Basename of whichever path field the tool used. */
+function editedFile(input) {
+  const p = str(input.file_path) || str(input.notebook_path) || str(input.path);
+  return p ? path.basename(p) : '';
+}
+
+function describeEdit(tool, input) {
+  const name = editedFile(input);
+  if (!name) return tool === 'apply_patch' ? 'Editing files' : tool;
+  return `${tool === 'Write' ? 'Writing' : 'Editing'} ${name}`;
+}
+
+function describeResearch(tool, input) {
+  if (tool === 'WebSearch') {
+    const query = str(input.query);
+    return query ? `Searching: ${query}` : 'Searching the web';
+  }
+  if (tool === 'WebFetch') {
+    const url = str(input.url);
+    if (!url) return 'Fetching a page';
+    try {
+      return `Reading ${new URL(url).hostname}`;
+    } catch {
+      return 'Fetching a page';
+    }
+  }
+  // Task: the subagent's own description of the job it was handed.
+  return str(input.description) || 'Delegating a subtask';
+}
+
 // A never-ending stdin (or anything else) must not hang Claude Code.
 const safety = setTimeout(() => process.exit(0), SAFETY_TIMEOUT_MS);
 safety.unref();
@@ -64,6 +115,21 @@ safety.unref();
 // Belt and braces: no failure mode may produce output or a non-zero exit.
 process.on('uncaughtException', () => process.exit(0));
 process.on('unhandledRejection', () => process.exit(0));
+
+/**
+ * Opt-in diagnostics (AGSTATUS_DEBUG=1). Everything in this script fails
+ * silently by design, which makes "my bars stopped showing" impossible to
+ * diagnose; this is the escape hatch. stderr only — stdout is reserved
+ * because Codex parses it as behavior-control JSON.
+ */
+function dbg(msg) {
+  if (!process.env.AGSTATUS_DEBUG) return;
+  try {
+    process.stderr.write(`[agstatus] ${msg}\n`);
+  } catch {
+    /* nothing we can do */
+  }
+}
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -109,17 +175,25 @@ function readCredentialsFile() {
 }
 
 // On macOS Claude Code keeps its OAuth credentials in the login keychain.
+// Absolute path on purpose: hooks can be spawned with a minimal PATH, and a
+// bare "security" then fails with ENOENT — silently costing us plan usage.
+const SECURITY_BIN = fs.existsSync('/usr/bin/security') ? '/usr/bin/security' : 'security';
+
 function readCredentialsKeychain() {
   return new Promise((resolve) => {
     execFile(
-      'security',
+      SECURITY_BIN,
       ['find-generic-password', '-s', 'Claude Code-credentials', '-w'],
       { timeout: 1500 },
       (err, stdout) => {
-        if (err) return resolve(null);
+        if (err) {
+          dbg(`keychain read failed: ${err.code || err.message}`);
+          return resolve(null);
+        }
         try {
           resolve(JSON.parse(String(stdout).trim()));
         } catch {
+          dbg('keychain returned unparseable JSON');
           resolve(null);
         }
       }
@@ -229,14 +303,19 @@ async function fetchClaudeUsage(token) {
       },
       signal: controller.signal,
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      dbg(`usage endpoint HTTP ${res.status}`);
+      return null;
+    }
     const data = await res.json();
     const windows =
       data && Array.isArray(data.limits) && data.limits.length > 0
         ? windowsFromLimits(data.limits)
         : windowsFromLegacyKeys(data);
+    if (windows.length === 0) dbg('usage response contained no recognizable windows');
     return windows.length > 0 ? { source: 'claude', windows } : null;
-  } catch {
+  } catch (err) {
+    dbg(`usage fetch failed: ${err && err.message ? err.message : String(err)}`);
     return null;
   } finally {
     clearTimeout(timer);
@@ -258,6 +337,7 @@ async function maybeReportUsage(base) {
   try {
     const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
     if (typeof state.lastAttemptAt === 'number' && Date.now() - state.lastAttemptAt < USAGE_THROTTLE_MS) {
+      dbg(`usage throttled (last attempt ${Math.round((Date.now() - state.lastAttemptAt) / 1000)}s ago)`);
       return;
     }
   } catch {
@@ -270,10 +350,17 @@ async function maybeReportUsage(base) {
   }
 
   const token = await readClaudeOAuthToken();
-  if (!token) return;
+  if (!token) {
+    dbg('no usable Claude OAuth token (credentials file and keychain both unavailable)');
+    return;
+  }
   const usage = await fetchClaudeUsage(token);
-  if (!usage) return;
+  if (!usage) {
+    dbg('usage endpoint returned nothing usable');
+    return;
+  }
   await send('POST', `${base}/usage`, usage);
+  dbg(`reported ${usage.windows.length} usage window(s)`);
 }
 
 async function main() {
@@ -314,31 +401,28 @@ async function main() {
           : generic;
   } else if (event === 'PreToolUse') {
     const tool = typeof payload.tool_name === 'string' ? payload.tool_name : '';
+    const input =
+      payload.tool_input && typeof payload.tool_input === 'object' ? payload.tool_input : {};
+    // Privacy switch: minimal mode reports the tool and nothing else — no
+    // descriptions, file names, search queries, or command text.
+    const minimal = process.env.AGSTATUS_DETAIL === 'off';
+
     // Codex's file-edit tool is apply_patch; Claude Code uses Edit/Write/….
-    if (
-      tool === 'Edit' || tool === 'Write' || tool === 'MultiEdit' ||
-      tool === 'NotebookEdit' || tool === 'apply_patch'
-    ) {
+    if (EDIT_TOOLS.has(tool)) {
       status = 'coding';
-      message = tool === 'apply_patch' ? 'Editing files' : tool;
+      message = minimal ? tool : describeEdit(tool, input);
     } else if (tool === 'Bash') {
-      // Claude Code sends tool_input.command as a string; Codex exec tools may
-      // send an argv array (["bash","-lc","npm test"]) — join so the test
-      // detector sees the real command instead of an empty string.
-      const rawCommand = payload.tool_input ? payload.tool_input.command : undefined;
-      const command = Array.isArray(rawCommand)
-        ? rawCommand.filter((a) => typeof a === 'string').join(' ')
-        : typeof rawCommand === 'string'
-          ? rawCommand
-          : '';
-      status = TEST_RE.test(command) ? 'testing' : 'coding';
-      message = process.env.AGSTATUS_DETAIL === 'off' ? 'Bash' : command.slice(0, COMMAND_MAX);
+      // Classify from the command itself — the description says what the
+      // command means, but only the command says whether it runs tests.
+      status = TEST_RE.test(commandText(input)) ? 'testing' : 'coding';
+      message = minimal ? 'Bash' : describeBash(input);
     } else if (tool === 'Task' || tool === 'WebSearch' || tool === 'WebFetch') {
       status = 'planning';
-      message = tool;
+      message = minimal ? tool : describeResearch(tool, input);
     } else {
       return;
     }
+    message = message.slice(0, COMMAND_MAX);
   } else if (event === 'Stop') {
     status = 'idle';
     message = 'Waiting for input';

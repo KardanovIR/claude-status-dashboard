@@ -86,10 +86,17 @@ events but predates Codex support, so it has no `PermissionRequest` or
 | Hook event                                                     | Board status   | Notes |
 | -------------------------------------------------------------- | -------------- | ----- |
 | `SessionStart`                                                  | `idle`         | New session appears as soon as Claude starts. |
-| `PreToolUse` — `Edit` / `Write` / `MultiEdit` / `NotebookEdit`  | `coding`       | Card shows the tool name. |
-| `PreToolUse` — `Bash` (test runner)                             | `testing`      | Detected via `pytest`/`jest`/`vitest`/`go test`/`cargo test`/etc. |
-| `PreToolUse` — `Bash` (other)                                   | `coding`       | Card shows the command, truncated to 120 chars (tool name only with `--minimal`). |
-| `PreToolUse` — `Task` / `WebSearch` / `WebFetch`                | `planning`     | Investigation tools. |
+| `PreToolUse` — `Edit` / `Write` / `MultiEdit` / `NotebookEdit`  | `coding`       | Card shows the file being touched — "Editing store.ts", "Writing landing.html". |
+| `PreToolUse` — `Bash` (test runner)                             | `testing`      | Detected via `pytest`/`jest`/`vitest`/`go test`/`cargo test`/etc. Classification always reads the command, never the description. |
+| `PreToolUse` — `Bash` (other)                                   | `coding`       | Card shows the agent's own one-line description of the command ("Show working tree status"), falling back to the command text when none was supplied. |
+| `PreToolUse` — `Task` / `WebSearch` / `WebFetch`                | `planning`     | Card shows what is being looked for — the subagent's task description, "Searching: &lt;query&gt;", or "Reading &lt;host&gt;". |
+
+Messages are capped at 120 characters. With `--minimal` (`AGSTATUS_DETAIL=off`) every card shows
+only the tool name — no descriptions, file names, queries, or command text.
+
+> **Why descriptions instead of commands?** Agents write a short description of
+> each command they run, which reads better on a phone than a shell one-liner —
+> and keeps flags, paths, and anything secret in the command out of the board.
 | `Notification`                                                  | `blocked`      | Claude Code: permission prompts and other attention-needed events — this is what triggers a push. |
 | `PermissionRequest`                                             | `blocked`      | Codex: fires before approval prompts — same push trigger. |
 | `PreToolUse` — `apply_patch`                                    | `coding`       | Codex's file-edit tool; the card shows "Editing files". |
@@ -159,6 +166,7 @@ a 10 s timeout (the script itself exits within ~4 s).
 | `AGSTATUS_DETAIL=off`  | Node hook only. Send tool names instead of command text (what `--minimal` sets). |
 | `AGSTATUS_USAGE=off`   | Node hook only. Never read or report plan usage (see [Plan-usage bars](#plan-usage-bars)). |
 | `AGSTATUS_SOURCE`      | Node hook only. Agent kind tag on sessions (default `claude`; the Codex integration sets `codex`). Scopes which limit bars a dashboard shows. |
+| `AGSTATUS_DEBUG=1`     | Node hook only. Prints diagnostics to **stderr** (never stdout). The hook fails silently by design, so this is how you find out why plan-usage bars stopped appearing. |
 
 ## Manual setup: the bash hook
 

@@ -351,6 +351,38 @@
   .feature h3 { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; margin-bottom: 7px; }
   .feature p { color: var(--muted); font-size: 14.5px; }
 
+  /* ── phone shots ── */
+  .phones {
+    display: flex;
+    flex-wrap: wrap;
+    gap: clamp(20px, 4vw, 44px);
+    align-items: flex-start;
+    justify-content: center;
+  }
+  .phone { width: min(285px, 76vw); }
+  .phone-frame {
+    background: #000;
+    border: 1px solid var(--line);
+    border-radius: 34px;
+    padding: 7px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  }
+  .phone-frame img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 27px;
+  }
+  .phone figcaption {
+    margin-top: 14px;
+    text-align: center;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--muted-2);
+  }
+
   /* ── setup: a real sequence, so it is numbered ── */
   .steps { display: grid; gap: 2px; background: var(--line); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
   .step { background: var(--bg); padding: 24px clamp(18px, 3vw, 30px); display: grid; grid-template-columns: auto 1fr; gap: 20px; align-items: start; }
@@ -493,6 +525,29 @@
       <h3>Open source, self-hostable</h3>
       <p>MIT licensed, one Node process and a Postgres database. Use the hosted board or run the whole thing on your own machine.</p>
     </article>
+  </div>
+</section>
+
+<section id="app">
+  <div class="sec-head">
+    <h2>It lives in your pocket.</h2>
+    <p>The iPhone app shows the same board, and keeps a timeline of everything each agent did. Try it without pairing anything — the app ships with a demo board.</p>
+  </div>
+  <div class="phones">
+    <figure class="phone">
+      <div class="phone-frame">
+        <img src="/img/app-board.png" width="285" height="620" loading="lazy"
+             alt="The AgStatus board on iPhone: plan-limit bars for the current session and weekly caps, above cards for four agent sessions — one coding, one testing, one blocked, one done." />
+      </div>
+      <figcaption>The board</figcaption>
+    </figure>
+    <figure class="phone">
+      <div class="phone-frame">
+        <img src="/img/app-history.png" width="285" height="620" loading="lazy"
+             alt="Session history on iPhone: a timeline of one agent's status changes, each with a colored dot, the activity, and a timestamp." />
+      </div>
+      <figcaption>Session history</figcaption>
+    </figure>
   </div>
 </section>
 

@@ -71,6 +71,12 @@ On the hosted server:
   app (Settings → "Delete board") or with one request:
   `curl -X DELETE https://<server>/w/<token>`
 
+Deleting removes data from the service immediately: it stops being served,
+shown, or returned by the API. Records are flagged as deleted rather than
+erased on the spot (see the soft-delete note in
+[self-hosting](self-hosting.md#persistence-postgresql)), so a copy can remain
+in the backing database. To have something erased outright, open an issue.
+
 ## Self-hosting
 
 AgStatus is open source. You can run the entire server yourself, in which

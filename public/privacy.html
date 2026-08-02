@@ -191,9 +191,11 @@
       (Settings → "Delete board") or with one request:
       <code>curl -X DELETE https://agstatus.online/w/&lt;token&gt;</code></li>
   </ul>
-  <p>Deleted data is removed from the service immediately: it stops being served, shown, or
-    returned by the API. Records are first flagged as deleted rather than erased on the spot, and
-    are cleared from the database during routine maintenance.</p>
+  <p>Deleting removes data from the service immediately: it stops being served, shown, or returned
+    by the API, on every device. Records are flagged as deleted rather than erased on the spot, so
+    a copy can remain in the database that backs the service. If you want something erased
+    outright, <a href="https://github.com/KardanovIR/claude-status-dashboard/issues">open an
+    issue</a> and it will be removed.</p>
 
   <h2>Self-hosting</h2>
   <p>AgStatus is open source under the MIT license. You can run the entire server yourself, in

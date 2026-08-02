@@ -206,7 +206,9 @@ struct SettingsView: View {
             LabeledContent("Version", value: appVersion)
             Link(
                 "Privacy policy",
-                destination: URL(string: "https://github.com/KardanovIR/claude-status-dashboard/blob/master/docs/privacy.md")!
+                // Same canonical URL the App Store listing points at, so the
+                // two can never drift apart (and it survives repo renames).
+                destination: URL(string: "https://agstatus.online/privacy")!
             )
             Link(
                 "Source code",

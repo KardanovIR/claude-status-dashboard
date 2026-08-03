@@ -5,10 +5,15 @@ and the board is populated without needing a paired machine.
 
 ## What is here
 
-`6.9/` — **1320 × 2868**, the iPhone 6.9" display size App Store Connect
-requires. Apple scales these down for smaller iPhone sizes, so this is the only
-set you need. The app is iPhone-only (`TARGETED_DEVICE_FAMILY = 1`), so no iPad
-screenshots are required.
+`6.5/` — **1284 × 2778**. This is the set App Store Connect asks for first;
+uploading 6.9" images into this slot is rejected with "Screenshots dimensions
+should be: 1242 × 2688px, 2688 × 1242px, 1284 × 2778px or 2778 × 1284px".
+Captured natively on an iPhone 14 Plus simulator (no scaling or cropping).
+
+`6.9/` — **1320 × 2868**, for the 6.9" slot when App Store Connect offers it.
+
+The app is iPhone-only (`TARGETED_DEVICE_FAMILY = 1`), so no iPad screenshots
+are required.
 
 Upload in this order — the first one is what people see in search results:
 
@@ -26,7 +31,11 @@ cannot be tapped by `simctl`, so a DEBUG-only deep link opens it
 (`AGSTATUS_OPEN_HISTORY=1`, see `BoardView.openHistoryForScreenshots()`).
 
 ```bash
-DEV=$(xcrun simctl list devices available | grep "iPhone 17 Pro Max" | grep -o "[0-9A-F-]\{36\}")
+# 6.5" (1284x2778) — the size App Store Connect asks for.
+# For 6.9" (1320x2868) use an iPhone 16/17 Pro Max device type instead.
+DEV=$(xcrun simctl create "AgStatus-6.5" \
+  com.apple.CoreSimulator.SimDeviceType.iPhone-14-Plus \
+  com.apple.CoreSimulator.SimRuntime.iOS-26-5)
 xcrun simctl boot "$DEV"
 xcrun simctl install "$DEV" /path/to/AgStatus.app
 xcrun simctl status_bar "$DEV" override --time "9:41" --batteryState charged \
@@ -34,12 +43,12 @@ xcrun simctl status_bar "$DEV" override --time "9:41" --batteryState charged \
 
 # board
 SIMCTL_CHILD_AGSTATUS_DEMO=1 xcrun simctl launch --terminate-running-process "$DEV" com.kardanov.agstatus
-xcrun simctl io "$DEV" screenshot 6.9/02-board.png
+xcrun simctl io "$DEV" screenshot 6.5/02-board.png
 
 # history
 SIMCTL_CHILD_AGSTATUS_DEMO=1 SIMCTL_CHILD_AGSTATUS_OPEN_HISTORY=1 \
   xcrun simctl launch --terminate-running-process "$DEV" com.kardanov.agstatus
-xcrun simctl io "$DEV" screenshot 6.9/03-history.png
+xcrun simctl io "$DEV" screenshot 6.5/03-history.png
 ```
 
 Install the app on a simulator that has never run it to get the welcome screen —

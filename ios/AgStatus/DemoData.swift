@@ -89,13 +89,20 @@ enum DemoData {
 
     /// A believable timeline for a demo session, ending in its current state.
     static func history(for session: Session) -> [HistoryEvent] {
+        // A full session's worth of steps: enough to fill the timeline on the
+        // largest iPhone, and to show a blocked stretch resolving.
         let steps: [(AgentStatus, String, Int64)] = [
-            (.idle, "Session started", 42),
-            (.planning, "Reading the codebase…", 39),
-            (.coding, "Editing src/auth/token.ts", 31),
-            (.testing, "npm test — 41 passing, 2 failing", 24),
-            (.coding, "Fixing null check in parser.js", 18),
+            (.idle, "Session started", 46),
+            (.planning, "Reading the codebase…", 44),
+            (.planning, "Drafting an implementation plan", 40),
+            (.coding, "Editing src/auth/token.ts", 35),
+            (.coding, "Implementing retry with backoff", 31),
+            (.testing, "npm test — 41 passing, 2 failing", 26),
+            (.coding, "Fixing null check in parser.js", 22),
+            (.blocked, "Needs permission approval", 18),
+            (.coding, "Refactoring api/routes.ts", 14),
             (.testing, "npm test — 42 passing, 1 pending", 9),
+            (.coding, "Writing SessionStore.swift", 5),
         ]
         var events: [HistoryEvent] = []
         for (index, step) in steps.enumerated() {

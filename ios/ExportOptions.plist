@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Export settings for an App Store Connect upload. Used by
+	     scripts/upload-ios-build.sh; see docs/appstore/README.md. -->
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>teamID</key>
+	<string>KKS5T5ZN3Y</string>
+	<!-- Let Xcode fetch/create the Apple Distribution certificate and the
+	     App Store provisioning profile (needs the app record to exist). -->
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<!-- Symbols let App Store Connect symbolicate crash reports. -->
+	<key>uploadSymbols</key>
+	<true/>
+	<!-- Keep the binary as built; no App Store thinning variants needed. -->
+	<key>stripSwiftSymbols</key>
+	<true/>
+	<key>destination</key>
+	<string>export</string>
+</dict>
+</plist>

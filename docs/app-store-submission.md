@@ -19,6 +19,38 @@ the Apple Developer portal.
 | Export with method `app-store-connect`, then confirm `codesign -d --entitlements` shows `aps-environment: production` | after the record exists |
 | Flip the server to `APNS_ENV=production` when the first TestFlight build ships | you |
 
+## Uploading the build
+
+The app record must exist in App Store Connect first — the upload is what
+attaches a binary to it, not what creates it.
+
+**Xcode (simplest, no extra credentials).** Open `ios/AgStatus.xcodeproj`,
+choose "Any iOS Device (arm64)", then Product → Archive. When Organizer opens:
+Distribute App → App Store Connect → Upload → Next through automatic signing →
+Upload. Xcode creates the Apple Distribution certificate and App Store
+provisioning profile for you (this machine currently has only an Apple
+Development certificate, which is normal).
+
+**Command line (repeatable).** `scripts/upload-ios-build.sh` archives, exports
+with `ios/ExportOptions.plist`, prints the `aps-environment` baked into the
+exported profile, then validates and uploads. It needs an App Store Connect API
+key with the App Manager role:
+
+```bash
+mkdir -p ~/.appstoreconnect/private_keys
+mv ~/Downloads/AuthKey_XXXXXXXXXX.p8 ~/.appstoreconnect/private_keys/
+export ASC_KEY_ID=XXXXXXXXXX
+export ASC_ISSUER_ID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+scripts/upload-ios-build.sh
+```
+
+Without those variables the script still archives and exports, then stops and
+prints the `.ipa` path so you can upload it with Transporter (free, Mac App
+Store) instead.
+
+Processing takes roughly 5–15 minutes, after which the build shows up under
+TestFlight and in the version's Build section.
+
 ## Listing
 
 | Field | Value |

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A pulse trace, echoing the iOS icon's waveform.path.ecg glyph. Stays inside
+     the 72dp adaptive-icon safe zone so no launcher mask can clip it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M25,54 L41,54 L47,38 L55,71 L63,48 L68,54 L83,54"
+        android:strokeColor="#B17AFF"
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

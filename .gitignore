@@ -21,3 +21,9 @@ copy_*.sh
 test.sh
 content.html
 config.merge.json
+
+# Android local SDK path (machine-specific)
+android/local.properties
+android/.gradle/
+android/build/
+android/app/build/

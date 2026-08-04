@@ -89,7 +89,7 @@ or set them in your deployment environment.
 | `APNS_KEY_ID`    | _(unset)_                         | 10-character key id of the `.p8` key. |
 | `APNS_TEAM_ID`   | _(unset)_                         | 10-character Apple Developer team id. |
 | `APNS_TOPIC`     | _(unset)_                         | The iOS app's bundle id (sent as the `apns-topic` header), e.g. `com.kardanov.agstatus`. |
-| `APNS_ENV`       | `sandbox`                         | `sandbox` targets `api.sandbox.push.apple.com` (development builds); `production` targets `api.push.apple.com` (TestFlight/App Store). `APNS_SERVER` overrides the URL explicitly. |
+| `APNS_ENV`       | `sandbox`                         | Which APNs environment is tried **first**: `sandbox` (`api.sandbox.push.apple.com`, development builds) or `production` (`api.push.apple.com`, TestFlight/App Store). Both are reachable either way — see below — so this is a performance hint, not a switch you have to get right. `APNS_SERVER` pins one endpoint explicitly and disables the fallback. |
 
 ## Persistence (PostgreSQL)
 
@@ -185,11 +185,22 @@ To enable:
    APNS_KEY_ID=ABC123DEFG
    APNS_TEAM_ID=TEAM123456
    APNS_TOPIC=com.kardanov.agstatus                # your app build's bundle id
-   APNS_ENV=sandbox                                # production for TestFlight/App Store builds
+   APNS_ENV=sandbox                                # only which endpoint is tried first
    ```
 
 4. Restart. `GET /api/config` now reports `"push": true`, and the app's
    Notifications toggle goes live.
+
+**You do not have to switch environments when you ship.** A device token is
+only valid against the APNs environment its build was signed for — a
+development build's token works against the sandbox, a TestFlight or App Store
+build's against production — and nothing in the token says which. The server
+therefore tries `APNS_ENV` first, and if Apple answers `BadDeviceToken` it
+retries the other environment and remembers which one worked for that device.
+A device is only dropped when the app is genuinely gone (`410 Unregistered`) or
+when every environment disowns the token; a timeout or a 5xx never unregisters
+anyone. So a development phone and App Store installs can share one board and
+all keep receiving pushes.
 
 What triggers a push: an agent transitioning into `blocked` notifies every
 registered device; transitioning into `done` notifies only devices that opted

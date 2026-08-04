@@ -23,8 +23,8 @@ const KEY_ID = 'TESTKEY9AB';
 const TEAM_ID = 'TESTTEAM12';
 const TOPIC = 'com.kardanov.agstatus';
 
-function apnsCfg(server: string): NonNullable<AppConfig['apns']> {
-  return { keyPem: KEY_PEM, keyId: KEY_ID, teamId: TEAM_ID, topic: TOPIC, server };
+function apnsCfg(server: string, altServer: string | null = null): NonNullable<AppConfig['apns']> {
+  return { keyPem: KEY_PEM, keyId: KEY_ID, teamId: TEAM_ID, topic: TOPIC, server, altServer };
 }
 
 // ---- mock APNs server (plain-http http2; the Pusher allows http:// for tests)
@@ -138,7 +138,7 @@ describe('device registration (multi mode)', () => {
     expect(res.body).toEqual({ ok: true });
 
     const wsId = store.resolveToken(token)!;
-    expect(store.devices(wsId)).toEqual([{ deviceToken: DEVICE_A, notifyDone: false }]);
+    expect(store.devices(wsId)).toEqual([{ deviceToken: DEVICE_A, notifyDone: false, apnsServer: null }]);
   });
 
   it('rejects malformed device tokens and non-ios platforms with 400', async () => {
@@ -166,7 +166,7 @@ describe('device registration (multi mode)', () => {
       .send(registerBody(DEVICE_A, { notify_done: true }))
       .expect(200);
 
-    expect(store.devices(wsId)).toEqual([{ deviceToken: DEVICE_A, notifyDone: true }]);
+    expect(store.devices(wsId)).toEqual([{ deviceToken: DEVICE_A, notifyDone: true, apnsServer: null }]);
   });
 
   it('caps at 10 devices per workspace: 429 for a new device, updates still OK', async () => {
@@ -242,7 +242,7 @@ describe('device registration (multi mode)', () => {
     const second = makeApp({ databaseUrl: dbUrl });
     await second.ready;
     const wsId = second.store.resolveToken(token)!;
-    expect(second.store.devices(wsId)).toEqual([{ deviceToken: DEVICE_A, notifyDone: true }]);
+    expect(second.store.devices(wsId)).toEqual([{ deviceToken: DEVICE_A, notifyDone: true, apnsServer: null }]);
     second.shutdown();
   });
 });
@@ -467,6 +467,80 @@ describe('push dispatch', () => {
     await request(app).post(`/w/${token}/webhook`).send(webhookBody('sess-8', { status: 'blocked' })).expect(200);
     await waitFor(() => store.deviceCount(wsId) === 0, 'the device to be pruned');
     expect(store.devices(wsId)).toEqual([]);
+  });
+
+  it('retries the other APNs environment when a token is rejected as BadDeviceToken', async () => {
+    // A development build's token is only valid against the sandbox, and an
+    // App Store build's only against production. Which one a token belongs to
+    // is not knowable up front, so the wrong guess must not lose the device.
+    const preferred = await mockApns();
+    const other = await mockApns();
+    const { app, store } = makeApp({ apns: apnsCfg(preferred.url, other.url) });
+    const token = await createWorkspace(app);
+    const wsId = store.resolveToken(token)!;
+    await request(app).post(`/w/${token}/devices`).send(registerBody(DEVICE_A)).expect(200);
+
+    preferred.respondWith(400, { reason: 'BadDeviceToken' });
+    await request(app).post(`/w/${token}/webhook`).send(webhookBody('sess-env', { status: 'blocked' })).expect(200);
+
+    await waitFor(() => other.requests.length === 1, 'the retry on the other endpoint');
+    expect(preferred.requests).toHaveLength(1);
+    // Crucially the device survives: it was valid all along, just elsewhere.
+    expect(store.deviceCount(wsId)).toBe(1);
+    expect(store.devices(wsId)[0].apnsServer).toBe(other.url);
+  });
+
+  it('sends straight to the remembered endpoint on the next push', async () => {
+    const preferred = await mockApns();
+    const other = await mockApns();
+    const { app, store } = makeApp({ apns: apnsCfg(preferred.url, other.url), debounceMs: 0 });
+    const token = await createWorkspace(app);
+    const wsId = store.resolveToken(token)!;
+    await request(app).post(`/w/${token}/devices`).send(registerBody(DEVICE_A)).expect(200);
+
+    preferred.respondWith(400, { reason: 'BadDeviceToken' });
+    await request(app).post(`/w/${token}/webhook`).send(webhookBody('sess-env2', { status: 'blocked' })).expect(200);
+    await waitFor(() => other.requests.length === 1, 'the first delivery');
+    expect(store.devices(wsId)[0].apnsServer).toBe(other.url);
+
+    // Second push: no rediscovery, the preferred endpoint is not touched again.
+    await request(app).post(`/w/${token}/webhook`).send(webhookBody('sess-env3', { status: 'blocked' })).expect(200);
+    await waitFor(() => other.requests.length === 2, 'the second delivery');
+    expect(preferred.requests).toHaveLength(1);
+  });
+
+  it('prunes only after every endpoint rejects the token', async () => {
+    const preferred = await mockApns();
+    const other = await mockApns();
+    const { app, store } = makeApp({ apns: apnsCfg(preferred.url, other.url) });
+    const token = await createWorkspace(app);
+    const wsId = store.resolveToken(token)!;
+    await request(app).post(`/w/${token}/devices`).send(registerBody(DEVICE_A)).expect(200);
+
+    preferred.respondWith(400, { reason: 'BadDeviceToken' });
+    other.respondWith(400, { reason: 'BadDeviceToken' });
+    await request(app).post(`/w/${token}/webhook`).send(webhookBody('sess-env4', { status: 'blocked' })).expect(200);
+
+    await waitFor(() => store.deviceCount(wsId) === 0, 'the device to be pruned');
+    expect(preferred.requests).toHaveLength(1);
+    expect(other.requests).toHaveLength(1);
+  });
+
+  it('does not retry elsewhere when the app was uninstalled (410 Unregistered)', async () => {
+    // 410 means the token was right for this environment; asking the other one
+    // would be a pointless round trip on every uninstalled device.
+    const preferred = await mockApns();
+    const other = await mockApns();
+    const { app, store } = makeApp({ apns: apnsCfg(preferred.url, other.url) });
+    const token = await createWorkspace(app);
+    const wsId = store.resolveToken(token)!;
+    await request(app).post(`/w/${token}/devices`).send(registerBody(DEVICE_A)).expect(200);
+
+    preferred.respondWith(410, { reason: 'Unregistered' });
+    await request(app).post(`/w/${token}/webhook`).send(webhookBody('sess-env5', { status: 'blocked' })).expect(200);
+
+    await waitFor(() => store.deviceCount(wsId) === 0, 'the device to be pruned');
+    expect(other.requests).toHaveLength(0);
   });
 
   it('with APNs disabled (apns: null) nothing is sent and nothing crashes', async () => {

@@ -18,7 +18,14 @@ export interface AppConfig {
     keyId: string; // APNS_KEY_ID
     teamId: string; // APNS_TEAM_ID
     topic: string; // APNS_TOPIC (app bundle id)
-    server: string; // APNs endpoint (https://api[.sandbox].push.apple.com)
+    server: string; // preferred endpoint (https://api[.sandbox].push.apple.com)
+    /**
+     * The other Apple endpoint. A device token is only valid against the
+     * environment its build was signed for, and nothing in the token says
+     * which — so a token rejected as BadDeviceToken is retried here before it
+     * is written off. Null when APNS_SERVER pins one endpoint explicitly.
+     */
+    altServer: string | null;
   } | null;
 }
 
@@ -89,12 +96,25 @@ function apnsFromEnv(env: NodeJS.ProcessEnv): AppConfig['apns'] {
     return null;
   }
 
-  const server =
-    env.APNS_SERVER ||
-    (env.APNS_ENV === 'production'
-      ? 'https://api.push.apple.com'
-      : 'https://api.sandbox.push.apple.com');
-  return { keyPem, keyId, teamId, topic, server: server.replace(/\/$/, '') };
+  const PRODUCTION = 'https://api.push.apple.com';
+  const SANDBOX = 'https://api.sandbox.push.apple.com';
+
+  // An explicit APNS_SERVER means "use exactly this" (a mock in tests, or a
+  // proxy) — guessing a second endpoint there would be wrong.
+  if (env.APNS_SERVER) {
+    return { keyPem, keyId, teamId, topic, server: env.APNS_SERVER.replace(/\/$/, ''), altServer: null };
+  }
+  // APNS_ENV only picks which endpoint is tried FIRST; both are reachable, so
+  // a mixed fleet of development and App Store builds all receive pushes.
+  const production = env.APNS_ENV === 'production';
+  return {
+    keyPem,
+    keyId,
+    teamId,
+    topic,
+    server: production ? PRODUCTION : SANDBOX,
+    altServer: production ? SANDBOX : PRODUCTION,
+  };
 }
 
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AppConfig {

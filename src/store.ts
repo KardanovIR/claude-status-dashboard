@@ -29,6 +29,13 @@ export interface UpsertInput {
 export interface Device {
   deviceToken: string;
   notifyDone: boolean;
+  /**
+   * APNs endpoint this token last authenticated against. A development build's
+   * token only works against the sandbox and an App Store build's only against
+   * production, and nothing in the token says which — so it is learned on
+   * first delivery and remembered. Null until then.
+   */
+  apnsServer: string | null;
 }
 
 /** One plan-limit window (e.g. the 5-hour session window or a weekly cap). */
@@ -92,7 +99,10 @@ export class Store {
   private sessions = new Map<string, Map<string, Session>>();
   private workspaces = new Map<string, WorkspaceMeta>();
   // Push-notification device tokens per workspace (token → notifyDone + createdAt).
-  private deviceTokens = new Map<string, Map<string, { notifyDone: boolean; createdAt: number }>>();
+  private deviceTokens = new Map<
+    string,
+    Map<string, { notifyDone: boolean; createdAt: number; apnsServer: string | null }>
+  >();
   private webhookWindows = new Map<string, { windowStart: number; count: number }>();
   // Plan-limit usage per workspace, keyed by source ("claude", "codex", …).
   private usageBySource = new Map<string, Map<string, Usage>>();
@@ -159,6 +169,7 @@ export class Store {
         created_at BIGINT NOT NULL,
         updated_at BIGINT NOT NULL,
         deleted_at BIGINT,
+        apns_server TEXT,
         PRIMARY KEY (workspace_id, device_token)
       );
       CREATE TABLE IF NOT EXISTS usage_limits (
@@ -180,6 +191,9 @@ export class Store {
         PRIMARY KEY (workspace_id, session_id, seq)
       );
     `);
+
+    // Databases created before this column existed.
+    await pool.query('ALTER TABLE devices ADD COLUMN IF NOT EXISTS apns_server TEXT');
 
     // node-postgres returns BIGINT as string to avoid precision loss; every
     // epoch-ms value here fits a double, so Number() them on the way in.
@@ -214,10 +228,11 @@ export class Store {
     }
 
     const devices = await pool.query(
-      'SELECT workspace_id, device_token, notify_done, created_at FROM devices WHERE deleted_at IS NULL'
+      'SELECT workspace_id, device_token, notify_done, created_at, apns_server FROM devices WHERE deleted_at IS NULL'
     );
     for (const row of devices.rows as Array<{
       workspace_id: string; device_token: string; notify_done: number; created_at: string;
+      apns_server: string | null;
     }>) {
       let map = this.deviceTokens.get(row.workspace_id);
       if (!map) {
@@ -227,6 +242,7 @@ export class Store {
       map.set(row.device_token, {
         notifyDone: row.notify_done === 1,
         createdAt: Number(row.created_at),
+        apnsServer: row.apns_server ?? null,
       });
     }
 
@@ -449,7 +465,9 @@ export class Store {
     if (!existing && map.size >= MAX_DEVICES_PER_WORKSPACE) return 'cap';
     const now = Date.now();
     const createdAt = existing?.createdAt ?? now;
-    map.set(token, { notifyDone, createdAt });
+    // Re-registering keeps the learned endpoint: the same token on the same
+    // build still belongs to the same APNs environment.
+    map.set(token, { notifyDone, createdAt, apnsServer: existing?.apnsServer ?? null });
     this.exec(
       `INSERT INTO devices (workspace_id, device_token, platform, notify_done, created_at, updated_at)
        VALUES ($1, $2, 'ios', $3, $4, $5)
@@ -475,7 +493,26 @@ export class Store {
   devices(wsId: string): Device[] {
     const map = this.deviceTokens.get(wsId);
     if (!map) return [];
-    return Array.from(map, ([deviceToken, d]) => ({ deviceToken, notifyDone: d.notifyDone }));
+    return Array.from(map, ([deviceToken, d]) => ({
+      deviceToken,
+      notifyDone: d.notifyDone,
+      apnsServer: d.apnsServer,
+    }));
+  }
+
+  /**
+   * Records which APNs endpoint accepted this token, so later pushes go
+   * straight there instead of rediscovering it. No-op for unknown devices.
+   */
+  setDeviceApnsServer(wsId: string, deviceToken: string, server: string): void {
+    const token = deviceToken.toLowerCase();
+    const entry = this.deviceTokens.get(wsId)?.get(token);
+    if (!entry || entry.apnsServer === server) return;
+    entry.apnsServer = server;
+    this.exec(
+      'UPDATE devices SET apns_server = $3 WHERE workspace_id = $1 AND device_token = $2',
+      [wsId, token, server]
+    );
   }
 
   deviceCount(wsId: string): number {

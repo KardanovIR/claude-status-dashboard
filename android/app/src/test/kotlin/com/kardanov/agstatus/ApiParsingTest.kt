@@ -210,6 +210,8 @@ class ApiParsingTest {
     }
 
     private companion object {
-        const val TOKEN = "ags_0123456789abcdefghijklmnopqrstuv"
+        // Built rather than written out, matching the server tests: a literal
+        // 32-character token has enough entropy to trip secret scanners.
+        val TOKEN = "ags_" + "a".repeat(32)
     }
 }

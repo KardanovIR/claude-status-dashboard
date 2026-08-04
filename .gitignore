@@ -27,3 +27,5 @@ android/local.properties
 android/.gradle/
 android/build/
 android/app/build/
+android/keystore.properties
+distribution/google-play/release/*.aab

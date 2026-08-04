@@ -62,7 +62,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck hooks/claude-status-hook.sh deploy/bootstrap-droplet.sh scripts/upload-ios-build.sh
+      - run: shellcheck hooks/claude-status-hook.sh deploy/bootstrap-droplet.sh scripts/*.sh
 
   docker:
     name: Docker image (build only)

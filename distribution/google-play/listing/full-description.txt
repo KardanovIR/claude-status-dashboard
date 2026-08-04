@@ -1,0 +1,44 @@
+AgStatus turns your phone into a live status board for the AI coding agents running on your computer. Kick off a task, walk away from the desk, and check what every session is doing right now: planning, coding, running tests, waiting on you, or finished.
+
+AgStatus is an independent open-source project that plugs into the hook systems of Claude Code and OpenAI Codex. It is not affiliated with, endorsed by, or sponsored by Anthropic or OpenAI.
+
+How it works
+
+A small hook script on your computer posts a short update whenever an agent starts a session, edits a file, runs a command, or gets stuck. Your board server keeps those updates and streams them to the app. One command sets the whole thing up: npx agstatus init.
+
+The app is a companion for a machine where agents run. It reads your board; it does not run agents on the phone.
+
+On the board
+
+- One card per session, showing the project folder, a color-coded status, and the current activity line.
+- Six plain statuses: idle, planning, coding, testing, blocked, done.
+- Sessions from both supported agents land on the same board.
+- A streaming connection keeps cards current, with a dot in the toolbar for the connection state.
+- Tap a card for its timeline: every status change with a timestamp, newest first.
+- Usage bars for plan limit windows, with the share used and when the window resets.
+- Pull to refresh. Swipe a card away once you are done with that session.
+
+Getting connected
+
+Scan the setup QR code your terminal prints, or paste the board URL by hand. To wire up a second machine, the app hands you a short-lived pairing code and the exact command to run. Camera scanning is optional: the camera is used only to read that QR code, the image never leaves the phone, and pasting the URL works just as well.
+
+No account, by design
+
+No sign-up, no email, no password, nothing to subscribe to. A board is an unguessable token in a URL, much like a webhook address. The app keeps that URL in encrypted storage on the device and talks to no server other than the one you point it at. No ads, no analytics, no advertising identifiers, no third-party tracking.
+
+Try it with no server
+
+Demo mode fills the board with sample agents so you can see how it reads. It runs entirely on the phone, with no server and nothing sent anywhere.
+
+Run the whole thing yourself
+
+The server, the web dashboard, the command-line tool, and this app are MIT licensed. Point the app at the hosted instance or at a server you run yourself: a single Node process, with a Docker image and optional PostgreSQL persistence.
+
+What actually leaves your computer
+
+Your machine sends the board a session id, the project folder name, one status word, a short activity line, and timestamps. Nothing else. Command text can be switched off, so messages carry only tool names, and usage reporting can be switched off too. On the hosted server, sessions are removed 24 hours after their last update, and boards untouched for 60 days are removed entirely. You can delete a board and everything on it from Settings, whenever you like.
+
+Privacy policy: https://agstatus.online/privacy
+Source code: https://github.com/KardanovIR/claude-status-dashboard
+
+Claude, Claude Code, Anthropic, Codex, and OpenAI are trademarks of their respective owners.

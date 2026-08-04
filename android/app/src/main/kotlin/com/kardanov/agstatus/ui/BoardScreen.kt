@@ -42,6 +42,7 @@ import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.SwipeToDismissBoxState
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -56,6 +57,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
@@ -77,6 +79,7 @@ import com.kardanov.agstatus.SessionStore
 import com.kardanov.agstatus.Theme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 /** The live board: one glanceable card per agent session. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -222,7 +225,7 @@ fun BoardScreen(
                                     modifier = Modifier.animateItem(),
                                     enableDismissFromStartToEnd = false,
                                     enableDismissFromEndToStart = true,
-                                    backgroundContent = { DismissBackground() },
+                                    backgroundContent = { DismissBackground(dismissState) },
                                 ) {
                                     SessionCard(
                                         session = session,
@@ -243,12 +246,23 @@ fun BoardScreen(
 
 // MARK: - Session list decoration
 
+/** Drag distance at which the dismiss background reaches full opacity. */
+private const val DISMISS_REVEAL_PX = 220f
+
+/**
+ * Faded in with the drag itself. The box draws this behind the card at all
+ * times, and a done card is translucent, so a fixed-opacity background would
+ * bleed red through every finished session.
+ */
 @Composable
-private fun DismissBackground() {
+private fun DismissBackground(state: SwipeToDismissBoxState) {
+    val dragged = runCatching { abs(state.requireOffset()) }.getOrDefault(0f)
+    val revealed = (dragged / DISMISS_REVEAL_PX).coerceIn(0f, 1f)
     Row(
         modifier = Modifier
             .fillMaxSize()
             .clip(RoundedCornerShape(16.dp))
+            .alpha(revealed)
             .background(Theme.blocked)
             .padding(horizontal = 20.dp),
         horizontalArrangement = Arrangement.End,

@@ -115,10 +115,12 @@ fun BoardScreen(
     }
 
     // Only limits of agents that actually have sessions on the board — a
-    // Claude-only evening doesn't need Codex bars.
+    // Claude-only evening doesn't need Codex bars. With no sessions there is
+    // nothing to disambiguate, and the limits still matter between runs, so
+    // everything is shown rather than nothing.
     val visibleUsage = remember(sessions, usage) {
         val active = sessions.mapTo(mutableSetOf()) { it.source }
-        usage.filter { it.source in active }
+        if (active.isEmpty()) usage else usage.filter { it.source in active }
     }
 
     Scaffold(

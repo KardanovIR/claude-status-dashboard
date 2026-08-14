@@ -63,12 +63,14 @@
 
   function renderUsage() {
     // Only show limits for agents that actually have sessions on the board —
-    // a Claude-only evening doesn't need Codex bars.
+    // a Claude-only evening doesn't need Codex bars. With no sessions there is
+    // nothing to disambiguate, and the limits still matter between runs, so
+    // show everything rather than nothing.
     const active = new Set();
     for (const s of state.values()) active.add(s.source || 'claude');
     const rows = [];
     for (const u of usage) {
-      if (!active.has(u.source)) continue;
+      if (active.size > 0 && !active.has(u.source)) continue;
       const src = SOURCE_NAMES[u.source] || u.source;
       for (const w of u.windows || []) {
         const pct = Math.min(100, Math.max(0, Number(w.usedPct) || 0));

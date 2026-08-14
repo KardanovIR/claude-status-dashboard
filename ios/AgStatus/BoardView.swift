@@ -104,9 +104,12 @@ struct BoardView: View {
     // MARK: - Usage visibility
 
     /// Only limits of agents that actually have sessions on the board — a
-    /// Claude-only evening doesn't need Codex bars.
+    /// Claude-only evening doesn't need Codex bars. With no sessions there is
+    /// nothing to disambiguate, and your limits still matter between runs, so
+    /// everything is shown rather than nothing.
     private var visibleUsage: [UsageInfo] {
         let active = Set(store.sessions.map(\.source))
+        guard !active.isEmpty else { return store.usage }
         return store.usage.filter { active.contains($0.source) }
     }
 

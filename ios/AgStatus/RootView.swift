@@ -25,14 +25,19 @@ struct RootView: View {
         .onAppear { applyKeepAwake() }
         .onChange(of: keepAwake) { applyKeepAwake() }
         .onChange(of: showsBoard) { applyKeepAwake() }
-        .onChange(of: scenePhase) { oldPhase, newPhase in
+        .onChange(of: scenePhase) { _, newPhase in
             // A suspended SSE socket dies silently; reconnect on return so the
             // board never shows stale data under a green dot — and release the
             // server's per-board connection slot while backgrounded.
             switch newPhase {
             case .active:
-                if oldPhase == .background, store.board != nil, !store.isDemo,
-                   store.connection != .boardGone {
+                // Returning from background arrives as .inactive → .active, so
+                // key off the store's state (.idle after the background
+                // disconnect), not the previous phase — a brief .inactive dip
+                // (app switcher, notification shade) leaves the stream .live
+                // and correctly skips this.
+                if store.board != nil, !store.isDemo,
+                   store.connection == .idle {
                     store.connect()
                 }
             case .background:

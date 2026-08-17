@@ -7,6 +7,7 @@ export const HOOK_MARKER = 'agstatus-hook';
 
 export const HOOK_EVENTS: Array<{ event: string; matcher?: string }> = [
   { event: 'SessionStart' },
+  { event: 'UserPromptSubmit' },
   { event: 'PreToolUse', matcher: 'Edit|Write|MultiEdit|NotebookEdit|Bash|Task|WebSearch|WebFetch' },
   { event: 'Stop' },
   { event: 'Notification' },

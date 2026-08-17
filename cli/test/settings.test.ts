@@ -16,7 +16,7 @@ import {
 const OPTS = { url: 'https://s.example/w/ags_x', hookCommand: 'node "$HOME/.claude/hooks/agstatus-hook.js"' };
 
 describe('mergeSettings', () => {
-  it('registers all five events and the env block on a fresh config', () => {
+  it('registers all six events and the env block on a fresh config', () => {
     const out = mergeSettings({}, OPTS);
     const hooks = out.hooks as Record<string, Array<{ matcher?: string; hooks: Array<{ command: string }> }>>;
     for (const { event, matcher } of HOOK_EVENTS) {

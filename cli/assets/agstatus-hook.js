@@ -5,7 +5,8 @@
  * Posts session status to an AgStatus dashboard. Both tools deliver the hook
  * payload as JSON on stdin with the same core fields (hook_event_name,
  * session_id, cwd). Wired to SessionStart, PreToolUse, Stop, and
- * Notification + SessionEnd (Claude Code) / PermissionRequest (Codex).
+ * UserPromptSubmit + Notification + SessionEnd (Claude Code) /
+ * PermissionRequest (Codex).
  *
  * IMPORTANT: this script must never write to stdout — Codex interprets hook
  * stdout as behavior-control JSON, and a stray print could block a tool call.
@@ -399,6 +400,18 @@ async function main() {
         : typeof payload.message === 'string' && payload.message !== ''
           ? payload.message
           : generic;
+  } else if (event === 'UserPromptSubmit') {
+    // The user just answered — flip the card away from blocked/idle right now,
+    // not at the first tool call (which may come much later, or never for a
+    // tool-free reply). Prompts are the user's own words, so honor the
+    // privacy switch exactly like command text.
+    status = 'planning';
+    const prompt = str(typeof payload.prompt === 'string' ? payload.prompt : '')
+      .replace(/\s+/g, ' ');
+    message =
+      process.env.AGSTATUS_DETAIL === 'off' || prompt === ''
+        ? 'Processing prompt'
+        : prompt.slice(0, COMMAND_MAX);
   } else if (event === 'PreToolUse') {
     const tool = typeof payload.tool_name === 'string' ? payload.tool_name : '';
     const input =

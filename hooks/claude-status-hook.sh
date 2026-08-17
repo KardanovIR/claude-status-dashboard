@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Posts Claude Code session status to the dashboard.
-# Wired to SessionStart, PreToolUse, Stop, Notification, SessionEnd.
+# Wired to SessionStart, UserPromptSubmit, PreToolUse, Stop, Notification, SessionEnd.
 # Requires: curl, jq. Requires env: CLAUDE_STATUS_URL. Optional: CLAUDE_STATUS_SECRET.
 
 # Never block Claude on any failure.
@@ -18,6 +18,7 @@ cwd=$(jq -r '.cwd // empty'                   <<<"$payload")
 tool=$(jq -r '.tool_name // empty'            <<<"$payload")
 command=$(jq -r '.tool_input.command // empty' <<<"$payload")
 note=$(jq -r '.message // empty'              <<<"$payload")
+prompt=$(jq -r '.prompt // empty'             <<<"$payload")
 
 [[ -z "$session" ]] && exit 0
 
@@ -45,6 +46,10 @@ case "$event" in
     ;;
   Notification)
     status="blocked"; message="${note:-Needs input}"
+    ;;
+  UserPromptSubmit)
+    # Flip the card the moment the user answers, not at the first tool call.
+    status="planning"; message=$(truncate "${prompt:-Processing prompt}")
     ;;
   PreToolUse)
     case "$tool" in

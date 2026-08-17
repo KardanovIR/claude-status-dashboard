@@ -62,20 +62,17 @@ afterAll(() => {
   server?.kill();
 });
 
-/** Fires the hook with a PreToolUse payload and returns what it posted. */
-function fire(
-  toolName: string,
-  toolInput: Record<string, unknown>,
+/** Fires the hook with the given payload fields and returns what it posted. */
+function fireEvent(
+  payload: Record<string, unknown>,
   extraEnv: Record<string, string> = {},
 ): Posted | undefined {
   fs.writeFileSync(capturePath, '');
   execFileSync(process.execPath, [HOOK], {
     input: JSON.stringify({
-      hook_event_name: 'PreToolUse',
       session_id: 'msg-test',
       cwd: '/tmp/demo-project',
-      tool_name: toolName,
-      tool_input: toolInput,
+      ...payload,
     }),
     // AGSTATUS_USAGE=off: never read real credentials from a test.
     env: { ...process.env, CLAUDE_STATUS_URL: base, AGSTATUS_USAGE: 'off', ...extraEnv },
@@ -89,6 +86,18 @@ function fire(
     if (Date.now() > deadline) return undefined;
     execFileSync(process.execPath, ['-e', 'setTimeout(()=>{},50)']); // brief pause
   }
+}
+
+/** Fires the hook with a PreToolUse payload and returns what it posted. */
+function fire(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  extraEnv: Record<string, string> = {},
+): Posted | undefined {
+  return fireEvent(
+    { hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput },
+    extraEnv,
+  );
 }
 
 describe('hook status messages', () => {
@@ -158,5 +167,29 @@ describe('hook status messages', () => {
   it('truncates long messages', () => {
     const posted = fire('Bash', { description: 'x'.repeat(400), command: 'true' });
     expect(posted!.message.length).toBeLessThanOrEqual(120);
+  });
+
+  it('flips to planning the moment the user submits a prompt', () => {
+    const posted = fireEvent({
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'Fix the login bug\nin the session store',
+    });
+    expect(posted?.status).toBe('planning');
+    expect(posted?.message).toBe('Fix the login bug in the session store');
+  });
+
+  it('sends a generic prompt label in minimal mode, and truncates long prompts', () => {
+    const minimal = fireEvent(
+      { hook_event_name: 'UserPromptSubmit', prompt: 'secret plans' },
+      { AGSTATUS_DETAIL: 'off' },
+    );
+    expect(minimal?.message).toBe('Processing prompt');
+
+    const long = fireEvent({ hook_event_name: 'UserPromptSubmit', prompt: 'y'.repeat(400) });
+    expect(long?.status).toBe('planning');
+    expect(long!.message.length).toBeLessThanOrEqual(120);
+
+    const empty = fireEvent({ hook_event_name: 'UserPromptSubmit' });
+    expect(empty?.message).toBe('Processing prompt');
   });
 });

@@ -86,6 +86,7 @@ events but predates Codex support, so it has no `PermissionRequest` or
 | Hook event                                                     | Board status   | Notes |
 | -------------------------------------------------------------- | -------------- | ----- |
 | `SessionStart`                                                  | `idle`         | New session appears as soon as Claude starts. |
+| `UserPromptSubmit`                                              | `planning`     | Fires the moment you submit a prompt, so the card leaves `blocked`/`idle` immediately instead of waiting for the first tool call. Shows the prompt text (truncated); minimal mode shows "Processing prompt". |
 | `PreToolUse` — `Edit` / `Write` / `MultiEdit` / `NotebookEdit`  | `coding`       | Card shows the file being touched — "Editing store.ts", "Writing landing.html". |
 | `PreToolUse` — `Bash` (test runner)                             | `testing`      | Detected via `pytest`/`jest`/`vitest`/`go test`/`cargo test`/etc. Classification always reads the command, never the description. |
 | `PreToolUse` — `Bash` (other)                                   | `coding`       | Card shows the agent's own one-line description of the command ("Show working tree status"), falling back to the command text when none was supplied. |
@@ -112,8 +113,8 @@ easy to tell apart.
 The Node hook also feeds the dashboard's plan-limit bars (the 5-hour session
 window and the weekly caps you see in `/usage` inside Claude Code):
 
-1. On quiet events (`SessionStart`, `Stop`, `Notification` — never
-   `PreToolUse`), at most once every 5 minutes, the hook reads the Claude
+1. On quiet events (`SessionStart`, `UserPromptSubmit`, `Stop`, `Notification`
+   — never `PreToolUse`), at most once every 5 minutes, the hook reads the Claude
    Code OAuth token locally: `~/.claude/.credentials.json`, or the macOS
    login keychain (`Claude Code-credentials`). macOS may ask once to allow
    `security` access — choose "Always Allow".
@@ -199,6 +200,13 @@ project, use `.claude/settings.json` in that repo instead.
   },
   "hooks": {
     "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "$HOME/.claude/hooks/claude-status-hook.sh" }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
       {
         "hooks": [
           { "type": "command", "command": "$HOME/.claude/hooks/claude-status-hook.sh" }

@@ -86,6 +86,25 @@ services:
     depends_on:
       - dashboard
 
+  # Optional Cloudflare Tunnel connector — publishes the dashboard with no
+  # open ports (no port forwarding; a dynamic home IP or CGNAT is fine).
+  # Create the tunnel in the Cloudflare Zero Trust dashboard, point its
+  # public hostname at http://dashboard:3000, then enable with:
+  #   TUNNEL_TOKEN=... docker compose --profile tunnel up -d
+  # TLS terminates at Cloudflare's edge, so the caddy/tls profile is not
+  # needed alongside this — but do set TRUST_PROXY=1 and PUBLIC_URL.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: claude-status-cloudflared
+    restart: unless-stopped
+    profiles:
+      - tunnel
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    depends_on:
+      - dashboard
+
 volumes:
   pg_data:
   caddy_data:

@@ -162,6 +162,37 @@ automatically and proxies to the app with streaming enabled
 (`flush_interval -1`), so SSE works out of the box. Without the profile
 (`docker compose up -d`) the app is served plain on host port `${PORT:-3000}`.
 
+## Cloudflare Tunnel (home servers, no open ports)
+
+The alternative to the Caddy profile for machines behind a home router: a
+bundled `cloudflared` connector under the `tunnel` profile. The connector
+dials *out* to Cloudflare, so there is no port forwarding, no certificate to
+manage, and a dynamic IP or CGNAT connection just works. Requires the domain
+to be on Cloudflare DNS.
+
+1. In the [Cloudflare Zero Trust dashboard](https://one.dash.cloudflare.com)
+   go to **Networks → Tunnels → Create a tunnel** (Cloudflared connector),
+   name it, and copy the connector **token**.
+2. Under the tunnel's **Public hostname** tab, add your domain with service
+   **HTTP** → `dashboard:3000` (the compose service name — cloudflared runs
+   on the same Docker network). Cloudflare creates the DNS record for you;
+   remove any stale A/AAAA records for that name first.
+3. On the host:
+
+```bash
+cp .env.example .env
+# In .env set:
+#   TUNNEL_TOKEN=eyJ...            (from step 1)
+#   PUBLIC_URL=https://status.example.com
+#   TRUST_PROXY=1
+
+docker compose --profile tunnel up -d --build
+```
+
+SSE streams fine through the tunnel — the server's 25s keepalive keeps the
+connection inside Cloudflare's idle timeout. Do not enable the `tls` profile
+alongside this; TLS terminates at Cloudflare's edge.
+
 ## Push notifications (APNs)
 
 Optional, and only relevant if you use the iOS app against your instance.

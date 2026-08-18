@@ -1,0 +1,1252 @@
+<!doctype html>
+<!-- GENERATED FILE — do not edit. Source: docs/*.md, generator: scripts/build-docs.js -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>AgStatus docs — integration, self-hosting, API</title>
+<meta name="description" content="AgStatus documentation: Claude Code and Codex hook integration, self-hosting with Docker, and the HTTP API reference." />
+<meta name="theme-color" content="#0b0d12" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23a855f7'/></svg>" />
+<style>
+  :root {
+    --bg: #0b0d12;
+    --surface: #151923;
+    --surface-2: #1a1f2c;
+    --line: #232836;
+    --text: #e6e8ee;
+    --muted: #8a91a4;
+    --muted-2: #5b6278;
+    --idle: #6b7280; --planning: #3b82f6; --coding: #a855f7;
+    --testing: #f59e0b; --blocked: #ef4444; --done: #10b981;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+    --page: min(1080px, 100% - 48px);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg); color: var(--text); font-family: var(--sans);
+    line-height: 1.65; -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; }
+  :focus-visible { outline: 2px solid var(--coding); outline-offset: 3px; border-radius: 4px; }
+  .spectrum {
+    height: 2px; border: 0; opacity: 0.85;
+    background: linear-gradient(90deg,
+      var(--idle) 0 16.66%, var(--planning) 16.66% 33.33%, var(--coding) 33.33% 50%,
+      var(--testing) 50% 66.66%, var(--blocked) 66.66% 83.33%, var(--done) 83.33% 100%);
+  }
+  .nav {
+    position: sticky; top: 0; z-index: 50;
+    background: rgba(11, 13, 18, 0.78);
+    backdrop-filter: saturate(160%) blur(12px);
+    -webkit-backdrop-filter: saturate(160%) blur(12px);
+    border-bottom: 1px solid var(--line);
+  }
+  .nav-inner { width: var(--page); margin: 0 auto; height: 60px; display: flex; align-items: center; gap: 20px; }
+  .brand {
+    display: inline-flex; align-items: center; gap: 10px;
+    font-family: var(--mono); font-weight: 600; letter-spacing: -0.02em;
+    text-decoration: none; font-size: 15px;
+  }
+  .mark {
+    width: 16px; height: 16px; border-radius: 5px; flex-shrink: 0;
+    background: linear-gradient(135deg, var(--coding), var(--planning));
+    box-shadow: 0 0 16px rgba(168, 85, 247, 0.5);
+  }
+  .nav-links { margin-left: auto; display: flex; align-items: center; gap: 22px; font-size: 14px; color: var(--muted); }
+  .nav-links a { text-decoration: none; transition: color .15s; }
+  .nav-links a:hover { color: var(--text); }
+  @media (max-width: 620px) { .nav-links .hide-sm { display: none; } }
+
+  .layout {
+    width: var(--page); margin: 0 auto;
+    display: grid; grid-template-columns: 220px minmax(0, 1fr);
+    gap: 48px; padding: 40px 0 96px; align-items: start;
+  }
+  @media (max-width: 860px) { .layout { grid-template-columns: minmax(0, 1fr); gap: 8px; } }
+
+  .toc { position: sticky; top: 84px; font-size: 14px; }
+  @media (max-width: 860px) { .toc { position: static; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; background: var(--surface); } }
+  .toc-title { font-family: var(--mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-2); margin-bottom: 10px; }
+  .toc ul { list-style: none; }
+  .toc > ul > li { margin-bottom: 12px; }
+  .toc a { text-decoration: none; color: var(--muted); display: block; padding: 2px 0; transition: color .15s; }
+  .toc a:hover { color: var(--text); }
+  .toc-doc > a { color: var(--text); font-weight: 600; }
+  .toc ul ul { margin: 4px 0 0 2px; padding-left: 12px; border-left: 1px solid var(--line); }
+
+  .doc h2 {
+    font-size: clamp(26px, 4vw, 32px); letter-spacing: -0.02em; line-height: 1.2;
+    margin: 8px 0 16px; scroll-margin-top: 84px;
+  }
+  .doc h3 { font-size: 20px; margin: 36px 0 10px; letter-spacing: -0.01em; scroll-margin-top: 84px; }
+  .doc h4 { font-size: 16px; margin: 28px 0 8px; scroll-margin-top: 84px; }
+  .doc h5 { font-size: 14px; margin: 20px 0 6px; color: var(--muted); scroll-margin-top: 84px; }
+  .anchor { text-decoration: none; }
+  .anchor:hover::after { content: " #"; color: var(--muted-2); }
+  .doc p, .doc ul, .doc ol { margin: 0 0 14px; color: var(--muted); }
+  .doc li { margin: 4px 0; }
+  .doc ul, .doc ol { padding-left: 24px; }
+  .doc strong { color: var(--text); }
+  .doc a { color: var(--text); text-decoration-color: var(--muted-2); text-underline-offset: 3px; }
+  .doc a:hover { text-decoration-color: var(--text); }
+  .doc code {
+    font-family: var(--mono); font-size: 0.9em;
+    background: var(--surface-2); border: 1px solid var(--line);
+    border-radius: 5px; padding: 1px 5px; color: var(--text);
+  }
+  .doc pre {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; overflow-x: auto; margin: 0 0 16px; line-height: 1.55;
+  }
+  .doc pre code { background: none; border: 0; padding: 0; color: var(--text); font-size: 13px; }
+  .doc blockquote {
+    border-left: 3px solid var(--planning); background: var(--surface);
+    border-radius: 0 10px 10px 0; padding: 10px 16px; margin: 0 0 16px;
+  }
+  .doc blockquote p:last-child { margin-bottom: 0; }
+  .table-wrap { overflow-x: auto; margin: 0 0 16px; border: 1px solid var(--line); border-radius: 10px; }
+  .doc table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  .doc th, .doc td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .doc th { font-family: var(--mono); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted-2); }
+  .doc tr:last-child td { border-bottom: 0; }
+  .doc td { color: var(--muted); }
+  .doc td code, .doc th code { white-space: nowrap; }
+  .doc-split { border: 0; border-top: 1px solid var(--line); margin: 56px 0; }
+  .doc hr { border: 0; border-top: 1px solid var(--line); margin: 28px 0; }
+
+  footer { border-top: 1px solid var(--line); }
+  .foot-inner {
+    width: var(--page); margin: 0 auto; padding: 24px 0;
+    display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center;
+    justify-content: space-between; font-size: 13px; color: var(--muted-2);
+  }
+  .foot-links { display: flex; gap: 18px; }
+  .foot-links a { text-decoration: none; color: var(--muted); }
+  .foot-links a:hover { color: var(--text); }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/"><span class="mark" aria-hidden="true"></span>AgStatus</a>
+    <div class="nav-links">
+      <a href="#hooks" class="hide-sm">Integration</a>
+      <a href="#self-hosting" class="hide-sm">Self-hosting</a>
+      <a href="#api" class="hide-sm">API</a>
+      <a href="https://github.com/KardanovIR/claude-status-dashboard">GitHub</a>
+    </div>
+  </div>
+</nav>
+<hr class="spectrum" />
+
+<div class="layout">
+  <aside class="toc" aria-label="Table of contents">
+    <div class="toc-title">Documentation</div>
+    <ul>
+      <li class="toc-doc"><a href="#hooks">Integration</a>
+        <ul>
+          <li><a href="#hooks-npx-agstatus-init">npx agstatus init</a></li>
+          <li><a href="#hooks-how-events-map-to-statuses">How events map to statuses</a></li>
+          <li><a href="#hooks-plan-usage-bars">Plan-usage bars</a></li>
+          <li><a href="#hooks-openai-codex-specifics">OpenAI Codex specifics</a></li>
+          <li><a href="#hooks-manual-setup-the-bash-hook">Manual setup: the bash hook</a></li>
+          <li><a href="#hooks-troubleshooting">Troubleshooting</a></li>
+        </ul></li>
+      <li class="toc-doc"><a href="#self-hosting">Self-hosting</a>
+        <ul>
+          <li><a href="#self-hosting-quick-start">Quick start</a></li>
+          <li><a href="#self-hosting-single-tenant-vs-multi-tenant">Single-tenant vs multi-tenant</a></li>
+          <li><a href="#self-hosting-configuration">Configuration</a></li>
+          <li><a href="#self-hosting-persistence-postgresql">Persistence (PostgreSQL)</a></li>
+          <li><a href="#self-hosting-production-deploy-github-actions-droplet">Production deploy (GitHub Actions → droplet)</a></li>
+          <li><a href="#self-hosting-tls-with-the-bundled-caddy-profile">TLS with the bundled Caddy profile</a></li>
+          <li><a href="#self-hosting-cloudflare-tunnel-home-servers-no-open-ports">Cloudflare Tunnel (home servers, no open ports)</a></li>
+          <li><a href="#self-hosting-push-notifications-apns">Push notifications (APNs)</a></li>
+          <li><a href="#self-hosting-pointing-clients-at-your-instance">Pointing clients at your instance</a></li>
+        </ul></li>
+      <li class="toc-doc"><a href="#api">HTTP API</a>
+        <ul>
+          <li><a href="#api-the-session-object">The session object</a></li>
+          <li><a href="#api-shared-endpoints-both-modes">Shared endpoints (both modes)</a></li>
+          <li><a href="#api-webhook-body-and-validation">Webhook body and validation</a></li>
+          <li><a href="#api-plan-usage">Plan usage</a></li>
+          <li><a href="#api-session-history">Session history</a></li>
+          <li><a href="#api-legacy-single-tenant-endpoints">Legacy (single-tenant) endpoints</a></li>
+          <li><a href="#api-multi-tenant-workspace-endpoints">Multi-tenant: workspace endpoints</a></li>
+          <li><a href="#api-sse-event-format">SSE event format</a></li>
+          <li><a href="#api-limits">Limits</a></li>
+        </ul></li>
+    </ul>
+  </aside>
+  <main>
+<section class="doc" aria-labelledby="hooks">
+<h2 id="hooks">Claude Code &amp; Codex integration</h2>
+<p>AgStatus watches your agents through their hook systems — Claude Code&#39;s
+<a href="https://code.claude.com/docs/en/hooks">hooks</a> and OpenAI Codex&#39;s
+<a href="https://developers.openai.com/codex/config-reference">lifecycle hooks</a> use
+the same shape (event JSON on stdin with <code>hook_event_name</code>, <code>session_id</code>,
+<code>cwd</code>), so one small script serves both: it receives each event and posts a
+status webhook to your board. Two ways to set it up:</p>
+<ol>
+<li><strong><code>npx agstatus init</code></strong> (recommended) — installs a dependency-free Node
+hook and wires up Claude Code, plus Codex when <code>~/.codex</code> exists.</li>
+<li><strong>Manual bash hook</strong> — the original <code>hooks/claude-status-hook.sh</code>, for
+people who want to see and customize every moving part (Claude Code only).</li>
+</ol>
+<p>Both hooks are deliberately non-blocking: any failure (server down, bad
+secret, malformed payload) is swallowed and the agent continues normally.
+The Node hook additionally enforces a 3 s HTTP timeout, a ~4 s overall
+safety timeout, and never writes to stdout (Codex interprets hook stdout as
+behavior-control decisions).</p>
+<h3 id="hooks-npx-agstatus-init"><a class="anchor" href="#hooks-npx-agstatus-init"><code>npx agstatus init</code></a></h3>
+<pre><code class="language-bash">npx agstatus init
+</code></pre>
+<p>What it does, in order:</p>
+<ol>
+<li>Contacts the server (<code>GET /api/config</code>) — the hosted instance by default.</li>
+<li>Acquires a board: claims your pairing code (<code>--code</code>), creates a new
+private board (multi-tenant servers), or targets the server&#39;s single board
+(legacy servers).</li>
+<li>Copies the hook to <code>~/.claude/hooks/agstatus-hook.js</code> (plain Node,
+no dependencies).</li>
+<li>Merges the hook registrations and env vars into <code>~/.claude/settings.json</code>,
+writing a backup to <code>settings.json.agstatus-backup</code> first. Your existing
+settings and hooks are preserved; re-running <code>init</code> replaces only the
+AgStatus entries.</li>
+<li>Prints your dashboard URL and a QR code to open it on your phone.</li>
+</ol>
+<h4 id="hooks-flags"><a class="anchor" href="#hooks-flags">Flags</a></h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>--url &lt;base&gt;</code></td>
+<td>Server to use (default: <code>https://agstatus.online</code>; the <code>AGSTATUS_URL</code> env var also overrides it, with <code>--url</code> winning).</td>
+</tr>
+<tr>
+<td><code>--code XXXX-XXXX</code></td>
+<td>Pair with a board created elsewhere (e.g. the iOS app) instead of creating a new one. Case and dashes don&#39;t matter.</td>
+</tr>
+<tr>
+<td><code>--secret &lt;s&gt;</code></td>
+<td>Webhook secret for self-hosted single-tenant servers that set <code>WEBHOOK_SECRET</code> (stored as <code>CLAUDE_STATUS_SECRET</code>).</td>
+</tr>
+<tr>
+<td><code>--minimal</code></td>
+<td>Privacy mode: send tool names only, never command text (sets <code>AGSTATUS_DETAIL=off</code>; re-running without the flag removes it).</td>
+</tr>
+<tr>
+<td><code>--codex</code></td>
+<td>Also set up OpenAI Codex even when <code>~/.codex</code> isn&#39;t detected (creates it).</td>
+</tr>
+<tr>
+<td><code>--no-codex</code></td>
+<td>Skip Codex setup. Default: auto-configure when <code>~/.codex</code> exists.</td>
+</tr>
+<tr>
+<td><code>--no-qr</code></td>
+<td>Skip the QR code (narrow terminals, scripts).</td>
+</tr>
+</tbody></table></div>
+<h4 id="hooks-pairing-codes"><a class="anchor" href="#hooks-pairing-codes">Pairing codes</a></h4>
+<p>Boards created elsewhere can hand you a short-lived code instead of a URL:
+the board owner taps &quot;Pair your computer&quot; in the iOS app (or calls
+<code>POST /w/&lt;token&gt;/pair</code>) and gets a single-use code valid for 15 minutes
+(max 3 outstanding per board). <code>agstatus init --code XXXX-XXXX</code> exchanges it
+via <code>POST /api/pair/claim</code> for the board&#39;s URLs. Claims are rate limited to
+10/min/IP. Details in <a href="#api-pairing-endpoints">docs/api.md</a>.</p>
+<h4 id="hooks-other-commands"><a class="anchor" href="#hooks-other-commands">Other commands</a></h4>
+<pre><code class="language-bash">npx agstatus status      # show configured URL, hook file, server reachability + session count
+npx agstatus uninstall   # remove the hook file and AgStatus settings entries (backup kept)
+npx agstatus help        # usage
+</code></pre>
+<p><code>uninstall</code> removes only AgStatus&#39;s hook registrations and the
+<code>CLAUDE_STATUS_URL</code> / <code>CLAUDE_STATUS_SECRET</code> / <code>AGSTATUS_DETAIL</code> env keys —
+everything else in <code>settings.json</code> is left untouched.</p>
+<h3 id="hooks-how-events-map-to-statuses"><a class="anchor" href="#hooks-how-events-map-to-statuses">How events map to statuses</a></h3>
+<p>The Node hook applies this mapping. The bash hook covers the same Claude Code
+events but predates Codex support, so it has no <code>PermissionRequest</code> or
+<code>apply_patch</code> handling (the last two rows below are Codex-only):</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Hook event</th>
+<th>Board status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>SessionStart</code></td>
+<td><code>idle</code></td>
+<td>New session appears as soon as Claude starts.</td>
+</tr>
+<tr>
+<td><code>UserPromptSubmit</code></td>
+<td><code>planning</code></td>
+<td>Fires the moment you submit a prompt, so the card leaves <code>blocked</code>/<code>idle</code> immediately instead of waiting for the first tool call. Shows the prompt text (truncated); minimal mode shows &quot;Processing prompt&quot;.</td>
+</tr>
+<tr>
+<td><code>PreToolUse</code> — <code>Edit</code> / <code>Write</code> / <code>MultiEdit</code> / <code>NotebookEdit</code></td>
+<td><code>coding</code></td>
+<td>Card shows the file being touched — &quot;Editing store.ts&quot;, &quot;Writing landing.html&quot;.</td>
+</tr>
+<tr>
+<td><code>PreToolUse</code> — <code>Bash</code> (test runner)</td>
+<td><code>testing</code></td>
+<td>Detected via <code>pytest</code>/<code>jest</code>/<code>vitest</code>/<code>go test</code>/<code>cargo test</code>/etc. Classification always reads the command, never the description.</td>
+</tr>
+<tr>
+<td><code>PreToolUse</code> — <code>Bash</code> (other)</td>
+<td><code>coding</code></td>
+<td>Card shows the agent&#39;s own one-line description of the command (&quot;Show working tree status&quot;), falling back to the command text when none was supplied.</td>
+</tr>
+<tr>
+<td><code>PreToolUse</code> — <code>Task</code> / <code>WebSearch</code> / <code>WebFetch</code></td>
+<td><code>planning</code></td>
+<td>Card shows what is being looked for — the subagent&#39;s task description, &quot;Searching: &lt;query&gt;&quot;, or &quot;Reading &lt;host&gt;&quot;.</td>
+</tr>
+</tbody></table></div>
+<p>Messages are capped at 120 characters. With <code>--minimal</code> (<code>AGSTATUS_DETAIL=off</code>) every card shows
+only the tool name — no descriptions, file names, queries, or command text.</p>
+<blockquote>
+<p><strong>Why descriptions instead of commands?</strong> Agents write a short description of
+each command they run, which reads better on a phone than a shell one-liner —
+and keeps flags, paths, and anything secret in the command out of the board.
+| <code>Notification</code>                                                  | <code>blocked</code>      | Claude Code: permission prompts and other attention-needed events — this is what triggers a push. |
+| <code>PermissionRequest</code>                                             | <code>blocked</code>      | Codex: fires before approval prompts — same push trigger. |
+| <code>PreToolUse</code> — <code>apply_patch</code>                                    | <code>coding</code>       | Codex&#39;s file-edit tool; the card shows &quot;Editing files&quot;. |
+| <code>Stop</code>                                                          | <code>idle</code>         | Turn finished, waiting for the next prompt. |
+| <code>SessionEnd</code>                                                    | <em>card removed</em> | Claude Code only — the hook calls <code>DELETE /sessions/:id</code> so the card disappears. Codex has no session-end hook; its cards expire via the server&#39;s session TTL instead. |</p>
+</blockquote>
+<p>Other tools and events are ignored. The card <code>name</code> and <code>project</code> default to
+the basename of the session&#39;s working directory, so multiple sessions are
+easy to tell apart.</p>
+<h3 id="hooks-plan-usage-bars"><a class="anchor" href="#hooks-plan-usage-bars">Plan-usage bars</a></h3>
+<p>The Node hook also feeds the dashboard&#39;s plan-limit bars (the 5-hour session
+window and the weekly caps you see in <code>/usage</code> inside Claude Code):</p>
+<ol>
+<li>On quiet events (<code>SessionStart</code>, <code>UserPromptSubmit</code>, <code>Stop</code>, <code>Notification</code>
+— never <code>PreToolUse</code>), at most once every 5 minutes, the hook reads the Claude
+Code OAuth token locally: <code>~/.claude/.credentials.json</code>, or the macOS
+login keychain (<code>Claude Code-credentials</code>). macOS may ask once to allow
+<code>security</code> access — choose &quot;Always Allow&quot;.</li>
+<li>It asks Anthropic&#39;s usage endpoint (<code>api.anthropic.com/api/oauth/usage</code>)
+for utilization percentages. The structured <code>limits</code> array is preferred
+(it carries model-scoped weekly caps such as <strong>Fable</strong>, which the legacy
+<code>five_hour</code>/<code>seven_day</code> keys never mention), with a fallback to those
+legacy keys for older responses.</li>
+<li>It POSTs only the percentages and reset times to your board
+(<code>POST &lt;board&gt;/usage</code> — see <a href="#api-plan-usage">docs/api.md</a>). <strong>The
+token itself never leaves your machine.</strong></li>
+</ol>
+<p>Set <code>AGSTATUS_USAGE=off</code> in the settings <code>env</code> block to turn this off
+entirely. The bash hook and Codex plans are not covered (the endpoint is
+Claude-specific); a board simply shows no bars until something reports usage.</p>
+<p>Dashboards only show the bars of agents that currently have sessions on the
+board (each session carries a <code>source</code> tag: <code>claude</code>, or <code>codex</code> via the
+<code>AGSTATUS_SOURCE=codex</code> prefix the Codex integration embeds) — a Claude-only
+evening doesn&#39;t display Codex limits, and vice versa.</p>
+<p>Caveat: the usage endpoint is undocumented and has changed before. The hook
+degrades silently — unknown response shapes mean missing bars, never a
+blocked agent.</p>
+<h3 id="hooks-openai-codex-specifics"><a class="anchor" href="#hooks-openai-codex-specifics">OpenAI Codex specifics</a></h3>
+<p><code>agstatus init</code> configures Codex automatically when <code>~/.codex</code> exists
+(<code>CODEX_HOME</code> is respected; <code>--no-codex</code> opts out, <code>--codex</code> forces it):</p>
+<ol>
+<li>The same hook script is copied to <code>~/.codex/hooks/agstatus-hook.js</code>.</li>
+<li>Hook registrations are merged into <code>~/.codex/hooks.json</code> (backup written
+alongside; existing hooks are preserved; re-running replaces only the
+AgStatus entries). Codex has no settings <code>env</code> block, so the board URL is
+embedded in the registered command string — you can read or change it
+right in <code>hooks.json</code>.</li>
+<li><strong>One-time step:</strong> Codex requires you to trust new hooks. Run <code>/hooks</code>
+inside Codex and approve the AgStatus entries — until then they won&#39;t fire.</li>
+</ol>
+<p>Events wired: <code>SessionStart</code>, <code>PreToolUse</code> (matcher
+<code>^(Bash|apply_patch|Edit|Write)$</code>), <code>PermissionRequest</code>, and <code>Stop</code>, each with
+a 10 s timeout (the script itself exits within ~4 s).</p>
+<h4 id="hooks-environment-variables-read-by-the-hooks"><a class="anchor" href="#hooks-environment-variables-read-by-the-hooks">Environment variables read by the hooks</a></h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>CLAUDE_STATUS_URL</code></td>
+<td>Required. Base URL the hook posts to — a board URL (<code>https://&lt;host&gt;/w/&lt;token&gt;</code>) or a legacy server origin. The hook appends <code>/webhook</code> and <code>/sessions/&lt;id&gt;</code> itself, and tolerates a trailing <code>/</code> or <code>/webhook</code>.</td>
+</tr>
+<tr>
+<td><code>CLAUDE_STATUS_SECRET</code></td>
+<td>Optional. Sent as <code>X-Webhook-Secret</code> (legacy servers with <code>WEBHOOK_SECRET</code> set). Workspace boards don&#39;t need it — the token in the URL is the auth.</td>
+</tr>
+<tr>
+<td><code>AGSTATUS_DETAIL=off</code></td>
+<td>Node hook only. Send tool names instead of command text (what <code>--minimal</code> sets).</td>
+</tr>
+<tr>
+<td><code>AGSTATUS_USAGE=off</code></td>
+<td>Node hook only. Never read or report plan usage (see <a href="#hooks-plan-usage-bars">Plan-usage bars</a>).</td>
+</tr>
+<tr>
+<td><code>AGSTATUS_SOURCE</code></td>
+<td>Node hook only. Agent kind tag on sessions (default <code>claude</code>; the Codex integration sets <code>codex</code>). Scopes which limit bars a dashboard shows.</td>
+</tr>
+<tr>
+<td><code>AGSTATUS_DEBUG=1</code></td>
+<td>Node hook only. Prints diagnostics to <strong>stderr</strong> (never stdout). The hook fails silently by design, so this is how you find out why plan-usage bars stopped appearing.</td>
+</tr>
+</tbody></table></div>
+<h3 id="hooks-manual-setup-the-bash-hook"><a class="anchor" href="#hooks-manual-setup-the-bash-hook">Manual setup: the bash hook</a></h3>
+<p>The original hook at <a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/hooks/claude-status-hook.sh"><code>hooks/claude-status-hook.sh</code></a>
+does the same job with <code>curl</code> + <code>jq</code>, and is the easiest one to customize.</p>
+<h4 id="hooks-1-prerequisites"><a class="anchor" href="#hooks-1-prerequisites">1. Prerequisites</a></h4>
+<ul>
+<li>A reachable AgStatus server (see <a href="#self-hosting">docs/self-hosting.md</a>).</li>
+<li><code>curl</code> and <code>jq</code> installed (<code>brew install jq</code> on macOS).</li>
+</ul>
+<h4 id="hooks-2-install-the-script"><a class="anchor" href="#hooks-2-install-the-script">2. Install the script</a></h4>
+<pre><code class="language-bash">mkdir -p ~/.claude/hooks
+cp hooks/claude-status-hook.sh ~/.claude/hooks/
+chmod +x ~/.claude/hooks/claude-status-hook.sh
+</code></pre>
+<h4 id="hooks-3-configure-claudesettingsjson"><a class="anchor" href="#hooks-3-configure-claudesettingsjson">3. Configure <code>~/.claude/settings.json</code></a></h4>
+<p>For all sessions (user scope), edit <code>~/.claude/settings.json</code>. For one
+project, use <code>.claude/settings.json</code> in that repo instead.</p>
+<pre><code class="language-json">{
+  &quot;env&quot;: {
+    &quot;CLAUDE_STATUS_URL&quot;: &quot;https://status.example.com&quot;,
+    &quot;CLAUDE_STATUS_SECRET&quot;: &quot;your-shared-secret&quot;
+  },
+  &quot;hooks&quot;: {
+    &quot;SessionStart&quot;: [
+      {
+        &quot;hooks&quot;: [
+          { &quot;type&quot;: &quot;command&quot;, &quot;command&quot;: &quot;$HOME/.claude/hooks/claude-status-hook.sh&quot; }
+        ]
+      }
+    ],
+    &quot;UserPromptSubmit&quot;: [
+      {
+        &quot;hooks&quot;: [
+          { &quot;type&quot;: &quot;command&quot;, &quot;command&quot;: &quot;$HOME/.claude/hooks/claude-status-hook.sh&quot; }
+        ]
+      }
+    ],
+    &quot;PreToolUse&quot;: [
+      {
+        &quot;matcher&quot;: &quot;Edit|Write|MultiEdit|NotebookEdit|Bash|Task|WebSearch|WebFetch&quot;,
+        &quot;hooks&quot;: [
+          { &quot;type&quot;: &quot;command&quot;, &quot;command&quot;: &quot;$HOME/.claude/hooks/claude-status-hook.sh&quot; }
+        ]
+      }
+    ],
+    &quot;Stop&quot;: [
+      {
+        &quot;hooks&quot;: [
+          { &quot;type&quot;: &quot;command&quot;, &quot;command&quot;: &quot;$HOME/.claude/hooks/claude-status-hook.sh&quot; }
+        ]
+      }
+    ],
+    &quot;Notification&quot;: [
+      {
+        &quot;hooks&quot;: [
+          { &quot;type&quot;: &quot;command&quot;, &quot;command&quot;: &quot;$HOME/.claude/hooks/claude-status-hook.sh&quot; }
+        ]
+      }
+    ],
+    &quot;SessionEnd&quot;: [
+      {
+        &quot;hooks&quot;: [
+          { &quot;type&quot;: &quot;command&quot;, &quot;command&quot;: &quot;$HOME/.claude/hooks/claude-status-hook.sh&quot; }
+        ]
+      }
+    ]
+  }
+}
+</code></pre>
+<p>Replace <code>CLAUDE_STATUS_URL</code> with your server or board URL. Drop
+<code>CLAUDE_STATUS_SECRET</code> if you didn&#39;t set <code>WEBHOOK_SECRET</code> on the server.</p>
+<p><strong>Using a multi-tenant instance?</strong> Point <code>CLAUDE_STATUS_URL</code> at your board:</p>
+<pre><code class="language-json">&quot;CLAUDE_STATUS_URL&quot;: &quot;https://&lt;host&gt;/w/&lt;token&gt;&quot;
+</code></pre>
+<p>No script changes needed, and no secret — the token in the URL is the auth.</p>
+<h3 id="hooks-troubleshooting"><a class="anchor" href="#hooks-troubleshooting">Troubleshooting</a></h3>
+<p>Start a fresh Claude Code session in any project. The board should show a new
+card transitioning through <code>idle → coding → idle</code> as you work. If it doesn&#39;t:</p>
+<pre><code class="language-bash"># Check the CLI-installed setup end to end:
+npx agstatus status
+
+# Run the Node hook manually with a fake payload (put your board URL first):
+export CLAUDE_STATUS_URL=&#39;https://agstatus.online/w/ags_yourtoken&#39;
+echo &#39;{&quot;hook_event_name&quot;:&quot;SessionStart&quot;,&quot;session_id&quot;:&quot;manual-test&quot;,&quot;cwd&quot;:&quot;&#39;&quot;$PWD&quot;&#39;&quot;}&#39; \
+  | node ~/.claude/hooks/agstatus-hook.js
+
+# Or the bash hook:
+echo &#39;{&quot;hook_event_name&quot;:&quot;SessionStart&quot;,&quot;session_id&quot;:&quot;manual-test&quot;,&quot;cwd&quot;:&quot;&#39;&quot;$PWD&quot;&#39;&quot;}&#39; \
+  | ~/.claude/hooks/claude-status-hook.sh
+
+# Tail Claude Code&#39;s logs (path may vary by OS):
+tail -f ~/.claude/logs/*.log
+</code></pre>
+<p>A <code>manual-test</code> card appearing on the board means the hook and server are
+fine and the problem is in <code>settings.json</code> — check that the <code>hooks</code> entries
+survived any hand-edits, and remember Claude Code reads settings at session
+start, so restart the session after changes.</p>
+
+</section>
+<hr class="doc-split" />
+<section class="doc" aria-labelledby="self-hosting">
+<h2 id="self-hosting">Self-hosting AgStatus</h2>
+<p>The server is a single Node.js process; the only external state is an optional
+PostgreSQL database. It runs anywhere that can expose a port — a VPS, Fly.io,
+Render, Railway, Cloud Run, a Raspberry Pi.</p>
+<h3 id="self-hosting-quick-start"><a class="anchor" href="#self-hosting-quick-start">Quick start</a></h3>
+<h4 id="self-hosting-npm"><a class="anchor" href="#self-hosting-npm">npm</a></h4>
+<pre><code class="language-bash">npm ci
+npm run dev           # hot reload via tsx
+# or
+npm run build &amp;&amp; npm start
+</code></pre>
+<p>Open <a href="http://localhost:3000">http://localhost:3000</a> and send a test webhook:</p>
+<pre><code class="language-bash">curl -X POST http://localhost:3000/webhook \
+  -H &#39;content-type: application/json&#39; \
+  -d &#39;{&quot;session_id&quot;: &quot;sess-abc&quot;, &quot;name&quot;: &quot;Refactor auth&quot;, &quot;status&quot;: &quot;coding&quot;, &quot;message&quot;: &quot;Editing server.ts&quot;, &quot;project&quot;: &quot;my-repo&quot;}&#39;
+</code></pre>
+<h4 id="self-hosting-docker-compose"><a class="anchor" href="#self-hosting-docker-compose">Docker Compose</a></h4>
+<pre><code class="language-bash">cp .env.example .env   # optional — defaults work out of the box
+docker compose up -d --build
+</code></pre>
+<p>Binds host port <code>3000</code> (override with <code>PORT</code> in <code>.env</code>). The prebuilt image
+<code>ghcr.io/kardanovir/agstatus</code> is published from tagged releases and works the
+same way: <code>docker run -d -p 3000:3000 ghcr.io/kardanovir/agstatus</code>.</p>
+<h4 id="self-hosting-production-without-docker"><a class="anchor" href="#self-hosting-production-without-docker">Production without Docker</a></h4>
+<pre><code class="language-bash">npm ci --omit=dev &amp;&amp; npm run build
+PUBLIC_URL=https://status.example.com \
+WEBHOOK_SECRET=$(openssl rand -hex 32) \
+  npm start
+</code></pre>
+<p>Put a TLS-terminating reverse proxy in front and set <code>TRUST_PROXY=1</code>. SSE
+requires proxy buffering to be disabled — the server sends
+<code>X-Accel-Buffering: no</code>, which most proxies honor.</p>
+<h3 id="self-hosting-single-tenant-vs-multi-tenant"><a class="anchor" href="#self-hosting-single-tenant-vs-multi-tenant">Single-tenant vs multi-tenant</a></h3>
+<p><strong>Single-tenant (legacy) mode — the default.</strong> One board for the whole
+instance, served at <code>/</code>. Anyone who can reach the server can see it; writes
+can be protected with <code>WEBHOOK_SECRET</code>. Right for a personal server on a LAN,
+VPN, or a private URL.</p>
+<p><strong>Multi-tenant mode</strong> (<code>MULTI_TENANT=true</code>). One instance shared by many
+users. Each <strong>workspace</strong> is an isolated board with its own dashboard,
+webhook URL, and event stream, identified by an unguessable token in the URL
+(<code>ags_</code> + 32 URL-safe characters) — the same capability model as Discord or
+Slack webhook URLs. No accounts, no passwords; the server stores only a
+SHA-256 hash of each token. Per-workspace caps and rate limits keep the
+instance healthy (see <a href="#api-limits">docs/api.md</a>). This is what the hosted
+instance at <code>https://agstatus.online</code> runs.</p>
+<p>In multi-tenant mode the global <code>/webhook</code>, <code>/events</code>, <code>/api/sessions</code>, and
+<code>/sessions/...</code> endpoints return <code>404</code>; everything lives under <code>/w/&lt;token&gt;/...</code>
+instead, and <code>WEBHOOK_SECRET</code> is ignored (the token is the auth).</p>
+<h3 id="self-hosting-configuration"><a class="anchor" href="#self-hosting-configuration">Configuration</a></h3>
+<p>All configuration is via environment variables. Copy <code>.env.example</code> to <code>.env</code>
+or set them in your deployment environment.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>PORT</code></td>
+<td><code>3000</code></td>
+<td>Port to listen on. With docker-compose, also the published host port (the container always listens on 3000).</td>
+</tr>
+<tr>
+<td><code>HOST</code></td>
+<td><code>0.0.0.0</code></td>
+<td>Bind address.</td>
+</tr>
+<tr>
+<td><code>PUBLIC_URL</code></td>
+<td><code>http://localhost:$PORT</code></td>
+<td>Public base URL of the service. Used to build the dashboard/webhook URLs returned by the API and shown in the UI.</td>
+</tr>
+<tr>
+<td><code>MULTI_TENANT</code></td>
+<td><em>(unset)</em></td>
+<td>Set to <code>true</code> for multi-tenant workspace mode (see above).</td>
+</tr>
+<tr>
+<td><code>WEBHOOK_SECRET</code></td>
+<td><em>(unset)</em></td>
+<td>Legacy mode only: if set, <code>POST /webhook</code> and <code>POST /sessions/clear</code> must send <code>X-Webhook-Secret: &lt;value&gt;</code>. <code>DELETE /sessions/:id</code> and the read endpoints stay open so the dashboard can list and dismiss cards — don&#39;t expose a legacy instance publicly if that matters (use multi-tenant mode instead). Ignored in multi-tenant mode.</td>
+</tr>
+<tr>
+<td><code>SESSION_TTL_MS</code></td>
+<td><code>0</code> (legacy) / <code>86400000</code> (multi)</td>
+<td>Auto-remove sessions not updated for this many ms. <code>0</code> disables expiry.</td>
+</tr>
+<tr>
+<td><code>DATABASE_URL</code></td>
+<td><em>(empty — in-memory)</em></td>
+<td>PostgreSQL connection string (<code>postgres://user:pass@host:5432/db</code>) for persistence across restarts. Empty keeps everything in memory. docker-compose defaults it to the bundled <code>postgres</code> service; set <code>DATABASE_URL=</code> (empty) in <code>.env</code> to opt out. (<code>DB_PATH</code>/SQLite is no longer supported — see the migration note below.)</td>
+</tr>
+<tr>
+<td><code>POSTGRES_PASSWORD</code></td>
+<td><code>agstatus</code></td>
+<td>docker-compose only: password for the bundled <code>postgres</code> service (baked into the default <code>DATABASE_URL</code>). Not read by the app itself.</td>
+</tr>
+<tr>
+<td><code>MAX_WORKSPACES</code></td>
+<td><code>10000</code></td>
+<td>Multi-tenant only: hard ceiling on live workspaces; creation returns <code>503</code> at the cap.</td>
+</tr>
+<tr>
+<td><code>TRUST_PROXY</code></td>
+<td><em>(unset)</em></td>
+<td>Set to <code>1</code> behind a reverse proxy (Caddy, nginx, a load balancer) so client IPs come from <code>X-Forwarded-For</code>. Required for correct per-IP rate limiting on a public instance.</td>
+</tr>
+<tr>
+<td><code>DOMAIN</code></td>
+<td><em>(unset)</em></td>
+<td>Domain for the bundled Caddy proxy (<code>--profile tls</code> only; not read by the app).</td>
+</tr>
+<tr>
+<td><code>APNS_KEY_PATH</code></td>
+<td><em>(unset)</em></td>
+<td>Path to the APNs <code>.p8</code> auth key. Alternatively set <code>APNS_KEY</code> to the PEM content itself.</td>
+</tr>
+<tr>
+<td><code>APNS_KEY_ID</code></td>
+<td><em>(unset)</em></td>
+<td>10-character key id of the <code>.p8</code> key.</td>
+</tr>
+<tr>
+<td><code>APNS_TEAM_ID</code></td>
+<td><em>(unset)</em></td>
+<td>10-character Apple Developer team id.</td>
+</tr>
+<tr>
+<td><code>APNS_TOPIC</code></td>
+<td><em>(unset)</em></td>
+<td>The iOS app&#39;s bundle id (sent as the <code>apns-topic</code> header), e.g. <code>com.kardanov.agstatus</code>.</td>
+</tr>
+<tr>
+<td><code>APNS_ENV</code></td>
+<td><code>sandbox</code></td>
+<td>Which APNs environment is tried <strong>first</strong>: <code>sandbox</code> (<code>api.sandbox.push.apple.com</code>, development builds) or <code>production</code> (<code>api.push.apple.com</code>, TestFlight/App Store). Both are reachable either way — see below — so this is a performance hint, not a switch you have to get right. <code>APNS_SERVER</code> pins one endpoint explicitly and disables the fallback.</td>
+</tr>
+</tbody></table></div>
+<h3 id="self-hosting-persistence-postgresql"><a class="anchor" href="#self-hosting-persistence-postgresql">Persistence (PostgreSQL)</a></h3>
+<p>Persistence is PostgreSQL, enabled by <code>DATABASE_URL</code>. With Docker Compose a
+<code>postgres:16</code> service is bundled and wired up automatically (data lives in the
+<code>pg_data</code> named volume; set <code>POSTGRES_PASSWORD</code> in <code>.env</code> for anything
+non-local). Set <code>DATABASE_URL=</code> (empty) in <code>.env</code> to run purely in-memory —
+sessions (and workspaces, in multi-tenant mode) are then lost on restart.</p>
+<p>The server treats memory as authoritative and writes through to Postgres in
+the background, so a database hiccup degrades to &quot;not persisted for a moment&quot;,
+never to a down dashboard. Rows are <strong>soft-deleted</strong>: deletions set a
+<code>deleted_at</code> timestamp instead of removing the row, and flagged rows are
+invisible to the app. If you need data actually gone (e.g. a deletion
+request), purge flagged rows yourself:
+<code>DELETE FROM sessions WHERE deleted_at IS NOT NULL;</code> (same for <code>workspaces</code>,
+<code>devices</code>, <code>usage_limits</code>).</p>
+<h4 id="self-hosting-migrating-from-sqlite-pre-postgresql-versions"><a class="anchor" href="#self-hosting-migrating-from-sqlite-pre-postgresql-versions">Migrating from SQLite (pre-PostgreSQL versions)</a></h4>
+<p>Earlier versions persisted to SQLite via <code>DB_PATH</code>. Copy that data over once,
+then drop <code>DB_PATH</code> from your <code>.env</code>:</p>
+<pre><code class="language-bash">npm install   # better-sqlite3 is a dev dependency now
+node scripts/migrate-sqlite-to-postgres.js ./data/agstatus.db &quot;$DATABASE_URL&quot;
+</code></pre>
+<p>Re-running is safe — rows that already exist in Postgres are left untouched.</p>
+<h3 id="self-hosting-production-deploy-github-actions-droplet"><a class="anchor" href="#self-hosting-production-deploy-github-actions-droplet">Production deploy (GitHub Actions → droplet)</a></h3>
+<p>The hosted instance at <code>https://agstatus.online</code> deploys itself from this
+repo: every push to <code>master</code> runs
+<a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/.github/workflows/deploy.yml"><code>.github/workflows/deploy.yml</code></a>, which
+SSHes into the droplet, fast-forwards the checkout at <code>/opt/agstatus</code>, and
+rebuilds the stack (<code>docker compose --profile tls up -d --build</code>), then waits
+for <code>/healthz</code>.</p>
+<p>Server-side setup is one command as root (idempotent):</p>
+<pre><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/KardanovIR/claude-status-dashboard/master/deploy/bootstrap-droplet.sh | bash
+</code></pre>
+<p>It installs Docker, authorizes the workflow&#39;s deploy key, clones the repo,
+writes a production <code>.env</code> (random Postgres password), and starts
+app + PostgreSQL + Caddy. The private deploy key lives in the repo&#39;s
+<code>DEPLOY_SSH_KEY</code> secret; rotating it means generating a new keypair, updating
+the secret, and re-running the bootstrap.</p>
+<h3 id="self-hosting-tls-with-the-bundled-caddy-profile"><a class="anchor" href="#self-hosting-tls-with-the-bundled-caddy-profile">TLS with the bundled Caddy profile</a></h3>
+<p>The repo ships a ready-made Caddy setup (<a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/deploy/Caddyfile"><code>deploy/Caddyfile</code></a>)
+wired into <code>docker-compose.yml</code> under the <code>tls</code> profile. Point your domain&#39;s
+DNS at the host, open ports 80/443, then:</p>
+<pre><code class="language-bash">cp .env.example .env
+# In .env set:
+#   DOMAIN=status.example.com
+#   PUBLIC_URL=https://status.example.com
+#   TRUST_PROXY=1
+
+docker compose --profile tls up -d --build
+</code></pre>
+<p>Caddy obtains and renews a Let&#39;s Encrypt certificate for <code>DOMAIN</code>
+automatically and proxies to the app with streaming enabled
+(<code>flush_interval -1</code>), so SSE works out of the box. Without the profile
+(<code>docker compose up -d</code>) the app is served plain on host port <code>${PORT:-3000}</code>.</p>
+<h3 id="self-hosting-cloudflare-tunnel-home-servers-no-open-ports"><a class="anchor" href="#self-hosting-cloudflare-tunnel-home-servers-no-open-ports">Cloudflare Tunnel (home servers, no open ports)</a></h3>
+<p>The alternative to the Caddy profile for machines behind a home router: a
+bundled <code>cloudflared</code> connector under the <code>tunnel</code> profile. The connector
+dials <em>out</em> to Cloudflare, so there is no port forwarding, no certificate to
+manage, and a dynamic IP or CGNAT connection just works. Requires the domain
+to be on Cloudflare DNS.</p>
+<ol>
+<li>In the <a href="https://one.dash.cloudflare.com">Cloudflare Zero Trust dashboard</a>
+go to <strong>Networks → Tunnels → Create a tunnel</strong> (Cloudflared connector),
+name it, and copy the connector <strong>token</strong>.</li>
+<li>Under the tunnel&#39;s <strong>Public hostname</strong> tab, add your domain with service
+<strong>HTTP</strong> → <code>dashboard:3000</code> (the compose service name — cloudflared runs
+on the same Docker network). Cloudflare creates the DNS record for you;
+remove any stale A/AAAA records for that name first.</li>
+<li>On the host:</li>
+</ol>
+<pre><code class="language-bash">cp .env.example .env
+# In .env set:
+#   TUNNEL_TOKEN=eyJ...            (from step 1)
+#   PUBLIC_URL=https://status.example.com
+#   TRUST_PROXY=1
+
+docker compose --profile tunnel up -d --build
+</code></pre>
+<p>SSE streams fine through the tunnel — the server&#39;s 25s keepalive keeps the
+connection inside Cloudflare&#39;s idle timeout. Do not enable the <code>tls</code> profile
+alongside this; TLS terminates at Cloudflare&#39;s edge.</p>
+<h3 id="self-hosting-push-notifications-apns"><a class="anchor" href="#self-hosting-push-notifications-apns">Push notifications (APNs)</a></h3>
+<p>Optional, and only relevant if you use the iOS app against your instance.
+Self-hosts without a key simply don&#39;t send pushes — the server runs exactly
+as before and <code>GET /api/config</code> reports <code>&quot;push&quot;: false</code>, so the app knows not
+to offer notifications. If the APNs block is only partially configured (or
+the key can&#39;t be read) the server logs one warning and disables push; it
+never fails to start.</p>
+<p>To enable:</p>
+<ol>
+<li><p>In your <a href="https://developer.apple.com/account/resources/authkeys/list">Apple Developer account</a>,
+create a key with the <strong>Apple Push Notifications service (APNs)</strong> capability
+and download the <code>.p8</code> file (downloadable only once).</p>
+</li>
+<li><p>Note the <strong>Key ID</strong> (10 characters, shown next to the key) and your
+<strong>Team ID</strong> (Membership page).</p>
+</li>
+<li><p>Mount or copy the <code>.p8</code> file where the server can read it and set:</p>
+<pre><code class="language-bash">APNS_KEY_PATH=/app/keys/AuthKey_ABC123DEFG.p8   # or APNS_KEY with the PEM content
+APNS_KEY_ID=ABC123DEFG
+APNS_TEAM_ID=TEAM123456
+APNS_TOPIC=com.kardanov.agstatus                # your app build&#39;s bundle id
+APNS_ENV=sandbox                                # only which endpoint is tried first
+</code></pre>
+</li>
+<li><p>Restart. <code>GET /api/config</code> now reports <code>&quot;push&quot;: true</code>, and the app&#39;s
+Notifications toggle goes live.</p>
+</li>
+</ol>
+<p><strong>You do not have to switch environments when you ship.</strong> A device token is
+only valid against the APNs environment its build was signed for — a
+development build&#39;s token works against the sandbox, a TestFlight or App Store
+build&#39;s against production — and nothing in the token says which. The server
+therefore tries <code>APNS_ENV</code> first, and if Apple answers <code>BadDeviceToken</code> it
+retries the other environment and remembers which one worked for that device.
+A device is only dropped when the app is genuinely gone (<code>410 Unregistered</code>) or
+when every environment disowns the token; a timeout or a 5xx never unregisters
+anyone. So a development phone and App Store installs can share one board and
+all keep receiving pushes.</p>
+<p>What triggers a push: an agent transitioning into <code>blocked</code> notifies every
+registered device; transitioning into <code>done</code> notifies only devices that opted
+in (<code>notify_done: true</code>). Repeat alerts for the same session and kind are
+debounced to at most one per minute, and a session that first appears already
+<code>done</code> doesn&#39;t notify. A push payload contains the same session name and
+message your hook already sent to the board — nothing more — relayed through
+Apple&#39;s APNs. Device registration endpoints exist in multi-tenant mode only;
+see <a href="#api-device-push-endpoints">docs/api.md</a>.</p>
+<h3 id="self-hosting-pointing-clients-at-your-instance"><a class="anchor" href="#self-hosting-pointing-clients-at-your-instance">Pointing clients at your instance</a></h3>
+<ul>
+<li>CLI: <code>npx agstatus init --url https://status.example.com</code></li>
+<li>iOS app: on the welcome screen, expand &quot;Self-hosting?&quot; and enter your
+server URL, or paste/scan your board URL directly.</li>
+<li>Manual hooks: see <a href="#hooks">docs/hooks.md</a>.</li>
+</ul>
+
+</section>
+<hr class="doc-split" />
+<section class="doc" aria-labelledby="api">
+<h2 id="api">HTTP API reference</h2>
+<p>The server runs in one of two modes:</p>
+<ul>
+<li><strong>Legacy (single-tenant)</strong> — the default. One global board; the endpoints
+under <a href="#api-legacy-single-tenant-endpoints">Legacy endpoints</a> apply.</li>
+<li><strong>Multi-tenant</strong> (<code>MULTI_TENANT=true</code>) — boards (&quot;workspaces&quot;) live under
+<code>/w/&lt;token&gt;/...</code>. The global <code>/webhook</code>, <code>/events</code>, <code>/api/sessions</code>, and
+<code>/sessions/...</code> endpoints return <code>404</code>. The hosted instance at
+<code>https://agstatus.online</code> runs in this mode.</li>
+</ul>
+<p><code>GET /api/config</code> tells you which mode a server is in.</p>
+<h3 id="api-the-session-object"><a class="anchor" href="#api-the-session-object">The session object</a></h3>
+<pre><code class="language-json">{
+  &quot;id&quot;: &quot;sess-abc&quot;,
+  &quot;name&quot;: &quot;Refactor auth&quot;,
+  &quot;status&quot;: &quot;coding&quot;,
+  &quot;message&quot;: &quot;Editing server.ts&quot;,
+  &quot;project&quot;: &quot;my-repo&quot;,
+  &quot;source&quot;: &quot;claude&quot;,
+  &quot;createdAt&quot;: 1752096000000,
+  &quot;updatedAt&quot;: 1752096030000
+}
+</code></pre>
+<p>Timestamps are epoch milliseconds. <code>status</code> is one of <code>idle</code>, <code>planning</code>,
+<code>coding</code>, <code>testing</code>, <code>blocked</code>, <code>done</code>.</p>
+<h3 id="api-shared-endpoints-both-modes"><a class="anchor" href="#api-shared-endpoints-both-modes">Shared endpoints (both modes)</a></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Method &amp; path</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>GET /api/config</code></td>
+<td><code>{mode: &quot;legacy&quot;|&quot;multi&quot;, version, statuses, push}</code>. Legacy mode adds <code>webhookUrl</code> and <code>requiresSecret</code>. <code>push</code> is <code>true</code> iff APNs is configured.</td>
+</tr>
+<tr>
+<td><code>GET /healthz</code></td>
+<td>Liveness probe: <code>{ok: true, version}</code>. Legacy mode adds a <code>sessions</code> count.</td>
+</tr>
+<tr>
+<td><code>GET /</code></td>
+<td>Dashboard UI shell (in multi-tenant mode the board itself is at <code>/w/&lt;token&gt;</code>).</td>
+</tr>
+</tbody></table></div>
+<h3 id="api-webhook-body-and-validation"><a class="anchor" href="#api-webhook-body-and-validation">Webhook body and validation</a></h3>
+<p><code>POST /webhook</code> (legacy) and <code>POST /w/&lt;token&gt;/webhook</code> (multi-tenant) accept
+the same JSON body and upsert a session by <code>session_id</code>:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Required</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>session_id</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Unique session identifier. Must match <code>^[A-Za-z0-9._:-]{1,128}$</code>.</td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td>enum</td>
+<td>yes</td>
+<td>One of <code>idle</code>, <code>planning</code>, <code>coding</code>, <code>testing</code>, <code>blocked</code>, <code>done</code>.</td>
+</tr>
+<tr>
+<td><code>name</code></td>
+<td>string</td>
+<td>no</td>
+<td>Human-readable title. Defaults to <code>session_id</code> if omitted. Truncated to 120 chars.</td>
+</tr>
+<tr>
+<td><code>message</code></td>
+<td>string</td>
+<td>no</td>
+<td>Short description of the current activity (shown on the card). Truncated to 300 chars.</td>
+</tr>
+<tr>
+<td><code>project</code></td>
+<td>string</td>
+<td>no</td>
+<td>Project or repo the session is working on. Truncated to 120 chars.</td>
+</tr>
+<tr>
+<td><code>source</code></td>
+<td>string</td>
+<td>no</td>
+<td>Agent kind that owns the session, e.g. <code>claude</code> or <code>codex</code> (same regex as the usage <code>source</code>). Defaults to <code>claude</code>; omitted on update = carried forward. Dashboards use it to show only the limit bars of agents present on the board.</td>
+</tr>
+</tbody></table></div>
+<p>Control characters are stripped from all string fields. Omitted optional
+fields carry the previous value forward on update. The JSON body is capped at
+16 KB.</p>
+<p><strong>Response</strong> — <code>200 OK</code>:</p>
+<pre><code class="language-json">{ &quot;ok&quot;: true, &quot;session&quot;: { &quot;id&quot;: &quot;sess-abc&quot;, &quot;status&quot;: &quot;coding&quot;, ... } }
+</code></pre>
+<p><strong>Errors</strong> — <code>400</code> on missing/malformed <code>session_id</code> or invalid <code>status</code>;
+<code>401</code> on bad secret (legacy mode with <code>WEBHOOK_SECRET</code> set); <code>404</code> unknown
+workspace (multi-tenant); <code>413</code> on bodies over 16 KB; <code>429</code> over the
+per-workspace rate limit (multi-tenant).</p>
+<h3 id="api-plan-usage"><a class="anchor" href="#api-plan-usage">Plan usage</a></h3>
+<p><code>POST /usage</code> (legacy, same secret rules as the webhook) and
+<code>POST /w/&lt;token&gt;/usage</code> (multi-tenant) let a hook report how much of an
+agent plan&#39;s rate limits is consumed, so dashboards can draw limit bars:</p>
+<pre><code class="language-json">{
+  &quot;source&quot;: &quot;claude&quot;,
+  &quot;windows&quot;: [
+    { &quot;id&quot;: &quot;session&quot;, &quot;label&quot;: &quot;Current session&quot;, &quot;usedPct&quot;: 42, &quot;resetsAt&quot;: 1752100000000 },
+    { &quot;id&quot;: &quot;week&quot;, &quot;label&quot;: &quot;Weekly (all models)&quot;, &quot;usedPct&quot;: 61.5, &quot;resetsAt&quot;: 1752300000000 }
+  ]
+}
+</code></pre>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Required</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>source</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Agent kind, e.g. <code>claude</code> or <code>codex</code>. Must match <code>^[a-z][a-z0-9_-]{0,23}$</code>.</td>
+</tr>
+<tr>
+<td><code>windows</code></td>
+<td>array</td>
+<td>yes</td>
+<td>1–6 windows with unique <code>id</code>s (<code>^[a-z][a-z0-9_-]{0,31}$</code>).</td>
+</tr>
+<tr>
+<td><code>usedPct</code></td>
+<td>number</td>
+<td>yes</td>
+<td>Percent of the limit consumed. Clamped to 0–100.</td>
+</tr>
+<tr>
+<td><code>label</code></td>
+<td>string</td>
+<td>no</td>
+<td>Display name; defaults to <code>id</code>. Truncated to 48 chars.</td>
+</tr>
+<tr>
+<td><code>resetsAt</code></td>
+<td>number</td>
+<td>no</td>
+<td>Epoch ms when the window resets; anything invalid becomes <code>null</code>.</td>
+</tr>
+</tbody></table></div>
+<p>The server keeps the latest report per <code>source</code> (a re-post replaces the
+previous one), broadcasts the full usage list as an SSE <code>usage</code> event, and
+answers <code>{ok: true}</code>. Usage posts share the webhook rate-limit budget.
+Reports older than 24 hours are dropped from reads — stale percentages
+mislead. <code>GET /api/usage</code> (legacy) and <code>GET /w/&lt;token&gt;/api/usage</code> return the
+current list:</p>
+<pre><code class="language-json">[ { &quot;source&quot;: &quot;claude&quot;, &quot;windows&quot;: [ ... ], &quot;updatedAt&quot;: 1752096030000 } ]
+</code></pre>
+<h3 id="api-session-history"><a class="anchor" href="#api-session-history">Session history</a></h3>
+<p><code>GET /api/sessions/:id/history</code> (legacy) and
+<code>GET /w/&lt;token&gt;/api/sessions/:id/history</code> return a session&#39;s timeline —
+one entry per status/message transition, newest first (identical
+keep-alive re-posts are not recorded):</p>
+<pre><code class="language-json">[
+  { &quot;seq&quot;: 2, &quot;status&quot;: &quot;testing&quot;, &quot;message&quot;: &quot;npm test&quot;, &quot;at&quot;: 1752096030000 },
+  { &quot;seq&quot;: 1, &quot;status&quot;: &quot;coding&quot;, &quot;message&quot;: &quot;Editing server.ts&quot;, &quot;at&quot;: 1752096010000 },
+  { &quot;seq&quot;: 0, &quot;status&quot;: &quot;idle&quot;, &quot;message&quot;: &quot;Session started&quot;, &quot;at&quot;: 1752096000000 }
+]
+</code></pre>
+<p><code>seq</code> increases monotonically per session and is a stable identity for
+clients. The last 100 entries are kept per session (older ones are
+soft-deleted); dismissing or expiring a session drops its history. Unknown
+sessions return <code>[]</code>.</p>
+<h3 id="api-legacy-single-tenant-endpoints"><a class="anchor" href="#api-legacy-single-tenant-endpoints">Legacy (single-tenant) endpoints</a></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Method &amp; path</th>
+<th>Purpose</th>
+<th>Auth</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>POST /webhook</code></td>
+<td>Create/update a session (see above).</td>
+<td>yes*</td>
+</tr>
+<tr>
+<td><code>POST /usage</code></td>
+<td>Report plan usage (see <a href="#api-plan-usage">Plan usage</a>).</td>
+<td>yes*</td>
+</tr>
+<tr>
+<td><code>GET /events</code></td>
+<td>SSE stream (see <a href="#api-sse-event-format">format</a>).</td>
+<td>no</td>
+</tr>
+<tr>
+<td><code>GET /api/sessions</code></td>
+<td>JSON list of all sessions.</td>
+<td>no</td>
+</tr>
+<tr>
+<td><code>GET /api/usage</code></td>
+<td>Current plan usage list.</td>
+<td>no</td>
+</tr>
+<tr>
+<td><code>GET /api/sessions/:id/history</code></td>
+<td>Session timeline (see <a href="#api-session-history">Session history</a>).</td>
+<td>no</td>
+</tr>
+<tr>
+<td><code>DELETE /sessions/:id</code></td>
+<td>Remove one session. Returns <code>{ok: boolean}</code>.</td>
+<td>no</td>
+</tr>
+<tr>
+<td><code>POST /sessions/clear</code></td>
+<td>Remove all sessions. Returns <code>{ok: true}</code>.</td>
+<td>yes*</td>
+</tr>
+</tbody></table></div>
+<p>* Only when <code>WEBHOOK_SECRET</code> is configured: send <code>X-Webhook-Secret: &lt;value&gt;</code>,
+else <code>401</code>. Reads and <code>DELETE /sessions/:id</code> stay open so the dashboard can
+list and dismiss cards.</p>
+<h3 id="api-multi-tenant-workspace-endpoints"><a class="anchor" href="#api-multi-tenant-workspace-endpoints">Multi-tenant: workspace endpoints</a></h3>
+<p>There are no accounts — a workspace is identified by an unguessable token
+embedded in its URLs (<code>ags_</code> + 32 URL-safe characters). Anyone who has the
+URL can view and update that workspace; treat it like a secret. The server
+stores only a SHA-256 hash of the token; the raw token is returned exactly
+once, at creation.</p>
+<h4 id="api-create-a-workspace"><a class="anchor" href="#api-create-a-workspace">Create a workspace</a></h4>
+<pre><code class="language-bash">curl -X POST https://agstatus.online/api/workspaces
+</code></pre>
+<p><strong>Response</strong> — <code>201 Created</code>:</p>
+<pre><code class="language-json">{
+  &quot;ok&quot;: true,
+  &quot;token&quot;: &quot;ags_...&quot;,
+  &quot;dashboardUrl&quot;: &quot;https://.../w/ags_...&quot;,
+  &quot;webhookUrl&quot;: &quot;https://.../w/ags_.../webhook&quot;
+}
+</code></pre>
+<p>Save the token — it is not shown again. Creation is rate limited to 20 per
+hour per IP (<code>429</code> beyond) and returns <code>503</code> at the <code>MAX_WORKSPACES</code> cap.</p>
+<h4 id="api-workspace-scoped-endpoints"><a class="anchor" href="#api-workspace-scoped-endpoints">Workspace-scoped endpoints</a></h4>
+<p>Everything under <code>/w/&lt;token&gt;/...</code> mirrors the legacy API, scoped to one
+workspace:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Method &amp; path</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>GET /w/&lt;token&gt;</code></td>
+<td>Dashboard UI for this workspace.</td>
+</tr>
+<tr>
+<td><code>GET /w/&lt;token&gt;/api/sessions</code></td>
+<td>JSON list of the workspace&#39;s sessions (newest first).</td>
+</tr>
+<tr>
+<td><code>GET /w/&lt;token&gt;/events</code></td>
+<td>SSE stream (see <a href="#api-sse-event-format">format</a>). <code>429</code> past 10 concurrent connections.</td>
+</tr>
+<tr>
+<td><code>POST /w/&lt;token&gt;/webhook</code></td>
+<td>Create/update a session. <code>200</code> with <code>{ok, session}</code>; <code>400</code> on validation errors; <code>429</code> over the rate limit.</td>
+</tr>
+<tr>
+<td><code>POST /w/&lt;token&gt;/usage</code></td>
+<td>Report plan usage (see <a href="#api-plan-usage">Plan usage</a>).</td>
+</tr>
+<tr>
+<td><code>GET /w/&lt;token&gt;/api/usage</code></td>
+<td>Current plan usage list.</td>
+</tr>
+<tr>
+<td><code>GET /w/&lt;token&gt;/api/sessions/:id/history</code></td>
+<td>Session timeline (see <a href="#api-session-history">Session history</a>).</td>
+</tr>
+<tr>
+<td><code>DELETE /w/&lt;token&gt;/sessions/:id</code></td>
+<td>Remove one session. Returns <code>{ok: boolean}</code>.</td>
+</tr>
+<tr>
+<td><code>POST /w/&lt;token&gt;/sessions/clear</code></td>
+<td>Remove all sessions in the workspace. Returns <code>{ok: true}</code>.</td>
+</tr>
+<tr>
+<td><code>DELETE /w/&lt;token&gt;</code></td>
+<td>Delete the whole workspace: all sessions and device registrations removed, event streams closed. Returns <code>{ok: true}</code>.</td>
+</tr>
+</tbody></table></div>
+<p>Any request with an invalid or unknown token returns
+<code>404 {&quot;error&quot;: &quot;unknown workspace&quot;}</code>. All <code>/w/...</code> routes send permissive
+CORS headers (<code>Access-Control-Allow-Origin: *</code>; methods
+<code>GET,POST,DELETE,OPTIONS</code>; <code>OPTIONS</code> answers <code>204</code>) — the token in the path
+is the credential, so origins add nothing.</p>
+<h4 id="api-pairing-endpoints"><a class="anchor" href="#api-pairing-endpoints">Pairing endpoints</a></h4>
+<p>Pairing lets a device that owns a workspace (e.g. the iOS app) hand it to
+another machine (the CLI) via a short, typeable code. Codes are 8 characters
+from an ambiguity-free alphabet (no <code>I</code>/<code>L</code>/<code>O</code>/<code>0</code>/<code>1</code>), displayed grouped
+as <code>XXXX-XXXX</code>, single-use, held in memory only, and expire after 15 minutes.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Method &amp; path</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>POST /w/&lt;token&gt;/pair</code></td>
+<td>Create a pairing code for this workspace. <code>201</code> with <code>{ok: true, code: &quot;XXXX-XXXX&quot;, expiresInSeconds: 900}</code>. Max 3 outstanding codes per workspace (<code>429</code> beyond); creating a new code does not invalidate the others.</td>
+</tr>
+<tr>
+<td><code>POST /api/pair/claim</code></td>
+<td>Body <code>{&quot;code&quot;: &quot;XXXX-XXXX&quot;}</code> (case, dashes, and whitespace are normalized away). <code>200</code> with the same <code>{ok, token, dashboardUrl, webhookUrl}</code> shape as workspace creation; the code is consumed. <code>400</code> on a missing/non-string code; <code>404</code> on unknown/expired/already-used codes. Rate limited to 10 attempts per minute per IP (<code>429</code>).</td>
+</tr>
+</tbody></table></div>
+<h4 id="api-device-push-endpoints"><a class="anchor" href="#api-device-push-endpoints">Device (push) endpoints</a></h4>
+<p>Multi-tenant mode only. Devices register per workspace to receive APNs
+notifications; see <a href="#self-hosting-push-notifications-apns">docs/self-hosting.md</a>
+for the server-side setup and trigger rules.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Method &amp; path</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>POST /w/&lt;token&gt;/devices</code></td>
+<td>Register/update a device. Body: <code>{&quot;device_token&quot;: &quot;&lt;hex&gt;&quot;, &quot;platform&quot;: &quot;ios&quot;, &quot;notify_done&quot;: false}</code>. <code>device_token</code> must match <code>^[0-9a-fA-F]{16,200}$</code> and <code>platform</code> must be <code>&quot;ios&quot;</code> (<code>400</code> otherwise). Upserts by (workspace, token) — re-POST updates <code>notify_done</code>. Max 10 devices per workspace: <code>429</code> for a new device past the cap; updates to existing devices always succeed. Returns <code>{ok: true}</code>.</td>
+</tr>
+<tr>
+<td><code>DELETE /w/&lt;token&gt;/devices/:deviceToken</code></td>
+<td>Unregister. Returns <code>{ok: boolean}</code>.</td>
+</tr>
+</tbody></table></div>
+<p>Deleting the workspace purges its device registrations. Tokens Apple reports
+as expired or unregistered are pruned automatically.</p>
+<h3 id="api-sse-event-format"><a class="anchor" href="#api-sse-event-format">SSE event format</a></h3>
+<p><code>GET /events</code> (legacy) and <code>GET /w/&lt;token&gt;/events</code> (multi-tenant) are
+standard <code>text/event-stream</code> responses:</p>
+<pre><code>event: snapshot
+data: [ { ...session }, ... ]
+
+event: session
+data: { ...session }
+
+event: remove
+data: { &quot;id&quot;: &quot;sess-abc&quot; }
+
+event: usage
+data: [ { &quot;source&quot;: &quot;claude&quot;, &quot;windows&quot;: [ ... ], &quot;updatedAt&quot;: 1752096030000 } ]
+
+: keepalive
+</code></pre>
+<ul>
+<li><code>snapshot</code> — the full session list. Sent once on connect and again (empty)
+after <code>sessions/clear</code> or workspace deletion.</li>
+<li><code>session</code> — a session was created or updated.</li>
+<li><code>remove</code> — a session was deleted, evicted, or expired.</li>
+<li><code>usage</code> — the full plan-usage list (see <a href="#api-plan-usage">Plan usage</a>). Sent
+on connect when non-empty, and after every usage report.</li>
+<li>A <code>: keepalive</code> comment line is sent every 25 s.</li>
+</ul>
+<p>The server sets <code>Cache-Control: no-cache, no-transform</code> and
+<code>X-Accel-Buffering: no</code> so reverse proxies don&#39;t buffer the stream. When a
+workspace is deleted, its open streams receive a final empty <code>snapshot</code> and
+are closed.</p>
+<h3 id="api-limits"><a class="anchor" href="#api-limits">Limits</a></h3>
+<p>To keep a shared instance healthy, multi-tenant workspaces are capped:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Limit</th>
+<th>Value</th>
+<th>Behavior at the limit</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Sessions per workspace</td>
+<td>50</td>
+<td>A new session evicts the oldest-updated one (a <code>remove</code> event is broadcast for it).</td>
+</tr>
+<tr>
+<td>Concurrent SSE connections per workspace</td>
+<td>10</td>
+<td>The 11th gets <code>429</code> before the stream starts.</td>
+</tr>
+<tr>
+<td>Webhook requests per workspace</td>
+<td>120/min</td>
+<td><code>429</code>.</td>
+</tr>
+<tr>
+<td>Devices per workspace</td>
+<td>10</td>
+<td><code>429</code> for new devices.</td>
+</tr>
+<tr>
+<td>Outstanding pairing codes per workspace</td>
+<td>3</td>
+<td><code>429</code>.</td>
+</tr>
+<tr>
+<td>Workspace creations</td>
+<td>20/hour/IP</td>
+<td><code>429</code>.</td>
+</tr>
+<tr>
+<td>Pair-code claims</td>
+<td>10/min/IP</td>
+<td><code>429</code>.</td>
+</tr>
+<tr>
+<td>Session TTL</td>
+<td>24 h (<code>SESSION_TTL_MS</code>)</td>
+<td>Expired sessions are swept and <code>remove</code> events broadcast.</td>
+</tr>
+<tr>
+<td>Idle workspaces</td>
+<td>60 days</td>
+<td>Deleted by a periodic sweep (every 6 hours).</td>
+</tr>
+<tr>
+<td>Live workspaces</td>
+<td><code>MAX_WORKSPACES</code> (default 10000)</td>
+<td>Creation returns <code>503</code>.</td>
+</tr>
+<tr>
+<td>Request body</td>
+<td>16 KB</td>
+<td><code>413</code>.</td>
+</tr>
+</tbody></table></div>
+<p>In both modes: <code>name</code>/<code>project</code> truncate to 120 chars, <code>message</code> to 300;
+control characters are stripped. Push alerts per (session, kind) are
+debounced to one per minute.</p>
+
+</section>
+  </main>
+</div>
+
+<footer>
+  <div class="foot-inner">
+    <span>MIT licensed · Built by Inal Kardanov</span>
+    <div class="foot-links">
+      <a href="https://github.com/KardanovIR/claude-status-dashboard">GitHub</a>
+      <a href="https://www.npmjs.com/package/agstatus">npm</a>
+      <a href="/privacy">Privacy</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -24,12 +24,6 @@ behavior-control decisions).
 npx agstatus init
 ```
 
-> Until the package is published to npm, run it from a clone of this repo:
->
-> ```bash
-> npm --prefix cli install && npm --prefix cli run build && node cli/dist/cli.js init
-> ```
-
 What it does, in order:
 
 1. Contacts the server (`GET /api/config`) — the hosted instance by default.

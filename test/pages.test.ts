@@ -35,4 +35,16 @@ describe('static pages', () => {
       expect(res.text).toContain('Privacy Policy');
     }
   });
+
+  it('serves the generated docs page at /docs in both modes', async () => {
+    for (const multiTenant of [true, false]) {
+      const { app } = makeApp({ multiTenant });
+      const res = await request(app).get('/docs').expect(200);
+      expect(res.headers['content-type']).toMatch(/text\/html/);
+      // One section per source doc, wired to the in-page nav.
+      for (const id of ['hooks', 'self-hosting', 'api']) {
+        expect(res.text).toContain(`id="${id}"`);
+      }
+    }
+  });
 });

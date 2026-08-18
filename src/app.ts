@@ -35,6 +35,7 @@ const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const INDEX_HTML = path.join(PUBLIC_DIR, 'index.html');
 const LANDING_HTML = path.join(PUBLIC_DIR, 'landing.html');
 const PRIVACY_HTML = path.join(PUBLIC_DIR, 'privacy.html');
+const DOCS_HTML = path.join(PUBLIC_DIR, 'docs.html');
 
 const isStatus = (s: unknown): s is Status =>
   typeof s === 'string' && (STATUSES as readonly string[]).includes(s);
@@ -139,6 +140,8 @@ export function createApp(cfg: AppConfig): CreatedApp {
   }
   // Stable URL for the privacy policy — the App Store listing points here.
   app.get('/privacy', (_req, res) => res.sendFile(PRIVACY_HTML));
+  // Docs page, generated from docs/*.md by scripts/build-docs.js.
+  app.get('/docs', (_req, res) => res.sendFile(DOCS_HTML));
 
   app.use(express.static(PUBLIC_DIR, { maxAge: 0, etag: true }));
 

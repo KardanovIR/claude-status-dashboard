@@ -41,9 +41,6 @@ so you step away from the keyboard without losing the thread.
    prints your board URL plus a QR code to open it on your phone. (Codex asks
    you to trust the new hook once: run `/hooks` inside Codex.)
 
-   > Until the package is published to npm, run it from a clone:
-   > `npm --prefix cli install && npm --prefix cli run build && node cli/dist/cli.js init`
-
 3. **Start a Claude Code session** — a card appears on the board and follows
    the agent through `idle → coding → testing → …` as it works.
 

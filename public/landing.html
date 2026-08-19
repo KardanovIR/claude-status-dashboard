@@ -410,6 +410,37 @@
     overflow-x: auto;
   }
 
+  .install-tabs {
+    display: inline-flex;
+    gap: 2px;
+    margin-top: 12px;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 3px;
+  }
+  .install-tabs .tab {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 5px 10px;
+    cursor: pointer;
+    transition: color .15s;
+  }
+  .install-tabs .tab:hover { color: var(--text); }
+  .install-tabs .tab[aria-selected="true"] {
+    background: var(--bg);
+    color: var(--text);
+    border-color: var(--line);
+  }
+  .step code.multi { line-height: 1.8; }
+  /* the display rules above would otherwise beat the hidden attribute */
+  .step [hidden] { display: none !important; }
+  .install-note { font-size: 13px; color: var(--muted-2); margin-top: 8px; }
+
   /* ── self-host strip ── */
   .strip {
     background: var(--surface);
@@ -563,7 +594,17 @@
       <div>
         <h3>Install the hook</h3>
         <p>Sets up Claude Code, and OpenAI Codex too when it finds it. Your existing settings are preserved.</p>
-        <code>npx agstatus init</code>
+        <div class="install-tabs" role="tablist" aria-label="Install method">
+          <button class="tab" role="tab" aria-selected="true" data-tab="npx" type="button">npx</button>
+          <button class="tab" role="tab" aria-selected="false" data-tab="brew" type="button">Homebrew</button>
+          <button class="tab" role="tab" aria-selected="false" data-tab="plugin" type="button">Claude Code plugin</button>
+        </div>
+        <div>
+          <code data-pane="npx">npx agstatus init</code>
+          <code data-pane="brew" hidden>brew install kardanovir/tap/agstatus &amp;&amp; agstatus init</code>
+          <code data-pane="plugin" class="multi" hidden>/plugin marketplace add KardanovIR/claude-status-dashboard<br />/plugin install agstatus@agstatus<br />/agstatus:setup</code>
+          <p class="install-note" data-pane="plugin-note" hidden>Runs inside Claude Code — no terminal needed. Claude Code only; for Codex use the CLI.</p>
+        </div>
       </div>
     </div>
     <div class="step">
@@ -636,6 +677,19 @@
         cmdBtn.querySelector('.copy').textContent = 'copy';
       }, 1600);
     } catch { /* clipboard unavailable — the text is selectable anyway */ }
+  });
+
+  // ── install method tabs ────────────────────────────────────────────────
+  const tabs = document.querySelector('.install-tabs');
+  tabs.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tab');
+    if (!btn) return;
+    for (const t of tabs.querySelectorAll('.tab')) {
+      t.setAttribute('aria-selected', String(t === btn));
+    }
+    for (const pane of tabs.parentElement.querySelectorAll('[data-pane]')) {
+      pane.hidden = !pane.dataset.pane.startsWith(btn.dataset.tab);
+    }
   });
 
   // ── create a board (same call the dashboard makes) ────────────────────

@@ -5,11 +5,16 @@ AgStatus watches your agents through their hook systems — Claude Code's
 [lifecycle hooks](https://developers.openai.com/codex/config-reference) use
 the same shape (event JSON on stdin with `hook_event_name`, `session_id`,
 `cwd`), so one small script serves both: it receives each event and posts a
-status webhook to your board. Two ways to set it up:
+status webhook to your board. Ways to set it up:
 
 1. **`npx agstatus init`** (recommended) — installs a dependency-free Node
-   hook and wires up Claude Code, plus Codex when `~/.codex` exists.
-2. **Manual bash hook** — the original `hooks/claude-status-hook.sh`, for
+   hook and wires up Claude Code, plus Codex when `~/.codex` exists. Homebrew
+   users can `brew install kardanovir/tap/agstatus` and run `agstatus init` —
+   same CLI, on your PATH.
+2. **Claude Code plugin** — hooks bundled as a plugin, no settings.json
+   surgery; see [Claude Code plugin](#claude-code-plugin) below. Claude Code
+   only (Codex still needs `agstatus init`).
+3. **Manual bash hook** — the original `hooks/claude-status-hook.sh`, for
    people who want to see and customize every moving part (Claude Code only).
 
 Both hooks are deliberately non-blocking: any failure (server down, bad
@@ -70,6 +75,28 @@ npx agstatus help        # usage
 `uninstall` removes only AgStatus's hook registrations and the
 `CLAUDE_STATUS_URL` / `CLAUDE_STATUS_SECRET` / `AGSTATUS_DETAIL` env keys —
 everything else in `settings.json` is left untouched.
+
+## Claude Code plugin
+
+The same hook, packaged as a Claude Code plugin — nothing touches
+`~/.claude/settings.json`. Inside Claude Code:
+
+```
+/plugin marketplace add KardanovIR/claude-status-dashboard
+/plugin install agstatus@agstatus
+/agstatus:setup
+```
+
+`/agstatus:setup` creates a private board (or pairs with one:
+`/agstatus:setup XXXX-XXXX` with a code from the iOS app) and writes the
+board URL to `~/.agstatus.json`, which the hook reads whenever the
+`CLAUDE_STATUS_URL` env var is absent. Reporting starts immediately — the
+session you run it in appears on the board.
+
+Don't combine the plugin with an `agstatus init` install on the same
+machine: both hooks would fire and every status would post twice. Pick one
+(`npx agstatus uninstall` removes the other). The plugin covers Claude Code
+only; for Codex, use `agstatus init`.
 
 ## How events map to statuses
 

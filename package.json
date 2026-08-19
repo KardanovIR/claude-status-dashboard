@@ -12,6 +12,7 @@
   "scripts": {
     "build": "tsc",
     "build:docs": "node scripts/build-docs.js",
+    "sync:plugin": "cp cli/assets/agstatus-hook.js plugin/scripts/agstatus-hook.js",
     "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
     "test": "vitest run"

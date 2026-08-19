@@ -1,0 +1,16 @@
+{
+  "name": "agstatus",
+  "owner": {
+    "name": "Inal Kardanov",
+    "url": "https://github.com/KardanovIR"
+  },
+  "plugins": [
+    {
+      "name": "agstatus",
+      "source": "./plugin",
+      "description": "Live status board + push alerts for your Claude Code sessions — see every agent at a glance from your phone.",
+      "version": "1.2.0",
+      "author": { "name": "Inal Kardanov" }
+    }
+  ]
+}

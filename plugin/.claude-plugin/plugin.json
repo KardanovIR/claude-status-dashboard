@@ -1,0 +1,14 @@
+{
+  "name": "agstatus",
+  "displayName": "AgStatus",
+  "version": "1.2.0",
+  "description": "Live status board + push alerts for your Claude Code sessions — see every agent at a glance from your phone.",
+  "author": {
+    "name": "Inal Kardanov",
+    "url": "https://github.com/KardanovIR"
+  },
+  "homepage": "https://agstatus.online",
+  "repository": "https://github.com/KardanovIR/claude-status-dashboard",
+  "license": "MIT",
+  "keywords": ["status", "dashboard", "monitoring", "hooks", "push-notifications"]
+}

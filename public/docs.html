@@ -150,6 +150,7 @@
       <li class="toc-doc"><a href="#hooks">Integration</a>
         <ul>
           <li><a href="#hooks-npx-agstatus-init">npx agstatus init</a></li>
+          <li><a href="#hooks-claude-code-plugin">Claude Code plugin</a></li>
           <li><a href="#hooks-how-events-map-to-statuses">How events map to statuses</a></li>
           <li><a href="#hooks-plan-usage-bars">Plan-usage bars</a></li>
           <li><a href="#hooks-openai-codex-specifics">OpenAI Codex specifics</a></li>
@@ -190,10 +191,15 @@
 <a href="https://developers.openai.com/codex/config-reference">lifecycle hooks</a> use
 the same shape (event JSON on stdin with <code>hook_event_name</code>, <code>session_id</code>,
 <code>cwd</code>), so one small script serves both: it receives each event and posts a
-status webhook to your board. Two ways to set it up:</p>
+status webhook to your board. Ways to set it up:</p>
 <ol>
 <li><strong><code>npx agstatus init</code></strong> (recommended) — installs a dependency-free Node
-hook and wires up Claude Code, plus Codex when <code>~/.codex</code> exists.</li>
+hook and wires up Claude Code, plus Codex when <code>~/.codex</code> exists. Homebrew
+users can <code>brew install kardanovir/tap/agstatus</code> and run <code>agstatus init</code> —
+same CLI, on your PATH.</li>
+<li><strong>Claude Code plugin</strong> — hooks bundled as a plugin, no settings.json
+surgery; see <a href="#hooks-claude-code-plugin">Claude Code plugin</a> below. Claude Code
+only (Codex still needs <code>agstatus init</code>).</li>
 <li><strong>Manual bash hook</strong> — the original <code>hooks/claude-status-hook.sh</code>, for
 people who want to see and customize every moving part (Claude Code only).</li>
 </ol>
@@ -271,6 +277,22 @@ npx agstatus help        # usage
 <p><code>uninstall</code> removes only AgStatus&#39;s hook registrations and the
 <code>CLAUDE_STATUS_URL</code> / <code>CLAUDE_STATUS_SECRET</code> / <code>AGSTATUS_DETAIL</code> env keys —
 everything else in <code>settings.json</code> is left untouched.</p>
+<h3 id="hooks-claude-code-plugin"><a class="anchor" href="#hooks-claude-code-plugin">Claude Code plugin</a></h3>
+<p>The same hook, packaged as a Claude Code plugin — nothing touches
+<code>~/.claude/settings.json</code>. Inside Claude Code:</p>
+<pre><code>/plugin marketplace add KardanovIR/claude-status-dashboard
+/plugin install agstatus@agstatus
+/agstatus:setup
+</code></pre>
+<p><code>/agstatus:setup</code> creates a private board (or pairs with one:
+<code>/agstatus:setup XXXX-XXXX</code> with a code from the iOS app) and writes the
+board URL to <code>~/.agstatus.json</code>, which the hook reads whenever the
+<code>CLAUDE_STATUS_URL</code> env var is absent. Reporting starts immediately — the
+session you run it in appears on the board.</p>
+<p>Don&#39;t combine the plugin with an <code>agstatus init</code> install on the same
+machine: both hooks would fire and every status would post twice. Pick one
+(<code>npx agstatus uninstall</code> removes the other). The plugin covers Claude Code
+only; for Codex, use <code>agstatus init</code>.</p>
 <h3 id="hooks-how-events-map-to-statuses"><a class="anchor" href="#hooks-how-events-map-to-statuses">How events map to statuses</a></h3>
 <p>The Node hook applies this mapping. The bash hook covers the same Claude Code
 events but predates Codex support, so it has no <code>PermissionRequest</code> or

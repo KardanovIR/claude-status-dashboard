@@ -169,6 +169,14 @@ describe('hook status messages', () => {
     expect(posted!.message.length).toBeLessThanOrEqual(120);
   });
 
+  it('falls back to ~/.agstatus.json when CLAUDE_STATUS_URL is unset (plugin mode)', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-home-'));
+    fs.writeFileSync(path.join(home, '.agstatus.json'), JSON.stringify({ url: base }));
+    const posted = fireEvent({ hook_event_name: 'Stop' }, { CLAUDE_STATUS_URL: '', HOME: home });
+    expect(posted?.status).toBe('idle');
+    expect(posted?.message).toBe('Waiting for input');
+  });
+
   it('flips to planning the moment the user submits a prompt', () => {
     const posted = fireEvent({
       hook_event_name: 'UserPromptSubmit',

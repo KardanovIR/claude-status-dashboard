@@ -41,6 +41,12 @@ so you step away from the keyboard without losing the thread.
    prints your board URL plus a QR code to open it on your phone. (Codex asks
    you to trust the new hook once: run `/hooks` inside Codex.)
 
+   Prefer Homebrew? `brew install kardanovir/tap/agstatus`, then `agstatus init`.
+   Claude Code-only machines can skip the CLI entirely and use the
+   [plugin](docs/hooks.md#claude-code-plugin): `/plugin marketplace add
+   KardanovIR/claude-status-dashboard`, `/plugin install agstatus@agstatus`,
+   `/agstatus:setup`.
+
 3. **Start a Claude Code session** — a card appears on the board and follows
    the agent through `idle → coding → testing → …` as it works.
 

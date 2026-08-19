@@ -63,6 +63,40 @@ jobs:
           npm ci
           npm publish --access public
 
+  brew:
+    name: Bump Homebrew formula
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [npm]
+    steps:
+      - name: Set up SSH for the tap deploy key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.TAP_SSH_KEY }}" > ~/.ssh/tap_key
+          chmod 600 ~/.ssh/tap_key
+          ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Update Formula/agstatus.rb
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          URL="https://registry.npmjs.org/agstatus/-/agstatus-${VERSION}.tgz"
+          # npm publish just ran; give the registry CDN a moment to propagate.
+          for i in $(seq 1 12); do
+            curl -fsSL -o agstatus.tgz "$URL" && break
+            sleep 10
+          done
+          SHA=$(sha256sum agstatus.tgz | cut -d' ' -f1)
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes"
+          git clone --depth 1 git@github.com:KardanovIR/homebrew-tap.git tap
+          cd tap
+          sed -i -E "s|url \".*\"|url \"$URL\"|" Formula/agstatus.rb
+          sed -i -E "s|sha256 \".*\"|sha256 \"$SHA\"|" Formula/agstatus.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "agstatus ${VERSION}"
+          git push
+
   github-release:
     name: GitHub release
     runs-on: ubuntu-latest

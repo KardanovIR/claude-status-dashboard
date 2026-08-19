@@ -7,6 +7,7 @@ struct SettingsView: View {
     @Environment(NotificationManager.self) private var notifications
     @Environment(\.dismiss) private var dismiss
     @AppStorage("keepAwake") private var keepAwake = false
+    @AppStorage("keepAwakeIdleMinutes") private var keepAwakeIdleMinutes = 10
 
     @State private var confirmDisconnect = false
     @State private var confirmDelete = false
@@ -145,10 +146,21 @@ struct SettingsView: View {
     private var displaySection: some View {
         Section {
             Toggle("Keep screen awake", isOn: $keepAwake)
+            if keepAwake {
+                Picker("Let the screen sleep after", selection: $keepAwakeIdleMinutes) {
+                    Text("5 minutes").tag(5)
+                    Text("10 minutes").tag(10)
+                    Text("30 minutes").tag(30)
+                    Text("1 hour").tag(60)
+                    Text("Never").tag(0)
+                }
+            }
         } header: {
             Text("Display")
         } footer: {
-            Text("Handy when the board lives on a desk or shelf.")
+            Text(keepAwake
+                ? "Handy when the board lives on a desk or shelf. While agents are active the screen stays on; after the chosen quiet period it may sleep as usual."
+                : "Handy when the board lives on a desk or shelf.")
         }
         .listRowBackground(Theme.card)
     }

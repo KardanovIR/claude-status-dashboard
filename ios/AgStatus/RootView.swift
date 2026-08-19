@@ -7,6 +7,9 @@ struct RootView: View {
     @Environment(SessionStore.self) private var store
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("keepAwake") private var keepAwake = false
+    /// Minutes of board silence before the screen may sleep again; 0 = never.
+    @AppStorage("keepAwakeIdleMinutes") private var keepAwakeIdleMinutes = 10
+    @State private var idleRelease: Task<Void, Never>?
 
     private var showsBoard: Bool { store.board != nil || store.isDemo }
 
@@ -24,7 +27,11 @@ struct RootView: View {
         .animation(.easeInOut(duration: 0.25), value: showsBoard)
         .onAppear { applyKeepAwake() }
         .onChange(of: keepAwake) { applyKeepAwake() }
+        .onChange(of: keepAwakeIdleMinutes) { applyKeepAwake() }
         .onChange(of: showsBoard) { applyKeepAwake() }
+        // Every board event restarts the idle countdown, so an active agent
+        // keeps the screen on and a quiet board lets it sleep.
+        .onChange(of: store.lastActivityAt) { applyKeepAwake() }
         .onChange(of: scenePhase) { _, newPhase in
             // A suspended SSE socket dies silently; reconnect on return so the
             // board never shows stale data under a green dot — and release the
@@ -40,6 +47,7 @@ struct RootView: View {
                    store.connection == .idle {
                     store.connect()
                 }
+                applyKeepAwake()
             case .background:
                 if !store.isDemo, store.connection != .boardGone {
                     store.disconnect()
@@ -50,7 +58,24 @@ struct RootView: View {
         }
     }
 
+    /// Holds the screen awake while the board is on and active, and re-arms
+    /// an idle countdown that releases it after `keepAwakeIdleMinutes` of
+    /// board silence (0 = hold forever, the pre-setting behavior).
     private func applyKeepAwake() {
-        UIApplication.shared.isIdleTimerDisabled = keepAwake && showsBoard
+        idleRelease?.cancel()
+        idleRelease = nil
+
+        guard keepAwake && showsBoard else {
+            UIApplication.shared.isIdleTimerDisabled = false
+            return
+        }
+        UIApplication.shared.isIdleTimerDisabled = true
+
+        guard keepAwakeIdleMinutes > 0 else { return }
+        idleRelease = Task {
+            try? await Task.sleep(for: .seconds(keepAwakeIdleMinutes * 60))
+            guard !Task.isCancelled else { return }
+            UIApplication.shared.isIdleTimerDisabled = false
+        }
     }
 }

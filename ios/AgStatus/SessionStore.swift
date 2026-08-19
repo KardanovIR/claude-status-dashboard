@@ -24,6 +24,11 @@ final class SessionStore {
     private(set) var connection: Connection = .idle
     private(set) var board: Board?
 
+    /// Wall clock of the last real board activity (a session update or
+    /// removal; demo ticks count too). Drives the keep-awake idle countdown —
+    /// reconnect snapshots and usage trickle deliberately don't reset it.
+    private(set) var lastActivityAt = Date()
+
     var isDemo: Bool {
         connection == .demo
     }
@@ -117,6 +122,7 @@ final class SessionStore {
         stopDemoTask()
         cancelStream()
         connection = .connecting
+        lastActivityAt = Date()
         streamTask = Task { [weak self] in
             await self?.runStream(for: board)
         }
@@ -148,8 +154,10 @@ final class SessionStore {
                         var next = sessions.filter { $0.id != session.id }
                         next.append(session)
                         sessions = Self.sortedByUpdate(next)
+                        lastActivityAt = Date()
                     case .remove(let id):
                         sessions.removeAll { $0.id == id }
+                        lastActivityAt = Date()
                     case .usage(let list):
                         usage = list
                     }
@@ -265,6 +273,7 @@ final class SessionStore {
                 try? await Task.sleep(for: .seconds(4))
                 guard let self, !Task.isCancelled, self.connection == .demo else { return }
                 self.sessions = Self.sortedByUpdate(DemoData.tick(self.sessions))
+                self.lastActivityAt = Date()
             }
         }
     }

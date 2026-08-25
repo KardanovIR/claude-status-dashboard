@@ -1,15 +1,51 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- A pulse trace, echoing the iOS icon's waveform.path.ecg glyph. Stays inside
-     the 72dp adaptive-icon safe zone so no launcher mask can clip it. -->
+<!-- The iOS icon's 2×2 grid of status-color tiles (planning / coding /
+     testing / done). The 43dp block stays inside the 66dp adaptive-icon
+     safe circle so no launcher mask can clip a corner. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path
-        android:pathData="M25,54 L41,54 L47,38 L55,71 L63,48 L68,54 L83,54"
-        android:strokeColor="#B17AFF"
-        android:strokeWidth="6"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
+    <path android:pathData="M37,32.5 h10 a4.5,4.5 0 0 1 4.5,4.5 v10 a4.5,4.5 0 0 1 -4.5,4.5 h-10 a4.5,4.5 0 0 1 -4.5,-4.5 v-10 a4.5,4.5 0 0 1 4.5,-4.5 z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="42" android:startY="32.5"
+                android:endX="42" android:endY="51.5"
+                android:startColor="#55A2FF"
+                android:endColor="#3E8FFF" />
+        </aapt:attr>
+    </path>
+    <path android:pathData="M61,32.5 h10 a4.5,4.5 0 0 1 4.5,4.5 v10 a4.5,4.5 0 0 1 -4.5,4.5 h-10 a4.5,4.5 0 0 1 -4.5,-4.5 v-10 a4.5,4.5 0 0 1 4.5,-4.5 z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="66" android:startY="32.5"
+                android:endX="66" android:endY="51.5"
+                android:startColor="#C08CFF"
+                android:endColor="#A66BFF" />
+        </aapt:attr>
+    </path>
+    <path android:pathData="M37,56.5 h10 a4.5,4.5 0 0 1 4.5,4.5 v10 a4.5,4.5 0 0 1 -4.5,4.5 h-10 a4.5,4.5 0 0 1 -4.5,-4.5 v-10 a4.5,4.5 0 0 1 4.5,-4.5 z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="42" android:startY="56.5"
+                android:endX="42" android:endY="75.5"
+                android:startColor="#FFBC4D"
+                android:endColor="#FFA51E" />
+        </aapt:attr>
+    </path>
+    <path android:pathData="M61,56.5 h10 a4.5,4.5 0 0 1 4.5,4.5 v10 a4.5,4.5 0 0 1 -4.5,4.5 h-10 a4.5,4.5 0 0 1 -4.5,-4.5 v-10 a4.5,4.5 0 0 1 4.5,-4.5 z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="66" android:startY="56.5"
+                android:endX="66" android:endY="75.5"
+                android:startColor="#4FD99A"
+                android:endColor="#34C583" />
+        </aapt:attr>
+    </path>
 </vector>

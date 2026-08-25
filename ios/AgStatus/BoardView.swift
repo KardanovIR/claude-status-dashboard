@@ -58,6 +58,14 @@ struct BoardView: View {
                     }
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    // The demo badge says where you are; this says how you leave.
+                    if store.isDemo {
+                        Button("Exit Demo") {
+                            store.stopDemo()
+                        }
+                        .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                        .tint(Theme.color(for: .planning))
+                    }
                     if store.board?.token != nil && store.connection != .boardGone {
                         Button {
                             showPairSheet = true

@@ -37,6 +37,21 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
     private val _board = MutableStateFlow<Board?>(null)
     val board: StateFlow<Board?> = _board.asStateFlow()
 
+    /**
+     * Wall clock of the last real board activity (a session update or removal;
+     * demo ticks count too). Drives the keep-awake idle countdown — reconnect
+     * snapshots and usage trickle deliberately don't reset it. Mirrors iOS.
+     */
+    private val _lastActivityAt = MutableStateFlow(System.currentTimeMillis())
+    val lastActivityAt: StateFlow<Long> = _lastActivityAt.asStateFlow()
+
+    private val _keepAwake = MutableStateFlow(false)
+    val keepAwake: StateFlow<Boolean> = _keepAwake.asStateFlow()
+
+    /** Minutes of board silence before the screen may sleep again; 0 = never. */
+    private val _keepAwakeIdleMinutes = MutableStateFlow(DEFAULT_IDLE_MINUTES)
+    val keepAwakeIdleMinutes: StateFlow<Int> = _keepAwakeIdleMinutes.asStateFlow()
+
     val isDemo: Boolean get() = _connection.value == Connection.DEMO
 
     private val sse = SseClient()
@@ -49,9 +64,26 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
     // MARK: Lifecycle
 
     init {
+        val prefs = app.getSharedPreferences(DISPLAY_PREFS, Application.MODE_PRIVATE)
+        _keepAwake.value = prefs.getBoolean(KEY_KEEP_AWAKE, false)
+        _keepAwakeIdleMinutes.value = prefs.getInt(KEY_IDLE_MINUTES, DEFAULT_IDLE_MINUTES)
+
         _board.value = BoardStorage.load(app)
         if (_board.value != null) connect()
     }
+
+    fun setKeepAwake(enabled: Boolean) {
+        _keepAwake.value = enabled
+        displayPrefs().edit().putBoolean(KEY_KEEP_AWAKE, enabled).apply()
+    }
+
+    fun setKeepAwakeIdleMinutes(minutes: Int) {
+        _keepAwakeIdleMinutes.value = minutes
+        displayPrefs().edit().putInt(KEY_IDLE_MINUTES, minutes).apply()
+    }
+
+    private fun displayPrefs() =
+        getApplication<Application>().getSharedPreferences(DISPLAY_PREFS, Application.MODE_PRIVATE)
 
     /** Saves the board and starts streaming. Stops demo mode if active. */
     fun adopt(board: Board) {
@@ -106,6 +138,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         stopDemoJob()
         cancelStream()
         _connection.value = Connection.CONNECTING
+        _lastActivityAt.value = System.currentTimeMillis()
         streamJob = viewModelScope.launch { runStream(current) }
     }
 
@@ -134,9 +167,12 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
                         is SseEvent.Upsert -> {
                             val others = _sessions.value.filter { it.id != event.session.id }
                             _sessions.value = sortedByUpdate(others + event.session)
+                            _lastActivityAt.value = System.currentTimeMillis()
                         }
-                        is SseEvent.Remove ->
+                        is SseEvent.Remove -> {
                             _sessions.value = _sessions.value.filter { it.id != event.id }
+                            _lastActivityAt.value = System.currentTimeMillis()
+                        }
                         is SseEvent.Usage -> _usage.value = event.usage
                     }
                 }
@@ -292,6 +328,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
                 delay(DEMO_TICK_MILLIS)
                 if (_connection.value != Connection.DEMO) return@launch
                 _sessions.value = sortedByUpdate(DemoData.tick(_sessions.value))
+                _lastActivityAt.value = System.currentTimeMillis()
             }
         }
     }
@@ -321,6 +358,10 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         const val INITIAL_BACKOFF_MILLIS = 1_000L
         const val MAX_BACKOFF_MILLIS = 30_000L
         const val DEMO_TICK_MILLIS = 4_000L
+        const val DISPLAY_PREFS = "agstatus_display"
+        const val KEY_KEEP_AWAKE = "keep_awake"
+        const val KEY_IDLE_MINUTES = "keep_awake_idle_minutes"
+        const val DEFAULT_IDLE_MINUTES = 10
 
         fun sortedByUpdate(sessions: List<Session>): List<Session> =
             sessions.sortedByDescending { it.updatedAt }

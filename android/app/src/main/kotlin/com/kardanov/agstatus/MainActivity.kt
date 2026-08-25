@@ -1,7 +1,9 @@
 package com.kardanov.agstatus
 
+import android.app.Activity
 import android.net.Uri
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -18,6 +20,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -30,6 +33,7 @@ import com.kardanov.agstatus.ui.PairSheet
 import com.kardanov.agstatus.ui.ScannerScreen
 import com.kardanov.agstatus.ui.SettingsScreen
 import com.kardanov.agstatus.ui.WelcomeScreen
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -49,9 +53,6 @@ private const val OPEN_HISTORY_TIMEOUT_MS = 4_000L
 class MainActivity : ComponentActivity() {
 
     private val store: SessionStore by viewModels()
-
-    /** True once the activity has been backgrounded at least once. */
-    private var wasStopped = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -85,19 +86,20 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        if (wasStopped &&
-            store.board.value != null &&
+        // Key off the store's state (IDLE after the onStop disconnect), not an
+        // instance flag: on rotation the activity is recreated and a fresh
+        // "was I stopped?" flag would skip the reconnect, leaving a gray dot
+        // over a cached board. Same bug class as the iOS scene-phase fix.
+        if (store.board.value != null &&
             !store.isDemo &&
-            store.connection.value != SessionStore.Connection.BOARD_GONE
+            store.connection.value == SessionStore.Connection.IDLE
         ) {
             store.connect()
         }
-        wasStopped = false
     }
 
     override fun onStop() {
         super.onStop()
-        wasStopped = true
         if (!store.isDemo && store.connection.value != SessionStore.Connection.BOARD_GONE) {
             store.disconnect()
         }
@@ -152,6 +154,8 @@ private fun AgStatusApp(
         OpenFirstHistoryEffect(store, navController)
     }
 
+    KeepScreenAwakeEffect(store, showsBoard)
+
     Box(modifier = Modifier.fillMaxSize()) {
         NavHost(navController = navController, startDestination = startDestination) {
             composable(Route.WELCOME) {
@@ -192,6 +196,33 @@ private fun AgStatusApp(
         if (showPairSheet) {
             PairSheet(store = store, onDismiss = { showPairSheet = false })
         }
+    }
+}
+
+/**
+ * Holds the screen awake while the board is on and active, and re-arms an
+ * idle countdown that releases it after `keepAwakeIdleMinutes` of board
+ * silence (0 = hold forever). Every board event restarts the countdown, so
+ * an active agent keeps the screen on and a quiet board lets it sleep.
+ * Mirrors the iOS RootView.applyKeepAwake.
+ */
+@Composable
+private fun KeepScreenAwakeEffect(store: SessionStore, showsBoard: Boolean) {
+    val activity = LocalContext.current as? Activity ?: return
+    val keepAwake by store.keepAwake.collectAsState()
+    val idleMinutes by store.keepAwakeIdleMinutes.collectAsState()
+    val lastActivityAt by store.lastActivityAt.collectAsState()
+
+    LaunchedEffect(keepAwake, idleMinutes, showsBoard, lastActivityAt) {
+        val window = activity.window
+        if (!keepAwake || !showsBoard) {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            return@LaunchedEffect
+        }
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        if (idleMinutes <= 0) return@LaunchedEffect
+        delay(idleMinutes * 60_000L)
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 }
 

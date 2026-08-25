@@ -25,8 +25,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -204,6 +207,8 @@ fun SettingsScreen(store: SessionStore, onBack: () -> Unit, modifier: Modifier =
                 }
             }
 
+            DisplaySection(store)
+
             board?.let { current ->
                 Section(title = "Danger zone") {
                     DangerRow(
@@ -276,6 +281,111 @@ fun SettingsScreen(store: SessionStore, onBack: () -> Unit, modifier: Modifier =
                 }
             },
         )
+    }
+}
+
+// MARK: - Display
+
+/** Same choices as the iOS Display section; 0 minutes means "Never". */
+private val SLEEP_AFTER_OPTIONS = listOf(
+    5 to "5 minutes",
+    10 to "10 minutes",
+    30 to "30 minutes",
+    60 to "1 hour",
+    0 to "Never",
+)
+
+@Composable
+private fun DisplaySection(store: SessionStore) {
+    val keepAwake by store.keepAwake.collectAsState()
+    val idleMinutes by store.keepAwakeIdleMinutes.collectAsState()
+    var showSleepMenu by remember { mutableStateOf(false) }
+
+    Section(
+        title = "Display",
+        footer = if (keepAwake) {
+            "Handy when the board lives on a desk or shelf. While agents are active " +
+                "the screen stays on; after the chosen quiet period it may sleep as usual."
+        } else {
+            "Handy when the board lives on a desk or shelf."
+        },
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 52.dp)
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Keep screen awake",
+                style = MaterialTheme.typography.bodyLarge,
+                color = Theme.textPrimary,
+                modifier = Modifier.weight(1f),
+            )
+            Switch(
+                checked = keepAwake,
+                onCheckedChange = store::setKeepAwake,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Theme.textPrimary,
+                    checkedTrackColor = Theme.planning,
+                    checkedBorderColor = Theme.planning,
+                    uncheckedThumbColor = Theme.textSecondary,
+                    uncheckedTrackColor = Theme.card,
+                    uncheckedBorderColor = Theme.cardBorder,
+                ),
+            )
+        }
+        if (keepAwake) {
+            RowDivider()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { showSleepMenu = true }
+                    .heightIn(min = 52.dp)
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Let the screen sleep after",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = Theme.textPrimary,
+                    modifier = Modifier.weight(1f),
+                )
+                Box {
+                    Text(
+                        text = SLEEP_AFTER_OPTIONS.firstOrNull { it.first == idleMinutes }?.second
+                            ?: "$idleMinutes minutes",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Theme.planning,
+                    )
+                    DropdownMenu(
+                        expanded = showSleepMenu,
+                        onDismissRequest = { showSleepMenu = false },
+                        containerColor = Theme.card,
+                    ) {
+                        SLEEP_AFTER_OPTIONS.forEach { (minutes, label) ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = label,
+                                        color = if (minutes == idleMinutes) {
+                                            Theme.planning
+                                        } else {
+                                            Theme.textPrimary
+                                        },
+                                    )
+                                },
+                                onClick = {
+                                    store.setKeepAwakeIdleMinutes(minutes)
+                                    showSleepMenu = false
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

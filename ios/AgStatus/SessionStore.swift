@@ -2,9 +2,10 @@
 //  SessionStore.swift
 //  AgStatus
 //
-//  Observable app state: the adopted board, the live session list (always
-//  sorted by updatedAt desc), the SSE connection lifecycle with backoff,
-//  and demo mode. Everything runs on the main actor.
+//  Observable app state: the adopted board, the live session list (newest
+//  first when it first fills; after that rows keep their position as events
+//  arrive and new sessions join at the top), the SSE connection lifecycle
+//  with backoff, and demo mode. Everything runs on the main actor.
 //
 
 import Foundation
@@ -147,13 +148,15 @@ final class SessionStore {
                 for try await event in sse.events(for: board) {
                     switch event {
                     case .snapshot(let list):
-                        sessions = Self.sortedByUpdate(list)
+                        sessions = Self.stableOrder(current: sessions, incoming: list)
                         connection = .live
                         delay = 1
                     case .upsert(let session):
-                        var next = sessions.filter { $0.id != session.id }
-                        next.append(session)
-                        sessions = Self.sortedByUpdate(next)
+                        if let index = sessions.firstIndex(where: { $0.id == session.id }) {
+                            sessions[index] = session
+                        } else {
+                            sessions.insert(session, at: 0)
+                        }
                         lastActivityAt = Date()
                     case .remove(let id):
                         sessions.removeAll { $0.id == id }
@@ -182,10 +185,12 @@ final class SessionStore {
     // MARK: Data
 
     /// Fetches the session list and merges it in, never resurrecting local
-    /// sessions that are newer than what the server returned.
+    /// sessions that are newer than what the server returned, nor sessions
+    /// removed while the fetch was in flight.
     func refresh() async {
         guard !isDemo, let board else { return }
         let fetchStart = Int64(Date().timeIntervalSince1970 * 1000)
+        let idsAtFetchStart = Set(sessions.map(\.id))
 
         let fetched: [Session]
         do {
@@ -203,8 +208,15 @@ final class SessionStore {
             usage = fetchedUsage
         }
 
+        // A fetched session we knew at fetch start but no longer hold was
+        // removed mid-fetch (dismissed here, elsewhere, or swept) — the fetch
+        // predates that removal, so re-adding it would resurrect a ghost.
+        let currentIDs = Set(sessions.map(\.id))
         var merged: [String: Session] = [:]
         for session in fetched {
+            if idsAtFetchStart.contains(session.id) && !currentIDs.contains(session.id) {
+                continue
+            }
             merged[session.id] = session
         }
         for local in sessions {
@@ -216,11 +228,11 @@ final class SessionStore {
                 merged[local.id] = local // arrived via SSE mid-fetch
             }
         }
-        sessions = Self.sortedByUpdate(Array(merged.values))
+        sessions = Self.stableOrder(current: sessions, incoming: Array(merged.values))
     }
 
     /// Optimistically removes the session, then deletes it on the server.
-    /// On failure the session is re-added and the list refreshed.
+    /// On failure the session returns to its old spot and the list refreshes.
     func dismiss(_ session: Session) async {
         if isDemo {
             sessions.removeAll { $0.id == session.id }
@@ -228,6 +240,12 @@ final class SessionStore {
         }
         guard let board else { return }
 
+        // Anchor the restore spot to the row below rather than a numeric
+        // index, which SSE events arriving during the DELETE would shift.
+        let index = sessions.firstIndex { $0.id == session.id }
+        let successorID = index.flatMap { i in
+            sessions.indices.contains(i + 1) ? sessions[i + 1].id : nil
+        }
         sessions.removeAll { $0.id == session.id }
         do {
             try await AgStatusAPI.deleteSession(session.id, from: board)
@@ -236,7 +254,16 @@ final class SessionStore {
             connection = .boardGone
         } catch {
             if !sessions.contains(where: { $0.id == session.id }) {
-                sessions = Self.sortedByUpdate(sessions + [session])
+                let at: Int
+                if let successorID,
+                   let below = sessions.firstIndex(where: { $0.id == successorID }) {
+                    at = below
+                } else if index != nil, successorID == nil {
+                    at = sessions.count // was the bottom row
+                } else {
+                    at = min(index ?? 0, sessions.count)
+                }
+                sessions.insert(session, at: at)
             }
             await refresh()
         }
@@ -272,7 +299,8 @@ final class SessionStore {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(4))
                 guard let self, !Task.isCancelled, self.connection == .demo else { return }
-                self.sessions = Self.sortedByUpdate(DemoData.tick(self.sessions))
+                self.sessions = Self.stableOrder(current: self.sessions,
+                                                 incoming: DemoData.tick(self.sessions))
                 self.lastActivityAt = Date()
             }
         }
@@ -303,5 +331,16 @@ final class SessionStore {
 
     private static func sortedByUpdate(_ sessions: [Session]) -> [Session] {
         sessions.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    /// Arranges `incoming` so sessions already on screen keep their relative
+    /// order (with fresh data) and unseen ones join at the top, newest first.
+    /// With nothing on screen this is a plain newest-first sort.
+    private static func stableOrder(current: [Session], incoming: [Session]) -> [Session] {
+        let incomingByID = Dictionary(incoming.map { ($0.id, $0) }) { _, last in last }
+        let kept = current.compactMap { incomingByID[$0.id] }
+        let currentIDs = Set(current.map(\.id))
+        let fresh = incoming.filter { !currentIDs.contains($0.id) }
+        return sortedByUpdate(fresh) + kept
     }
 }

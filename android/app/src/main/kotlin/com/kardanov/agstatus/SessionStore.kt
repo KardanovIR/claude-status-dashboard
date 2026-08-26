@@ -15,9 +15,10 @@ import kotlinx.coroutines.launch
 import kotlin.math.min
 
 /**
- * App state: the adopted board, the live session list (always sorted by
- * updatedAt desc), the SSE connection lifecycle with backoff, and demo mode.
- * Mirrors the iOS SessionStore.
+ * App state: the adopted board, the live session list (newest first when it
+ * first fills; after that rows keep their position as events arrive and new
+ * sessions join at the top), the SSE connection lifecycle with backoff, and
+ * demo mode. Mirrors the iOS SessionStore.
  */
 class SessionStore(app: Application) : AndroidViewModel(app) {
 
@@ -160,13 +161,18 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
                 sse.events(board).collect { event ->
                     when (event) {
                         is SseEvent.Snapshot -> {
-                            _sessions.value = sortedByUpdate(event.sessions)
+                            _sessions.value = stableOrder(_sessions.value, event.sessions)
                             _connection.value = Connection.LIVE
                             backoffMillis = INITIAL_BACKOFF_MILLIS
                         }
                         is SseEvent.Upsert -> {
-                            val others = _sessions.value.filter { it.id != event.session.id }
-                            _sessions.value = sortedByUpdate(others + event.session)
+                            val current = _sessions.value
+                            val index = current.indexOfFirst { it.id == event.session.id }
+                            _sessions.value = if (index >= 0) {
+                                current.toMutableList().also { it[index] = event.session }
+                            } else {
+                                listOf(event.session) + current
+                            }
                             _lastActivityAt.value = System.currentTimeMillis()
                         }
                         is SseEvent.Remove -> {
@@ -199,12 +205,14 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
 
     /**
      * Fetches the session list and merges it in, never resurrecting local
-     * sessions that are newer than what the server returned.
+     * sessions that are newer than what the server returned, nor sessions
+     * removed while the fetch was in flight.
      */
     suspend fun refresh() {
         if (isDemo) return
         val current = _board.value ?: return
         val fetchStart = System.currentTimeMillis()
+        val idsAtFetchStart = _sessions.value.mapTo(HashSet()) { it.id }
 
         val fetched = try {
             AgStatusApi.sessions(current)
@@ -226,8 +234,13 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         } catch (_: Exception) {
         }
 
+        // A fetched session we knew at fetch start but no longer hold was
+        // removed mid-fetch (dismissed here, elsewhere, or swept) — the fetch
+        // predates that removal, so re-adding it would resurrect a ghost.
+        val currentIds = _sessions.value.mapTo(HashSet()) { it.id }
         val merged = LinkedHashMap<String, Session>()
         for (session in fetched) {
+            if (session.id in idsAtFetchStart && session.id !in currentIds) continue
             merged[session.id] = session
         }
         for (local in _sessions.value) {
@@ -240,12 +253,12 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
                 merged[local.id] = local // arrived via SSE mid-fetch
             }
         }
-        _sessions.value = sortedByUpdate(merged.values.toList())
+        _sessions.value = stableOrder(_sessions.value, merged.values.toList())
     }
 
     /**
      * Optimistically removes the session, then deletes it on the server.
-     * On failure the session is re-added and the list refreshed.
+     * On failure the session returns to its old spot and the list refreshes.
      */
     suspend fun dismiss(session: Session) {
         if (isDemo) {
@@ -254,6 +267,10 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         }
         val current = _board.value ?: return
 
+        // Anchor the restore spot to the row below rather than a numeric
+        // index, which SSE events arriving during the DELETE would shift.
+        val index = _sessions.value.indexOfFirst { it.id == session.id }
+        val successorId = if (index >= 0) _sessions.value.getOrNull(index + 1)?.id else null
         _sessions.value = _sessions.value.filter { it.id != session.id }
         try {
             AgStatusApi.deleteSession(current, session.id)
@@ -266,7 +283,15 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
                 return
             }
             if (_sessions.value.none { it.id == session.id }) {
-                _sessions.value = sortedByUpdate(_sessions.value + session)
+                val list = _sessions.value.toMutableList()
+                val below = successorId?.let { id -> list.indexOfFirst { it.id == id } } ?: -1
+                val at = when {
+                    below >= 0 -> below
+                    index >= 0 && successorId == null -> list.size // was the bottom row
+                    else -> index.coerceIn(0, list.size)
+                }
+                list.add(at, session)
+                _sessions.value = list
             }
             refresh()
         }
@@ -327,7 +352,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
             while (isActive) {
                 delay(DEMO_TICK_MILLIS)
                 if (_connection.value != Connection.DEMO) return@launch
-                _sessions.value = sortedByUpdate(DemoData.tick(_sessions.value))
+                _sessions.value = stableOrder(_sessions.value, DemoData.tick(_sessions.value))
                 _lastActivityAt.value = System.currentTimeMillis()
             }
         }
@@ -354,16 +379,29 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         demoJob = null
     }
 
-    private companion object {
-        const val INITIAL_BACKOFF_MILLIS = 1_000L
-        const val MAX_BACKOFF_MILLIS = 30_000L
-        const val DEMO_TICK_MILLIS = 4_000L
-        const val DISPLAY_PREFS = "agstatus_display"
-        const val KEY_KEEP_AWAKE = "keep_awake"
-        const val KEY_IDLE_MINUTES = "keep_awake_idle_minutes"
-        const val DEFAULT_IDLE_MINUTES = 10
+    internal companion object {
+        private const val INITIAL_BACKOFF_MILLIS = 1_000L
+        private const val MAX_BACKOFF_MILLIS = 30_000L
+        private const val DEMO_TICK_MILLIS = 4_000L
+        private const val DISPLAY_PREFS = "agstatus_display"
+        private const val KEY_KEEP_AWAKE = "keep_awake"
+        private const val KEY_IDLE_MINUTES = "keep_awake_idle_minutes"
+        private const val DEFAULT_IDLE_MINUTES = 10
 
         fun sortedByUpdate(sessions: List<Session>): List<Session> =
             sessions.sortedByDescending { it.updatedAt }
+
+        /**
+         * Arranges [incoming] so sessions already on screen keep their relative
+         * order (with fresh data) and unseen ones join at the top, newest
+         * first. With nothing on screen this is a plain newest-first sort.
+         */
+        fun stableOrder(current: List<Session>, incoming: List<Session>): List<Session> {
+            val incomingById = incoming.associateBy { it.id }
+            val kept = current.mapNotNull { incomingById[it.id] }
+            val currentIds = current.mapTo(HashSet()) { it.id }
+            val fresh = incoming.filter { it.id !in currentIds }
+            return sortedByUpdate(fresh) + kept
+        }
     }
 }

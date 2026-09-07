@@ -7,17 +7,25 @@ and the board is populated without needing a paired machine.
 
 ## What is here
 
-`6.5/` — **1284 × 2778**. This is the set App Store Connect asks for first;
-uploading 6.9" images into this slot is rejected with "Screenshots dimensions
-should be: 1242 × 2688px, 2688 × 1242px, 1284 × 2778px or 2778 × 1284px".
-Captured natively on an iPhone 14 Plus simulator (no scaling or cropping).
+One directory per App Store Connect slot. **The slot dictates the pixel size** —
+uploading an image of the wrong size is rejected outright, with a message that
+lists the sizes that slot will take:
 
-`6.9/` — **1320 × 2868**, for the 6.9" slot when App Store Connect offers it.
+| Directory | Pixels | Captured on | Slot |
+| --- | --- | --- | --- |
+| `6.5/` | **1284 × 2778** | iPhone 14 Plus | 6.5" iPhone. Also accepts 1242 × 2688 and either landscape. |
+| `6.9/` | **1320 × 2868** | iPhone 17 Pro Max | 6.9" iPhone. |
+| `ipad/` | **2064 × 2752** | iPad Pro 13" (M5) | 13" iPad. Required — the app is universal. |
 
-`ipad/` — **2064 × 2752**, captured on an iPad Pro 13". The app became
-universal in 1.2.0 (`TARGETED_DEVICE_FAMILY = 1,2`), and App Store Connect
-will not accept a universal app's version without an iPad set — this used to
-say no iPad screenshots were needed, which stopped being true.
+Two traps live here:
+
+- **6.9" images do not fit the 6.5" slot.** Putting 1320 × 2868 into it fails
+  with "Screenshots dimensions should be: 1242 × 2688px, 2688 × 1242px,
+  1284 × 2778px or 2778 × 1284px". Capture the 6.5" set natively on an
+  iPhone 14 Plus; do not scale or crop the 6.9" images to fit.
+- **iPad images are not optional.** The app became universal in 1.2.0
+  (`TARGETED_DEVICE_FAMILY = 1,2`), and App Store Connect will not let a
+  universal app's version be submitted without an iPad set.
 
 Upload in this order — the first one is what people see in search results:
 

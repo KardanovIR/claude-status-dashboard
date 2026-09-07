@@ -62,10 +62,16 @@ SIMCTL_CHILD_AGSTATUS_DEMO=1 SIMCTL_CHILD_AGSTATUS_OPEN_HISTORY=1 \
 Always capture in **demo mode** — nothing personal appears and the board is
 populated without a paired machine.
 
-**iPad screenshots are required.** The app became universal in 1.2.0
-(`TARGETED_DEVICE_FAMILY = 1,2`), and App Store Connect will not let a
-universal app's version be submitted without an iPad set. Capture on an
-iPad Pro 13" simulator alongside the phone sizes.
+Every slot wants its own pixel size and rejects anything else, so capture each
+set natively rather than scaling one to fit another:
+
+| Slot | Pixels | Simulator |
+| --- | --- | --- |
+| 6.5" iPhone | 1284 × 2778 | iPhone 14 Plus |
+| 6.9" iPhone | 1320 × 2868 | iPhone 17 Pro Max |
+| 13" iPad | 2064 × 2752 | iPad Pro 13" (M5) |
+
+**iPad is required** — the app has been universal since 1.2.0.
 
 ## 2. Archive, export and upload
 

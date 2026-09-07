@@ -76,14 +76,35 @@ body {
   animation: blink 1.2s infinite;
 }
 
-/* plan usage limit bars — full-width, at the very top */
+/* plan usage limit bars — one block per agent, up to 3 side by side */
 .usage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  width: 100%;
+  align-items: stretch;
+}
+.usage[hidden] { display: none; }
+.usage-block {
+  /* Basis of a third: three blocks sit across, fewer grow to fill the row. */
+  flex: 1 1 calc(33.333% - 8px);
+  min-width: 240px;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  width: 100%;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
 }
-.usage[hidden] { display: none; }
+.usage-src {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
 .usage-head {
   display: flex;
   justify-content: space-between;
@@ -124,6 +145,68 @@ body {
 .usage-fill.low  { background: linear-gradient(90deg, var(--done), #34d399); }
 .usage-fill.mid  { background: linear-gradient(90deg, var(--testing), #fbbf24); }
 .usage-fill.high { background: linear-gradient(90deg, var(--blocked), #f87171); }
+
+.usage-block[role="button"] { cursor: pointer; transition: border-color .15s ease, background .15s ease; }
+.usage-block[role="button"]:hover,
+.usage-block[role="button"]:focus-visible { border-color: var(--muted); background: var(--card-hover, var(--card)); }
+.usage-more { float: right; color: var(--muted-2); font-weight: 400; }
+
+/* usage detail — a hash route that takes over the page */
+body.detail-open > main,
+body.detail-open > .usage,
+body.detail-open > .stats,
+body.detail-open > .footer { display: none; }
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 980px;
+  margin: 0 auto;
+  overflow-y: auto;
+}
+.detail[hidden] { display: none; }
+.dv-head { display: flex; align-items: center; gap: 12px; }
+.dv-back {
+  background: var(--card); color: var(--text); border: 1px solid var(--border);
+  border-radius: 999px; padding: 6px 14px; font: inherit; font-size: 13px; cursor: pointer;
+}
+.dv-back:hover { border-color: var(--muted); }
+.dv-title { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: 0.02em; }
+.dv-card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 14px; padding: 14px 16px;
+}
+.dv-card-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 10px;
+}
+.dv-card-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.dv-sub { color: var(--muted-2); text-transform: none; letter-spacing: 0; }
+.dv-legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--muted); }
+.dv-key { display: inline-flex; align-items: center; gap: 5px; }
+.dv-key i { width: 10px; height: 2px; border-radius: 2px; display: inline-block; }
+.dv-key-none { color: var(--muted-2); }
+/* Scales uniformly from its viewBox: stretching it instead would distort the
+   axis labels along with the plot. */
+.dv-chart { width: 100%; height: auto; display: block; }
+.dv-bar { fill: var(--done); opacity: 0.5; }
+.dv-line { fill: none; stroke-width: 1.75; stroke-linejoin: round; stroke-linecap: round; }
+.dv-grid { stroke: var(--border); stroke-width: 1; }
+.dv-axis { fill: var(--muted-2); font-size: 10px; }
+.dv-axis-r { text-anchor: start; }
+.dv-proj + .dv-proj { margin-top: 10px; }
+.dv-proj-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.dv-proj-name {
+  font-size: 13px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dv-proj-val { font-size: 12px; font-weight: 650; white-space: nowrap; }
+.dv-proj-pct { color: var(--muted-2); font-weight: 400; margin-left: 4px; }
+.dv-proj-track { height: 6px; border-radius: 999px; background: var(--bg-2, rgba(255,255,255,0.06)); overflow: hidden; }
+.dv-proj-fill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--planning, #4D9FFF), #7cc0ff); }
+.dv-empty { color: var(--muted); font-size: 13px; margin: 4px 0; }
+.dv-note { color: var(--muted-2); font-size: 11px; line-height: 1.5; margin: 0 2px 8px; }
 
 /* stats */
 .stats {
@@ -526,8 +609,24 @@ main {
     grid-auto-rows: minmax(min(22vh, 140px), 1fr);
   }
   .usage { gap: 8px; }
+  /* Two across on a phone, wrapping to further rows. */
+  .usage-block {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 0;
+    gap: 8px;
+    padding: 10px 12px;
+    border-radius: 12px;
+  }
+  .usage-src { font-size: 11px; }
+  .dv-card { padding: 12px; border-radius: 12px; }
   .usage-label { font-size: 11px; }
-  .usage-head { margin-bottom: 4px; }
+  /* Half a phone screen fits the label OR the value, not both side by side. */
+  .usage-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+    margin-bottom: 4px;
+  }
   .usage-track { height: 6px; }
   .card {
     min-height: 0;

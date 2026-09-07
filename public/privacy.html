@@ -161,6 +161,12 @@
     show limit bars. The credentials used to look this up are read <strong>on your own
     machine</strong> and never sent to the server — only the resulting percentages and reset times
     are. Set <code>AGSTATUS_USAGE=off</code> to turn this off entirely.</p>
+  <p>To chart how usage moves over time, the server keeps each reported percentage rather than only
+    the newest one, and the hook additionally reports a <strong>daily token total per project</strong>
+    — a project folder name, a date, and a number of tokens, read from your coding tool's own local
+    logs. No prompts, code, file contents or conversation ever leave your machine; the project folder
+    name is the same one already shown on the board's cards. <code>AGSTATUS_USAGE=off</code> disables
+    this too.</p>
 
   <h2>What we do not collect</h2>
   <ul>
@@ -186,6 +192,7 @@
   <h2>Retention and deletion</h2>
   <ul>
     <li>Sessions are deleted automatically <strong>24 hours</strong> after their last update.</li>
+    <li>Usage history and per-project token totals are kept for <strong>90 days</strong>.</li>
     <li>Boards untouched for <strong>60 days</strong> are deleted with all their data.</li>
     <li>You can delete a board and everything in it at any time, from the app
       (Settings → "Delete board") or with one request:

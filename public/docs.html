@@ -154,7 +154,7 @@
           <li><a href="#hooks-how-events-map-to-statuses">How events map to statuses</a></li>
           <li><a href="#hooks-plan-usage-bars">Plan-usage bars</a></li>
           <li><a href="#hooks-openai-codex-specifics">OpenAI Codex specifics</a></li>
-          <li><a href="#hooks-manual-setup-the-bash-hook">Manual setup: the bash hook</a></li>
+          <li><a href="#hooks-manual-setup-the-bash-hook-deprecated">Manual setup: the bash hook (deprecated)</a></li>
           <li><a href="#hooks-troubleshooting">Troubleshooting</a></li>
         </ul></li>
       <li class="toc-doc"><a href="#self-hosting">Self-hosting</a>
@@ -175,6 +175,7 @@
           <li><a href="#api-shared-endpoints-both-modes">Shared endpoints (both modes)</a></li>
           <li><a href="#api-webhook-body-and-validation">Webhook body and validation</a></li>
           <li><a href="#api-plan-usage">Plan usage</a></li>
+          <li><a href="#api-usage-history-and-per-project-spend">Usage history and per-project spend</a></li>
           <li><a href="#api-session-history">Session history</a></li>
           <li><a href="#api-legacy-single-tenant-endpoints">Legacy (single-tenant) endpoints</a></li>
           <li><a href="#api-multi-tenant-workspace-endpoints">Multi-tenant: workspace endpoints</a></li>
@@ -200,8 +201,11 @@ same CLI, on your PATH.</li>
 <li><strong>Claude Code plugin</strong> — hooks bundled as a plugin, no settings.json
 surgery; see <a href="#hooks-claude-code-plugin">Claude Code plugin</a> below. Claude Code
 only (Codex still needs <code>agstatus init</code>).</li>
-<li><strong>Manual bash hook</strong> — the original <code>hooks/claude-status-hook.sh</code>, for
-people who want to see and customize every moving part (Claude Code only).</li>
+<li><strong>Manual bash hook</strong> — <em>deprecated.</em> The original
+<code>hooks/claude-status-hook.sh</code>, still shipped and still working, for people
+who want to see and customize every moving part. It reports status only:
+no plan-usage bars, no card removal at session end, and no Codex support.
+Prefer 1 or 2; see <a href="#hooks-manual-setup-the-bash-hook-deprecated">Manual setup: the bash hook</a>.</li>
 </ol>
 <p>Both hooks are deliberately non-blocking: any failure (server down, bad
 secret, malformed payload) is swallowed and the agent continues normally.
@@ -352,33 +356,84 @@ and keeps flags, paths, and anything secret in the command out of the board.
 the basename of the session&#39;s working directory, so multiple sessions are
 easy to tell apart.</p>
 <h3 id="hooks-plan-usage-bars"><a class="anchor" href="#hooks-plan-usage-bars">Plan-usage bars</a></h3>
-<p>The Node hook also feeds the dashboard&#39;s plan-limit bars (the 5-hour session
-window and the weekly caps you see in <code>/usage</code> inside Claude Code):</p>
+<p>The Node hook also feeds the dashboard&#39;s plan-limit bars. It runs on quiet
+events (<code>SessionStart</code>, <code>UserPromptSubmit</code>, <code>Stop</code>, <code>Notification</code>,
+<code>PermissionRequest</code>), at most once every 5 minutes per board and source, and
+reports only percentages and reset times
+(<code>POST &lt;board&gt;/usage</code> — see <a href="#api-plan-usage">docs/api.md</a>).</p>
+<p>Where the numbers come from depends on which agent is running:</p>
+<p><strong>Claude</strong> (the 5-hour session window and the weekly caps you see in <code>/usage</code>
+inside Claude Code):</p>
 <ol>
-<li>On quiet events (<code>SessionStart</code>, <code>UserPromptSubmit</code>, <code>Stop</code>, <code>Notification</code>
-— never <code>PreToolUse</code>), at most once every 5 minutes, the hook reads the Claude
-Code OAuth token locally: <code>~/.claude/.credentials.json</code>, or the macOS
-login keychain (<code>Claude Code-credentials</code>). macOS may ask once to allow
-<code>security</code> access — choose &quot;Always Allow&quot;.</li>
+<li>The hook reads the Claude Code OAuth token locally:
+<code>~/.claude/.credentials.json</code>, or the macOS login keychain
+(<code>Claude Code-credentials</code>). macOS may ask once to allow <code>security</code>
+access — choose &quot;Always Allow&quot;.</li>
 <li>It asks Anthropic&#39;s usage endpoint (<code>api.anthropic.com/api/oauth/usage</code>)
 for utilization percentages. The structured <code>limits</code> array is preferred
 (it carries model-scoped weekly caps such as <strong>Fable</strong>, which the legacy
 <code>five_hour</code>/<code>seven_day</code> keys never mention), with a fallback to those
 legacy keys for older responses.</li>
-<li>It POSTs only the percentages and reset times to your board
-(<code>POST &lt;board&gt;/usage</code> — see <a href="#api-plan-usage">docs/api.md</a>). <strong>The
-token itself never leaves your machine.</strong></li>
+<li><strong>The token itself never leaves your machine.</strong></li>
 </ol>
-<p>Set <code>AGSTATUS_USAGE=off</code> in the settings <code>env</code> block to turn this off
-entirely. The bash hook and Codex plans are not covered (the endpoint is
-Claude-specific); a board simply shows no bars until something reports usage.</p>
+<p><strong>Codex</strong> (its <code>primary</code> and <code>secondary</code> rate-limit windows):</p>
+<ol>
+<li>Codex has no usage API, but it already records a <code>rate_limits</code> block in
+its own session rollout log —
+<code>$CODEX_HOME/sessions/YYYY/MM/DD/rollout-&lt;timestamp&gt;-&lt;session_id&gt;.jsonl</code>
+— after every turn. The hook reads the newest block from the tail of that
+file. <strong>Entirely local: no credentials, no network call.</strong> A Codex run
+never touches Claude&#39;s credentials, and vice versa.</li>
+<li>The session id in the hook payload names the file directly. Recent
+sibling logs are tried next — Codex rate limits are account-wide rather
+than per-session, so a sibling carries the same numbers. That matters at
+<code>SessionStart</code>, when the session&#39;s own log exists but has no
+<code>rate_limits</code> yet: Codex writes the first one when a turn completes.</li>
+<li>Blocks older than 12 hours are ignored rather than reported as current,
+and a window that has already reset is sent with no reset time. Relative
+countdowns (<code>resets_in_seconds</code>, older Codex builds) are anchored to when
+the block was written, not to when the hook runs.</li>
+<li>Windows keep positional ids (<code>primary</code>, <code>secondary</code>) because nothing
+guarantees <code>primary</code> is the shorter one; labels come from
+<code>window_minutes</code>, e.g. &quot;5h limit&quot;, &quot;Weekly limit&quot;.</li>
+</ol>
+<p><code>PreToolUse</code> is excluded for Claude, whose report costs a network round trip
+and which fires between every tool call. Codex reads a local file, and
+<code>PreToolUse</code> is most of what it fires at all, so it reports there too — the
+throttle bounds the work either way.</p>
+<p>Set <code>AGSTATUS_USAGE=off</code> in the settings <code>env</code> block (Claude Code) or add it
+to the command prefix in <code>hooks.json</code> (Codex) to turn this off entirely. The
+bash hook reports no usage at all; a board simply shows no bars until
+something reports it.</p>
+<h4 id="hooks-where-the-tokens-went"><a class="anchor" href="#hooks-where-the-tokens-went">Where the tokens went</a></h4>
+<p>The bars answer &quot;how much of the plan is left&quot;, not &quot;which project spent it&quot; —
+no usage API breaks the limit down by project. So the hook also reads the logs
+each agent already keeps locally (<code>~/.claude/projects/**/*.jsonl</code>,
+<code>$CODEX_HOME/sessions/**/rollout-*.jsonl</code>), totals tokens per project per UTC
+day, and reports those (<code>POST &lt;board&gt;/usage/projects</code>). Only a folder name, a
+date and a number leave your machine — never prompts, code or conversation.</p>
+<p>Reported tokens are input + output + cache creation. Cache reads are excluded:
+they are ~94% of raw token volume but a small share of what a limit charges,
+and counting them ranks projects by context size rather than by spend.</p>
+<p>Scanning is incremental — the hook remembers how far into each log it has read
+and each run costs only what was appended since — and is capped at 8 MB per
+run so a first run cannot stall an agent. To load the history that already
+exists on disk, run the backfill once per agent:</p>
+<pre><code class="language-bash">CLAUDE_STATUS_URL=&quot;https://&lt;server&gt;/w/&lt;token&gt;&quot; node ~/.claude/hooks/agstatus-hook.js --backfill
+CLAUDE_STATUS_URL=&quot;https://&lt;server&gt;/w/&lt;token&gt;&quot; AGSTATUS_SOURCE=codex \
+  node ~/.codex/hooks/agstatus-hook.js --backfill
+</code></pre>
+<p>It reads every log from the start and reports the lot; re-running it is safe,
+because the server replaces whole days rather than adding to them.</p>
 <p>Dashboards only show the bars of agents that currently have sessions on the
 board (each session carries a <code>source</code> tag: <code>claude</code>, or <code>codex</code> via the
 <code>AGSTATUS_SOURCE=codex</code> prefix the Codex integration embeds) — a Claude-only
 evening doesn&#39;t display Codex limits, and vice versa.</p>
-<p>Caveat: the usage endpoint is undocumented and has changed before. The hook
-degrades silently — unknown response shapes mean missing bars, never a
-blocked agent.</p>
+<p>Caveat: neither source is a documented, stable interface — the Anthropic
+usage endpoint has changed before, and the Codex rollout format is internal.
+The hook degrades silently on both: unknown shapes mean missing bars, never a
+blocked agent. Run with <code>AGSTATUS_DEBUG=1</code> to see on stderr what it read and
+reported.</p>
 <h3 id="hooks-openai-codex-specifics"><a class="anchor" href="#hooks-openai-codex-specifics">OpenAI Codex specifics</a></h3>
 <p><code>agstatus init</code> configures Codex automatically when <code>~/.codex</code> exists
 (<code>CODEX_HOME</code> is respected; <code>--no-codex</code> opts out, <code>--codex</code> forces it):</p>
@@ -428,7 +483,18 @@ a 10 s timeout (the script itself exits within ~4 s).</p>
 <td>Node hook only. Prints diagnostics to <strong>stderr</strong> (never stdout). The hook fails silently by design, so this is how you find out why plan-usage bars stopped appearing.</td>
 </tr>
 </tbody></table></div>
-<h3 id="hooks-manual-setup-the-bash-hook"><a class="anchor" href="#hooks-manual-setup-the-bash-hook">Manual setup: the bash hook</a></h3>
+<h3 id="hooks-manual-setup-the-bash-hook-deprecated"><a class="anchor" href="#hooks-manual-setup-the-bash-hook-deprecated">Manual setup: the bash hook (deprecated)</a></h3>
+<blockquote>
+<p><strong>Deprecated.</strong> This hook still ships and still works, and nothing here has
+stopped being true — but it is no longer where new features land, and it is
+missing three that the Node hook has: <strong>plan-usage bars</strong> (it reports no
+usage at all), <strong>card removal on <code>SessionEnd</code></strong>, and <strong>Codex support</strong> (no
+<code>PermissionRequest</code> or <code>apply_patch</code> handling). Prefer
+<a href="#hooks-npx-agstatus-init"><code>npx agstatus init</code></a> or the
+<a href="#hooks-claude-code-plugin">Claude Code plugin</a>; keep reading only if you want a
+hook you can read end to end in one sitting, or you would rather not have
+Node in the loop.</p>
+</blockquote>
 <p>The original hook at <a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/hooks/claude-status-hook.sh"><code>hooks/claude-status-hook.sh</code></a>
 does the same job with <code>curl</code> + <code>jq</code>, and is the easiest one to customize.</p>
 <h4 id="hooks-1-prerequisites"><a class="anchor" href="#hooks-1-prerequisites">1. Prerequisites</a></h4>
@@ -681,7 +747,8 @@ never to a down dashboard. Rows are <strong>soft-deleted</strong>: deletions set
 invisible to the app. If you need data actually gone (e.g. a deletion
 request), purge flagged rows yourself:
 <code>DELETE FROM sessions WHERE deleted_at IS NOT NULL;</code> (same for <code>workspaces</code>,
-<code>devices</code>, <code>usage_limits</code>).</p>
+<code>devices</code>, <code>usage_limits</code>, <code>session_events</code>, <code>usage_history</code>, and
+<code>usage_project_days</code> — miss one and a deleted board leaves data behind).</p>
 <h4 id="self-hosting-migrating-from-sqlite-pre-postgresql-versions"><a class="anchor" href="#self-hosting-migrating-from-sqlite-pre-postgresql-versions">Migrating from SQLite (pre-PostgreSQL versions)</a></h4>
 <p>Earlier versions persisted to SQLite via <code>DB_PATH</code>. Copy that data over once,
 then drop <code>DB_PATH</code> from your <code>.env</code>:</p>
@@ -969,6 +1036,84 @@ mislead. <code>GET /api/usage</code> (legacy) and <code>GET /w/&lt;token&gt;/api
 current list:</p>
 <pre><code class="language-json">[ { &quot;source&quot;: &quot;claude&quot;, &quot;windows&quot;: [ ... ], &quot;updatedAt&quot;: 1752096030000 } ]
 </code></pre>
+<h3 id="api-usage-history-and-per-project-spend"><a class="anchor" href="#api-usage-history-and-per-project-spend">Usage history and per-project spend</a></h3>
+<p>Two series back the usage detail screen, and they are <strong>different measures</strong>.</p>
+<p><strong>The limit over time.</strong> Every report is kept, not just the newest, but only
+when a window&#39;s <code>usedPct</code> actually moved — a plan limit is a step function and
+reports arrive far more often than it changes. Nothing is retroactive: a board
+has limit history from the moment it first receives a report.</p>
+<p><strong>Where the tokens went.</strong> Neither agent&#39;s usage API says which project spent
+the quota, so the hook derives it from the logs each agent already writes
+locally and reports daily totals with <code>POST /usage/projects</code> (legacy, same
+secret rules as the webhook) or <code>POST /w/&lt;token&gt;/usage/projects</code>:</p>
+<pre><code class="language-json">{
+  &quot;source&quot;: &quot;claude&quot;,
+  &quot;days&quot;: [
+    { &quot;project&quot;: &quot;jobsearch&quot;, &quot;day&quot;: &quot;2026-09-07&quot;, &quot;tokens&quot;: 87600000 },
+    { &quot;project&quot;: &quot;claude-status&quot;, &quot;day&quot;: &quot;2026-09-07&quot;, &quot;tokens&quot;: 18700000 }
+  ]
+}
+</code></pre>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Required</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>source</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Agent kind, same rule as plan usage.</td>
+</tr>
+<tr>
+<td><code>days</code></td>
+<td>array</td>
+<td>yes</td>
+<td>1–200 rows. The cap keeps a report inside the 16kb body limit; a longer backfill sends several.</td>
+</tr>
+<tr>
+<td><code>project</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Project folder name, truncated to 120 chars.</td>
+</tr>
+<tr>
+<td><code>day</code></td>
+<td>string</td>
+<td>yes</td>
+<td><code>YYYY-MM-DD</code>, UTC.</td>
+</tr>
+<tr>
+<td><code>tokens</code></td>
+<td>number</td>
+<td>yes</td>
+<td>Tokens spent that day. Clamped to ≥ 0 and floored.</td>
+</tr>
+</tbody></table></div>
+<p>A day is <strong>replaced</strong>, not accumulated, so re-running a backfill converges
+instead of double-counting. Reported tokens are input + output + cache
+creation; cache reads are excluded because they are ~94% of raw token volume
+but a small share of what a plan limit charges.</p>
+<p><code>GET /api/usage/history</code> and <code>GET /w/&lt;token&gt;/api/usage/history</code> return both
+series. <code>?days=N</code> selects the range (default 30, capped at 90):</p>
+<pre><code class="language-json">{
+  &quot;days&quot;: 30,
+  &quot;history&quot;: [
+    { &quot;source&quot;: &quot;claude&quot;, &quot;windowId&quot;: &quot;week&quot;,
+      &quot;points&quot;: [ { &quot;at&quot;: 1752096030000, &quot;usedPct&quot;: 54 } ] }
+  ],
+  &quot;projects&quot;: [
+    { &quot;source&quot;: &quot;claude&quot;, &quot;project&quot;: &quot;jobsearch&quot;, &quot;day&quot;: &quot;2026-09-07&quot;, &quot;tokens&quot;: 87600000 }
+  ]
+}
+</code></pre>
+<p>Each series keeps the last reading from <em>before</em> the requested range as its
+first point, so a step chart has a value to start from. Both are retained for
+90 days.</p>
 <h3 id="api-session-history"><a class="anchor" href="#api-session-history">Session history</a></h3>
 <p><code>GET /api/sessions/:id/history</code> (legacy) and
 <code>GET /w/&lt;token&gt;/api/sessions/:id/history</code> return a session&#39;s timeline —
@@ -1004,6 +1149,11 @@ sessions return <code>[]</code>.</p>
 <td>yes*</td>
 </tr>
 <tr>
+<td><code>POST /usage/projects</code></td>
+<td>Report per-project token spend (see <a href="#api-usage-history-and-per-project-spend">Usage history</a>).</td>
+<td>yes*</td>
+</tr>
+<tr>
 <td><code>GET /events</code></td>
 <td>SSE stream (see <a href="#api-sse-event-format">format</a>).</td>
 <td>no</td>
@@ -1016,6 +1166,11 @@ sessions return <code>[]</code>.</p>
 <tr>
 <td><code>GET /api/usage</code></td>
 <td>Current plan usage list.</td>
+<td>no</td>
+</tr>
+<tr>
+<td><code>GET /api/usage/history</code></td>
+<td>Limit history + per-project spend.</td>
 <td>no</td>
 </tr>
 <tr>
@@ -1087,8 +1242,16 @@ workspace:</p>
 <td>Report plan usage (see <a href="#api-plan-usage">Plan usage</a>).</td>
 </tr>
 <tr>
+<td><code>POST /w/&lt;token&gt;/usage/projects</code></td>
+<td>Report per-project token spend (see <a href="#api-usage-history-and-per-project-spend">Usage history</a>).</td>
+</tr>
+<tr>
 <td><code>GET /w/&lt;token&gt;/api/usage</code></td>
 <td>Current plan usage list.</td>
+</tr>
+<tr>
+<td><code>GET /w/&lt;token&gt;/api/usage/history</code></td>
+<td>Limit history + per-project spend. <code>?days=N</code> (default 30, max 90).</td>
 </tr>
 <tr>
 <td><code>GET /w/&lt;token&gt;/api/sessions/:id/history</code></td>

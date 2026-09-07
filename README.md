@@ -90,7 +90,7 @@ claude-status/
 ├── src/              # Server: Express + SSE + PostgreSQL store + APNs push (TypeScript)
 ├── public/           # Web dashboard: vanilla JS, no build step
 ├── cli/              # `npx agstatus` setup CLI + the Node hook it installs
-├── hooks/            # Original bash hook for manual setup
+├── hooks/            # Original bash hook for manual setup (deprecated)
 ├── ios/              # AgStatus: native SwiftUI app (+ legacy ClaudeStatus WebView app)
 ├── integrations/     # Android WebView client
 ├── deploy/           # Caddyfile for the TLS compose profile

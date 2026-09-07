@@ -43,6 +43,14 @@ nothing more. The credentials used to look this up are read locally and
 never sent to the AgStatus server. Set `AGSTATUS_USAGE=off` to disable
 usage reporting entirely.
 
+To chart how usage moves over time, the server keeps each reported
+percentage rather than only the newest one, and the hook additionally reports
+a **daily token total per project** — a project folder name, a date, and a
+number of tokens, read from your coding tool's own local logs. No prompts,
+code, file contents or conversation ever leave your machine; the project
+folder name is the same one already shown on the board's cards.
+`AGSTATUS_USAGE=off` disables this too.
+
 Data is stored under your board's token and is visible to anyone who has
 your board URL. Treat the URL like a secret.
 
@@ -66,6 +74,7 @@ demo mode is entirely local and sends nothing anywhere.
 On the hosted server:
 
 - Sessions expire **24 hours** after their last update.
+- Usage history and per-project token totals are kept for **90 days**.
 - Boards idle for **60 days** are deleted with all their data.
 - You can delete a board and all its data immediately, at any time, from the
   app (Settings → "Delete board") or with one request:

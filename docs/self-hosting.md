@@ -106,7 +106,8 @@ never to a down dashboard. Rows are **soft-deleted**: deletions set a
 invisible to the app. If you need data actually gone (e.g. a deletion
 request), purge flagged rows yourself:
 `DELETE FROM sessions WHERE deleted_at IS NOT NULL;` (same for `workspaces`,
-`devices`, `usage_limits`).
+`devices`, `usage_limits`, `session_events`, `usage_history`, and
+`usage_project_days` — miss one and a deleted board leaves data behind).
 
 ### Migrating from SQLite (pre-PostgreSQL versions)
 

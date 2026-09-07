@@ -14,8 +14,11 @@ status webhook to your board. Ways to set it up:
 2. **Claude Code plugin** — hooks bundled as a plugin, no settings.json
    surgery; see [Claude Code plugin](#claude-code-plugin) below. Claude Code
    only (Codex still needs `agstatus init`).
-3. **Manual bash hook** — the original `hooks/claude-status-hook.sh`, for
-   people who want to see and customize every moving part (Claude Code only).
+3. **Manual bash hook** — *deprecated.* The original
+   `hooks/claude-status-hook.sh`, still shipped and still working, for people
+   who want to see and customize every moving part. It reports status only:
+   no plan-usage bars, no card removal at session end, and no Codex support.
+   Prefer 1 or 2; see [Manual setup: the bash hook](#manual-setup-the-bash-hook-deprecated).
 
 Both hooks are deliberately non-blocking: any failure (server down, bad
 secret, malformed payload) is swallowed and the agent continues normally.
@@ -131,35 +134,96 @@ easy to tell apart.
 
 ## Plan-usage bars
 
-The Node hook also feeds the dashboard's plan-limit bars (the 5-hour session
-window and the weekly caps you see in `/usage` inside Claude Code):
+The Node hook also feeds the dashboard's plan-limit bars. It runs on quiet
+events (`SessionStart`, `UserPromptSubmit`, `Stop`, `Notification`,
+`PermissionRequest`), at most once every 5 minutes per board and source, and
+reports only percentages and reset times
+(`POST <board>/usage` — see [docs/api.md](api.md#plan-usage)).
 
-1. On quiet events (`SessionStart`, `UserPromptSubmit`, `Stop`, `Notification`
-   — never `PreToolUse`), at most once every 5 minutes, the hook reads the Claude
-   Code OAuth token locally: `~/.claude/.credentials.json`, or the macOS
-   login keychain (`Claude Code-credentials`). macOS may ask once to allow
-   `security` access — choose "Always Allow".
+Where the numbers come from depends on which agent is running:
+
+**Claude** (the 5-hour session window and the weekly caps you see in `/usage`
+inside Claude Code):
+
+1. The hook reads the Claude Code OAuth token locally:
+   `~/.claude/.credentials.json`, or the macOS login keychain
+   (`Claude Code-credentials`). macOS may ask once to allow `security`
+   access — choose "Always Allow".
 2. It asks Anthropic's usage endpoint (`api.anthropic.com/api/oauth/usage`)
    for utilization percentages. The structured `limits` array is preferred
    (it carries model-scoped weekly caps such as **Fable**, which the legacy
    `five_hour`/`seven_day` keys never mention), with a fallback to those
    legacy keys for older responses.
-3. It POSTs only the percentages and reset times to your board
-   (`POST <board>/usage` — see [docs/api.md](api.md#plan-usage)). **The
-   token itself never leaves your machine.**
+3. **The token itself never leaves your machine.**
 
-Set `AGSTATUS_USAGE=off` in the settings `env` block to turn this off
-entirely. The bash hook and Codex plans are not covered (the endpoint is
-Claude-specific); a board simply shows no bars until something reports usage.
+**Codex** (its `primary` and `secondary` rate-limit windows):
+
+1. Codex has no usage API, but it already records a `rate_limits` block in
+   its own session rollout log —
+   `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<timestamp>-<session_id>.jsonl`
+   — after every turn. The hook reads the newest block from the tail of that
+   file. **Entirely local: no credentials, no network call.** A Codex run
+   never touches Claude's credentials, and vice versa.
+2. The session id in the hook payload names the file directly. Recent
+   sibling logs are tried next — Codex rate limits are account-wide rather
+   than per-session, so a sibling carries the same numbers. That matters at
+   `SessionStart`, when the session's own log exists but has no
+   `rate_limits` yet: Codex writes the first one when a turn completes.
+3. Blocks older than 12 hours are ignored rather than reported as current,
+   and a window that has already reset is sent with no reset time. Relative
+   countdowns (`resets_in_seconds`, older Codex builds) are anchored to when
+   the block was written, not to when the hook runs.
+4. Windows keep positional ids (`primary`, `secondary`) because nothing
+   guarantees `primary` is the shorter one; labels come from
+   `window_minutes`, e.g. "5h limit", "Weekly limit".
+
+`PreToolUse` is excluded for Claude, whose report costs a network round trip
+and which fires between every tool call. Codex reads a local file, and
+`PreToolUse` is most of what it fires at all, so it reports there too — the
+throttle bounds the work either way.
+
+Set `AGSTATUS_USAGE=off` in the settings `env` block (Claude Code) or add it
+to the command prefix in `hooks.json` (Codex) to turn this off entirely. The
+bash hook reports no usage at all; a board simply shows no bars until
+something reports it.
+
+### Where the tokens went
+
+The bars answer "how much of the plan is left", not "which project spent it" —
+no usage API breaks the limit down by project. So the hook also reads the logs
+each agent already keeps locally (`~/.claude/projects/**/*.jsonl`,
+`$CODEX_HOME/sessions/**/rollout-*.jsonl`), totals tokens per project per UTC
+day, and reports those (`POST <board>/usage/projects`). Only a folder name, a
+date and a number leave your machine — never prompts, code or conversation.
+
+Reported tokens are input + output + cache creation. Cache reads are excluded:
+they are ~94% of raw token volume but a small share of what a limit charges,
+and counting them ranks projects by context size rather than by spend.
+
+Scanning is incremental — the hook remembers how far into each log it has read
+and each run costs only what was appended since — and is capped at 8 MB per
+run so a first run cannot stall an agent. To load the history that already
+exists on disk, run the backfill once per agent:
+
+```bash
+CLAUDE_STATUS_URL="https://<server>/w/<token>" node ~/.claude/hooks/agstatus-hook.js --backfill
+CLAUDE_STATUS_URL="https://<server>/w/<token>" AGSTATUS_SOURCE=codex \
+  node ~/.codex/hooks/agstatus-hook.js --backfill
+```
+
+It reads every log from the start and reports the lot; re-running it is safe,
+because the server replaces whole days rather than adding to them.
 
 Dashboards only show the bars of agents that currently have sessions on the
 board (each session carries a `source` tag: `claude`, or `codex` via the
 `AGSTATUS_SOURCE=codex` prefix the Codex integration embeds) — a Claude-only
 evening doesn't display Codex limits, and vice versa.
 
-Caveat: the usage endpoint is undocumented and has changed before. The hook
-degrades silently — unknown response shapes mean missing bars, never a
-blocked agent.
+Caveat: neither source is a documented, stable interface — the Anthropic
+usage endpoint has changed before, and the Codex rollout format is internal.
+The hook degrades silently on both: unknown shapes mean missing bars, never a
+blocked agent. Run with `AGSTATUS_DEBUG=1` to see on stderr what it read and
+reported.
 
 ## OpenAI Codex specifics
 
@@ -190,7 +254,17 @@ a 10 s timeout (the script itself exits within ~4 s).
 | `AGSTATUS_SOURCE`      | Node hook only. Agent kind tag on sessions (default `claude`; the Codex integration sets `codex`). Scopes which limit bars a dashboard shows. |
 | `AGSTATUS_DEBUG=1`     | Node hook only. Prints diagnostics to **stderr** (never stdout). The hook fails silently by design, so this is how you find out why plan-usage bars stopped appearing. |
 
-## Manual setup: the bash hook
+## Manual setup: the bash hook (deprecated)
+
+> **Deprecated.** This hook still ships and still works, and nothing here has
+> stopped being true — but it is no longer where new features land, and it is
+> missing three that the Node hook has: **plan-usage bars** (it reports no
+> usage at all), **card removal on `SessionEnd`**, and **Codex support** (no
+> `PermissionRequest` or `apply_patch` handling). Prefer
+> [`npx agstatus init`](#npx-agstatus-init) or the
+> [Claude Code plugin](#claude-code-plugin); keep reading only if you want a
+> hook you can read end to end in one sitting, or you would rather not have
+> Node in the loop.
 
 The original hook at [`hooks/claude-status-hook.sh`](../hooks/claude-status-hook.sh)
 does the same job with `curl` + `jq`, and is the easiest one to customize.

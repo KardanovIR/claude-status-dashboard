@@ -101,6 +101,63 @@ current list:
 [ { "source": "claude", "windows": [ ... ], "updatedAt": 1752096030000 } ]
 ```
 
+## Usage history and per-project spend
+
+Two series back the usage detail screen, and they are **different measures**.
+
+**The limit over time.** Every report is kept, not just the newest, but only
+when a window's `usedPct` actually moved — a plan limit is a step function and
+reports arrive far more often than it changes. Nothing is retroactive: a board
+has limit history from the moment it first receives a report.
+
+**Where the tokens went.** Neither agent's usage API says which project spent
+the quota, so the hook derives it from the logs each agent already writes
+locally and reports daily totals with `POST /usage/projects` (legacy, same
+secret rules as the webhook) or `POST /w/<token>/usage/projects`:
+
+```json
+{
+  "source": "claude",
+  "days": [
+    { "project": "jobsearch", "day": "2026-09-07", "tokens": 87600000 },
+    { "project": "claude-status", "day": "2026-09-07", "tokens": 18700000 }
+  ]
+}
+```
+
+| Field     | Type   | Required | Notes |
+| --------- | ------ | -------- | ----- |
+| `source`  | string | yes      | Agent kind, same rule as plan usage. |
+| `days`    | array  | yes      | 1–200 rows. The cap keeps a report inside the 16kb body limit; a longer backfill sends several. |
+| `project` | string | yes      | Project folder name, truncated to 120 chars. |
+| `day`     | string | yes      | `YYYY-MM-DD`, UTC. |
+| `tokens`  | number | yes      | Tokens spent that day. Clamped to ≥ 0 and floored. |
+
+A day is **replaced**, not accumulated, so re-running a backfill converges
+instead of double-counting. Reported tokens are input + output + cache
+creation; cache reads are excluded because they are ~94% of raw token volume
+but a small share of what a plan limit charges.
+
+`GET /api/usage/history` and `GET /w/<token>/api/usage/history` return both
+series. `?days=N` selects the range (default 30, capped at 90):
+
+```json
+{
+  "days": 30,
+  "history": [
+    { "source": "claude", "windowId": "week",
+      "points": [ { "at": 1752096030000, "usedPct": 54 } ] }
+  ],
+  "projects": [
+    { "source": "claude", "project": "jobsearch", "day": "2026-09-07", "tokens": 87600000 }
+  ]
+}
+```
+
+Each series keeps the last reading from *before* the requested range as its
+first point, so a step chart has a value to start from. Both are retained for
+90 days.
+
 ## Session history
 
 `GET /api/sessions/:id/history` (legacy) and
@@ -127,9 +184,11 @@ sessions return `[]`.
 | ---------------------- | ---------------------------------------------- | ---- |
 | `POST /webhook`        | Create/update a session (see above).           | yes* |
 | `POST /usage`          | Report plan usage (see [Plan usage](#plan-usage)). | yes* |
+| `POST /usage/projects` | Report per-project token spend (see [Usage history](#usage-history-and-per-project-spend)). | yes* |
 | `GET /events`          | SSE stream (see [format](#sse-event-format)).  | no   |
 | `GET /api/sessions`    | JSON list of all sessions.                     | no   |
 | `GET /api/usage`       | Current plan usage list.                       | no   |
+| `GET /api/usage/history` | Limit history + per-project spend.           | no   |
 | `GET /api/sessions/:id/history` | Session timeline (see [Session history](#session-history)). | no |
 | `DELETE /sessions/:id` | Remove one session. Returns `{ok: boolean}`.   | no   |
 | `POST /sessions/clear` | Remove all sessions. Returns `{ok: true}`.     | yes* |
@@ -178,7 +237,9 @@ workspace:
 | `GET /w/<token>/events`          | SSE stream (see [format](#sse-event-format)). `429` past 10 concurrent connections. |
 | `POST /w/<token>/webhook`        | Create/update a session. `200` with `{ok, session}`; `400` on validation errors; `429` over the rate limit. |
 | `POST /w/<token>/usage`          | Report plan usage (see [Plan usage](#plan-usage)). |
+| `POST /w/<token>/usage/projects` | Report per-project token spend (see [Usage history](#usage-history-and-per-project-spend)). |
 | `GET /w/<token>/api/usage`       | Current plan usage list. |
+| `GET /w/<token>/api/usage/history` | Limit history + per-project spend. `?days=N` (default 30, max 90). |
 | `GET /w/<token>/api/sessions/:id/history` | Session timeline (see [Session history](#session-history)). |
 | `DELETE /w/<token>/sessions/:id` | Remove one session. Returns `{ok: boolean}`. |
 | `POST /w/<token>/sessions/clear` | Remove all sessions in the workspace. Returns `{ok: true}`. |

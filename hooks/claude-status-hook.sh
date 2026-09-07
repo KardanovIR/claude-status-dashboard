@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Posts Claude Code session status to the dashboard.
+#
+# DEPRECATED: still supported, but no longer where new features land. It has no
+# plan-usage bars, no card removal on SessionEnd, and no Codex support. Prefer
+# `npx agstatus init`, which installs the Node hook. See docs/hooks.md.
+#
 # Wired to SessionStart, UserPromptSubmit, PreToolUse, Stop, Notification, SessionEnd.
 # Requires: curl, jq. Requires env: CLAUDE_STATUS_URL. Optional: CLAUDE_STATUS_SECRET.
 

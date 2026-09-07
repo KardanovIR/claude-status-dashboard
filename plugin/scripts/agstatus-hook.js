@@ -546,7 +546,12 @@ function codexResetsAt(w, at) {
  * the weekly window.
  */
 function windowsFromCodexBucket(block) {
-  const { rateLimits: rl, limitName, at } = block;
+  const { rateLimits: rl, limitName, limitId, at } = block;
+  // Only the default bucket is unscoped. A named bucket scopes by its model
+  // name; an unnamed non-default one (Codex has shipped at least one, "premium")
+  // scopes by its id, or two unnamed buckets would both derive `week` and the
+  // duplicate-id guard would silently drop the second.
+  const scopeName = limitName || (limitId && limitId !== 'codex' ? limitId : '');
   const out = [];
   const used = new Set();
   for (const slot of ['primary', 'secondary']) {
@@ -555,13 +560,13 @@ function windowsFromCodexBucket(block) {
     if (typeof w.used_percent !== 'number' || !isFinite(w.used_percent)) continue;
     const minutes = typeof w.window_minutes === 'number' ? w.window_minutes : 0;
     const weekly = minutes >= 1440; // a day or longer reads as a standing cap
-    const scope = limitName ? slugify(limitName) : '';
+    const scope = scopeName ? slugify(scopeName) : '';
     let id = weekly
       ? scope ? `week_${scope}` : 'week'
       : scope ? `session_${scope}` : 'session';
     let label;
-    if (weekly) label = limitName ? `Weekly (${limitName})` : 'Weekly (all models)';
-    else label = limitName ? `Session (${limitName})` : 'Current session';
+    if (weekly) label = scopeName ? `Weekly (${scopeName})` : 'Weekly (all models)';
+    else label = scopeName ? `Session (${scopeName})` : 'Current session';
     // Both windows of one bucket can share a length; keep the second rather
     // than letting the duplicate id drop it. `_2` keeps the id inside 32 chars.
     if (used.has(id)) {
@@ -574,7 +579,7 @@ function windowsFromCodexBucket(block) {
       label,
       usedPct: Math.min(100, Math.max(0, w.used_percent)),
       resetsAt: codexResetsAt(w, at),
-      // Sort key: session before weekly, general before model-scoped.
+      // Sort key: session before weekly, general before scoped.
       _rank: (weekly ? 1 : 0) + (scope ? 2 : 0),
     });
   }

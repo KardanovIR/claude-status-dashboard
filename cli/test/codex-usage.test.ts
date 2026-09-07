@@ -300,6 +300,21 @@ describe('Codex plan usage', () => {
     expect(usage?.windows.find((w) => w.id === 'session_gpt_6_astra')?.usedPct).toBe(5);
   });
 
+  it('keeps two unnamed buckets apart by their limit id', () => {
+    // Codex ships at least one unnamed non-default bucket ("premium"). Deriving
+    // its id from the name alone would collide with the default bucket's
+    // `week`, and the duplicate guard would drop whichever came second.
+    writeRollout('sess-unnamed', [
+      tokenCountLine({ limit_id: 'codex', limit_name: null, primary: { ...WEEKLY, used_percent: 71 } }),
+      tokenCountLine({ limit_id: 'premium', limit_name: null, primary: { ...WEEKLY, used_percent: 12 } }, 2),
+    ]);
+    const usage = fireCodex('sess-unnamed');
+    expect(usage?.windows.map((w) => [w.id, w.label, w.usedPct])).toEqual([
+      ['week', 'Weekly (all models)', 71],
+      ['week_premium', 'Weekly (premium)', 12],
+    ]);
+  });
+
   it('reports on PreToolUse too, which is most of what Codex fires', () => {
     // Claude skips PreToolUse because its report is a network call; Codex reads
     // a local file, and skipping would leave its bars minutes stale.

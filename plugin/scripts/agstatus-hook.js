@@ -18,16 +18,21 @@
  *   CLAUDE_STATUS_SECRET  (optional; sent as x-webhook-secret, legacy servers;
  *                          falls back to "secret" in ~/.agstatus.json)
  *   AGSTATUS_DETAIL=off   (optional; send tool names instead of command text)
- *   AGSTATUS_USAGE=off    (optional; never report plan-usage percentages)
+ *   AGSTATUS_USAGE=off    (optional; never report plan-usage percentages, and
+ *                          never scan local logs for per-project token spend)
+ *   AGSTATUS_PROJECT_FORCE=1 (optional; skip the per-project scan's throttle)
  *   AGSTATUS_SOURCE       (optional; agent kind tag, defaults to "claude" —
  *                          the Codex integration sets "codex")
  *
- * Besides session status, the hook reports Claude plan usage (the 5-hour
- * session window and weekly limits) so the dashboard can show limit bars.
- * It reads the Claude Code OAuth token locally and asks Anthropic's usage
- * endpoint for utilization percentages; only those percentages and reset
- * times ever reach the AgStatus server — never the token itself. Throttled
- * to one attempt per 5 minutes, and only on quiet events (never PreToolUse).
+ * Besides session status, the hook reports plan usage so the dashboard can
+ * show limit bars, from whichever source the running agent has:
+ *   - Claude: reads the Claude Code OAuth token locally and asks Anthropic's
+ *     usage endpoint for utilization percentages. Only those percentages and
+ *     reset times ever reach the AgStatus server — never the token itself.
+ *   - Codex: reads the rate_limits block Codex already writes into its own
+ *     session rollout log. Entirely local — no credentials, no network call.
+ * Throttled to one attempt per 5 minutes per (board, source), and only on
+ * quiet events (never PreToolUse).
  *
  * Never blocks Claude Code: always exits 0, prints nothing, hard 3s HTTP
  * timeout, and an overall ~4s safety timeout.
@@ -45,6 +50,31 @@ const SAFETY_TIMEOUT_MS = 4000;
 const USAGE_THROTTLE_MS = 5 * 60 * 1000;
 const USAGE_FETCH_TIMEOUT_MS = 2500;
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
+// Rollout logs reach megabytes; the newest rate_limits is near the end. Sized
+// well past the largest gap seen between two rate_limits records (~257KB), so
+// one big tool output written after the last one can't push it out of range.
+const CODEX_ROLLOUT_TAIL_BYTES = 1024 * 1024;
+// Logs to try before giving up: the session's own, then recent siblings.
+const CODEX_ROLLOUT_CANDIDATES = 3;
+// The server accepts at most this many windows in one usage report.
+const MAX_USAGE_WINDOWS = 6;
+// Percentages older than this are worse than no bars — they would evict fresh
+// numbers from the board for a full server-side TTL.
+const CODEX_USAGE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+// Per-project token totals move slowly and cost a log scan, so they run on
+// their own, slower clock than the limit bars.
+const PROJECT_THROTTLE_MS = 15 * 60 * 1000;
+// The server caps one report at 200 rows to stay inside its 16kb body limit.
+const MAX_PROJECT_DAYS_PER_POST = 200;
+// Matches the server's retention: older days are neither scanned nor kept.
+const PROJECT_HISTORY_DAYS = 90;
+// A log untouched for this long has nothing new to contribute.
+const PROJECT_FILE_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+// Bytes one hook run may parse. Transcripts run to hundreds of megabytes, so a
+// first run reads a slice and the consumed offsets let later runs resume; the
+// steady state is only what an agent appended since the last run. `--backfill`
+// ignores this and reads everything.
+const PROJECT_SCAN_BYTE_BUDGET = 8 * 1024 * 1024;
 
 // Which agent this hook invocation serves. Claude Code installs leave it
 // unset (→ "claude"); the Codex hooks.json command embeds AGSTATUS_SOURCE=codex.
@@ -287,7 +317,7 @@ function windowsFromLimits(limits) {
       usedPct: Math.min(100, Math.max(0, limit.percent)),
       resetsAt: parseResetsAt(limit.resets_at),
     });
-    if (windows.length >= 6) break; // server cap per report
+    if (windows.length >= MAX_USAGE_WINDOWS) break; // server cap per report
   }
   return windows;
 }
@@ -341,17 +371,563 @@ async function fetchClaudeUsage(token) {
   }
 }
 
-async function maybeReportUsage(base) {
-  if (process.env.AGSTATUS_USAGE === 'off') return;
-  // Only Claude Code invocations may touch Claude credentials — a Codex run
-  // has no business reading them, even on a machine that has both agents.
-  if (SOURCE !== 'claude') return;
+// ---- Codex plan usage (local rollout log) -----------------------------------
 
-  // Throttle across hook invocations via a per-server tmp file. The slot is
-  // claimed before fetching so failures back off too instead of hammering.
+/** Codex config dir; mirrors cli/src/codex.ts (respects CODEX_HOME). */
+function codexHome() {
+  const override = process.env.CODEX_HOME;
+  return override && override.trim() !== '' ? override.trim() : path.join(os.homedir(), '.codex');
+}
+
+/**
+ * Rollout logs to try, best first: the session's own, then recent siblings.
+ * Files live at <home>/sessions/YYYY/MM/DD/rollout-<timestamp>-<id>.jsonl, so
+ * the session id from the hook payload names the file directly.
+ *
+ * Siblings matter even when the session's own log is found: Codex writes its
+ * first rate_limits block only when a turn completes, so at SessionStart the
+ * session's log exists but carries none. Limits are account-wide rather than
+ * per-session, so a sibling reports the same numbers. Day directories are
+ * visited newest-first; names are timestamp-prefixed, so a lexicographic sort
+ * is chronological and no stat() calls are needed.
+ */
+function findCodexRollouts(sessionId) {
+  const root = path.join(codexHome(), 'sessions');
+  const suffix = sessionId ? `-${sessionId}.jsonl` : '';
+  const subdirs = (dir) => {
+    try {
+      return fs
+        .readdirSync(dir, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name)
+        .sort()
+        .reverse();
+    } catch {
+      return [];
+    }
+  };
+
+  let own = null;
+  const siblings = [];
+  const done = () => siblings.length >= CODEX_ROLLOUT_CANDIDATES && (own || !suffix);
+  for (const y of subdirs(root)) {
+    for (const m of subdirs(path.join(root, y))) {
+      for (const d of subdirs(path.join(root, y, m))) {
+        const dir = path.join(root, y, m, d);
+        let names;
+        try {
+          names = fs
+            .readdirSync(dir)
+            .filter((n) => n.startsWith('rollout-') && n.endsWith('.jsonl'))
+            .sort()
+            .reverse();
+        } catch {
+          continue;
+        }
+        for (const n of names) {
+          const full = path.join(dir, n);
+          if (suffix && n.endsWith(suffix)) own = own || full;
+          else if (siblings.length < CODEX_ROLLOUT_CANDIDATES) siblings.push(full);
+        }
+        if (done()) return own ? [own, ...siblings] : siblings;
+      }
+    }
+  }
+  return own ? [own, ...siblings] : siblings;
+}
+
+/**
+ * The newest `rate_limits` block per limit bucket in a rollout log, with the
+ * time Codex wrote each. Codex appends a token_count event after every turn,
+ * so the freshest sit near the end of a file that can run to megabytes — hence
+ * a tail read instead of parsing the whole log. The write time is what makes a
+ * block datable: a snapshot from hours ago must not be reported as current.
+ *
+ * Buckets are keyed by `limit_id`: Codex reports the general allowance as
+ * {limit_id:"codex", limit_name:null} and each model's own allowance under its
+ * own id, e.g. {limit_id:"codex_bengalfox", limit_name:"GPT-5.3-Codex-Spark"}.
+ * One session can touch several, so the scan collects them all rather than
+ * stopping at the first.
+ */
+function readCodexRateLimitBlocks(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const size = fs.fstatSync(fd).size;
+    const start = Math.max(0, size - CODEX_ROLLOUT_TAIL_BYTES);
+    const buf = Buffer.alloc(size - start);
+    fs.readSync(fd, buf, 0, buf.length, start);
+    const lines = buf.toString('utf8').split('\n');
+    // Starting mid-file leaves a truncated first line; it can never parse.
+    if (start > 0) lines.shift();
+    const blocks = new Map(); // limit_id -> newest block, scanning backwards
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      const line = lines[i].trim();
+      if (line === '' || !line.includes('"rate_limits"')) continue;
+      let obj;
+      try {
+        obj = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const rl = obj && obj.payload && obj.payload.rate_limits;
+      if (!rl || typeof rl !== 'object') continue;
+      const id = typeof rl.limit_id === 'string' && rl.limit_id !== '' ? rl.limit_id : 'codex';
+      if (blocks.has(id)) continue; // walking backwards: first seen is newest
+      const at = typeof obj.timestamp === 'string' ? Date.parse(obj.timestamp) : NaN;
+      blocks.set(id, {
+        limitId: id,
+        limitName: typeof rl.limit_name === 'string' && rl.limit_name !== '' ? rl.limit_name : '',
+        rateLimits: rl,
+        at: Number.isNaN(at) ? null : at,
+      });
+    }
+    return Array.from(blocks.values());
+  } catch (err) {
+    dbg(`codex rollout read failed: ${err && err.message ? err.message : String(err)}`);
+    return [];
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* nothing we can do */
+      }
+    }
+  }
+}
+
+/** "Weekly" / "5h" / "30m" for a rate-limit window length in minutes. */
+function codexWindowName(minutes) {
+  if (typeof minutes !== 'number' || !isFinite(minutes) || minutes <= 0) return 'Plan';
+  if (minutes % 10080 === 0) {
+    const weeks = minutes / 10080;
+    return weeks === 1 ? 'Weekly' : `${weeks}-week`;
+  }
+  if (minutes % 1440 === 0) {
+    const days = minutes / 1440;
+    return days === 1 ? 'Daily' : `${days}-day`;
+  }
+  if (minutes % 60 === 0) return `${minutes / 60}h`;
+  return `${minutes}m`;
+}
+
+/**
+ * Codex reports epoch SECONDS; the board's API takes milliseconds.
+ * `at` is when Codex wrote the block — a relative countdown is anchored to
+ * that, never to now, or a snapshot from hours ago would state a reset time
+ * wrong by exactly its own age and no client could tell.
+ */
+function codexResetsAt(w, at) {
+  let ms = null;
+  if (typeof w.resets_at === 'number' && isFinite(w.resets_at) && w.resets_at > 0) {
+    ms = Math.round(w.resets_at * 1000);
+  } else if (
+    typeof w.resets_in_seconds === 'number' &&
+    isFinite(w.resets_in_seconds) &&
+    w.resets_in_seconds > 0
+  ) {
+    ms = (typeof at === 'number' ? at : Date.now()) + Math.round(w.resets_in_seconds * 1000);
+  }
+  // A window that already reset tells the reader nothing; the board renders a
+  // null as "no reset time" rather than guessing.
+  return ms !== null && ms > Date.now() ? ms : null;
+}
+
+/**
+ * One Codex limit bucket → dashboard bars, named to match the Claude side so
+ * the two agents' blocks read alike. The general bucket (no limit_name) yields
+ * "Current session" / "Weekly (all models)"; a model bucket yields
+ * "Session (<model>)" / "Weekly (<model>)".
+ *
+ * Codex describes each window only by its length, so the kind is derived from
+ * `window_minutes` rather than from the primary/secondary slot: nothing
+ * guarantees primary is the shorter one, and on the general bucket primary IS
+ * the weekly window.
+ */
+function windowsFromCodexBucket(block) {
+  const { rateLimits: rl, limitName, at } = block;
+  const out = [];
+  const used = new Set();
+  for (const slot of ['primary', 'secondary']) {
+    const w = rl[slot];
+    if (!w || typeof w !== 'object') continue;
+    if (typeof w.used_percent !== 'number' || !isFinite(w.used_percent)) continue;
+    const minutes = typeof w.window_minutes === 'number' ? w.window_minutes : 0;
+    const weekly = minutes >= 1440; // a day or longer reads as a standing cap
+    const scope = limitName ? slugify(limitName) : '';
+    let id = weekly
+      ? scope ? `week_${scope}` : 'week'
+      : scope ? `session_${scope}` : 'session';
+    let label;
+    if (weekly) label = limitName ? `Weekly (${limitName})` : 'Weekly (all models)';
+    else label = limitName ? `Session (${limitName})` : 'Current session';
+    // Both windows of one bucket can share a length; keep the second rather
+    // than letting the duplicate id drop it. `_2` keeps the id inside 32 chars.
+    if (used.has(id)) {
+      id = `${id}_2`;
+      label = `${label} (secondary)`;
+    }
+    used.add(id);
+    out.push({
+      id,
+      label,
+      usedPct: Math.min(100, Math.max(0, w.used_percent)),
+      resetsAt: codexResetsAt(w, at),
+      // Sort key: session before weekly, general before model-scoped.
+      _rank: (weekly ? 1 : 0) + (scope ? 2 : 0),
+    });
+  }
+  return out;
+}
+
+/**
+ * Every fresh bucket → one report. Ordered so the general allowance leads and
+ * model-scoped bars follow, then trimmed to the server's per-report cap.
+ */
+function windowsFromCodexBuckets(blocks) {
+  const windows = [];
+  const seen = new Set();
+  const ordered = blocks
+    .slice()
+    .sort((a, b) => (b.at || 0) - (a.at || 0))
+    .flatMap(windowsFromCodexBucket)
+    .sort((a, b) => a._rank - b._rank);
+  for (const w of ordered) {
+    if (seen.has(w.id)) continue; // server rejects duplicate ids
+    seen.add(w.id);
+    delete w._rank;
+    windows.push(w);
+    if (windows.length >= MAX_USAGE_WINDOWS) break;
+  }
+  return windows;
+}
+
+/** Plan usage for a Codex run, read entirely from local state. */
+function readCodexUsage(sessionId) {
+  const files = findCodexRollouts(sessionId);
+  if (files.length === 0) {
+    dbg('no Codex rollout log found');
+    return null;
+  }
+  // Merge across candidate logs: a model's bucket may only appear in the log of
+  // the session that used it, while the general bucket shows up in all of them.
+  const fresh = new Map();
+  const cutoff = Date.now() - CODEX_USAGE_MAX_AGE_MS;
+  for (const file of files) {
+    const blocks = readCodexRateLimitBlocks(file);
+    if (blocks.length === 0) {
+      dbg(`no rate_limits block in ${path.basename(file)}`);
+      continue;
+    }
+    for (const b of blocks) {
+      if (b.at !== null && b.at < cutoff) continue; // stale beats missing
+      const prev = fresh.get(b.limitId);
+      if (!prev || (b.at || 0) > (prev.at || 0)) fresh.set(b.limitId, b);
+    }
+  }
+  if (fresh.size === 0) {
+    dbg('no Codex rate_limits fresh enough to report');
+    return null;
+  }
+  const windows = windowsFromCodexBuckets(Array.from(fresh.values()));
+  if (windows.length === 0) {
+    dbg('Codex rate_limits carried no usable window');
+    return null;
+  }
+  dbg(`codex buckets: ${Array.from(fresh.values()).map((b) => b.limitName || b.limitId).join(', ')}`);
+  return { source: SOURCE, windows };
+}
+
+// ---- per-project token spend ------------------------------------------------
+//
+// The limit bars are account-wide: nothing in either agent's usage API says
+// which project burned the quota. Both agents do, however, write their own
+// local logs with a token count and a working directory per turn, which is
+// enough to answer "where is my quota going" as a share of tokens spent.
+//
+// Reported tokens are input + output + cache-creation. Cache READS are left
+// out on purpose: they are ~94% of raw token volume but a small fraction of
+// what a plan limit actually charges, and including them reorders the ranking
+// into a list of which project has the largest context, not the largest spend.
+
+/** The UTC day an epoch-ms instant falls in, as YYYY-MM-DD. */
+function dayKey(at) {
+  return new Date(at).toISOString().slice(0, 10);
+}
+
+/**
+ * Recursively collect files under `dir` matching `keep`.
+ *
+ * Symlinked directories are deliberately NOT followed: Claude Code links a
+ * shared subagent workflow into every session that used it, so following them
+ * counts the same transcript once per link and inflates that project's total.
+ * `isDirectory()` is false for a symlink, which gives us that for free — don't
+ * "fix" it to a stat() that resolves links.
+ */
+function collectLogs(dir, keep, maxAgeMs, out) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  const cutoff = maxAgeMs === null ? 0 : Date.now() - maxAgeMs;
+  for (const e of entries) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      collectLogs(full, keep, maxAgeMs, out);
+      continue;
+    }
+    if (!e.isFile() || !keep(e.name)) continue;
+    let st;
+    try {
+      st = fs.statSync(full);
+    } catch {
+      continue;
+    }
+    if (st.mtimeMs < cutoff) continue;
+    out.push({ file: full, size: st.size, mtime: st.mtimeMs });
+  }
+  return out;
+}
+
+/** Newest first: a budgeted run should spend itself on the freshest logs. */
+function byNewest(a, b) {
+  return b.mtime - a.mtime;
+}
+
+/**
+ * Read the bytes of `file` that `seen` has not consumed yet, returning whole
+ * lines only. Consuming byte offsets rather than re-reading is what keeps this
+ * affordable: a hook run costs the few KB an agent appended since the last one,
+ * not the hundreds of megabytes of transcript on disk.
+ */
+function readNewLines(file, seen, size, budget) {
+  let from = typeof seen === 'number' && seen >= 0 ? seen : 0;
+  if (from > size) from = 0; // truncated or replaced — start over
+  if (from === size) return { lines: [], consumed: size };
+  const want = Math.min(size - from, budget === undefined ? Infinity : Math.max(0, budget));
+  if (want === 0) return { lines: [], consumed: from };
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(want);
+    // readSync may return a short read; loop rather than trust one call, or the
+    // unread tail would be silently skipped and its offset marked consumed.
+    let filled = 0;
+    for (;;) {
+      const got = fs.readSync(fd, buf, filled, buf.length - filled, from + filled);
+      if (got <= 0) break;
+      filled += got;
+      if (filled >= buf.length) break;
+    }
+    const text = buf.subarray(0, filled).toString('utf8');
+    const lastBreak = text.lastIndexOf('\n');
+    // A trailing partial line is left for the next run rather than dropped.
+    if (lastBreak === -1) return { lines: [], consumed: from };
+    return { lines: text.slice(0, lastBreak).split('\n'), consumed: from + Buffer.byteLength(text.slice(0, lastBreak + 1)) };
+  } catch (err) {
+    dbg(`project log read failed: ${err && err.message ? err.message : String(err)}`);
+    return { lines: [], consumed: from };
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* nothing we can do */
+      }
+    }
+  }
+}
+
+/** Claude Code transcripts: one assistant record per request, with its own cwd. */
+function scanClaudeLogs(state, full) {
+  const root = path.join(os.homedir(), '.claude', 'projects');
+  const files = collectLogs(root, (n) => n.endsWith('.jsonl'), full ? null : PROJECT_FILE_MAX_AGE_MS, [])
+    .sort(byNewest);
+  let budget = full ? Infinity : PROJECT_SCAN_BYTE_BUDGET;
+  for (const { file, size } of files) {
+    if (budget <= 0) break;
+    const prev = state.files[file] || {};
+    const { lines, consumed } = readNewLines(file, full ? 0 : prev.at, size, budget);
+    budget -= consumed - (full ? 0 : prev.at || 0);
+    for (const line of lines) {
+      if (line === '' || !line.includes('"usage"')) continue;
+      let o;
+      try {
+        o = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const u = o && o.message && o.message.usage;
+      if (!u || typeof u !== 'object') continue;
+      const at = typeof o.timestamp === 'string' ? Date.parse(o.timestamp) : NaN;
+      if (Number.isNaN(at)) continue;
+      const project = path.basename(o.cwd || '') || 'unknown';
+      const tokens =
+        (u.input_tokens || 0) + (u.output_tokens || 0) + (u.cache_creation_input_tokens || 0);
+      if (tokens <= 0) continue;
+      addTokens(state, project, dayKey(at), tokens);
+    }
+    state.files[file] = { at: consumed, seen: Date.now() };
+  }
+}
+
+/** Codex rollouts: token_count carries a running total, so spend is its delta. */
+function scanCodexLogs(state, full) {
+  const root = path.join(codexHome(), 'sessions');
+  const files = collectLogs(
+    root,
+    (n) => n.startsWith('rollout-') && n.endsWith('.jsonl'),
+    full ? null : PROJECT_FILE_MAX_AGE_MS,
+    []
+  ).sort(byNewest);
+  let budget = full ? Infinity : PROJECT_SCAN_BYTE_BUDGET;
+  for (const { file, size } of files) {
+    if (budget <= 0) break;
+    const prev = state.files[file] || {};
+    const { lines, consumed } = readNewLines(file, full ? 0 : prev.at, size, budget);
+    budget -= consumed - (full ? 0 : prev.at || 0);
+    let project = prev.project || '';
+    let running = typeof prev.cum === 'number' ? prev.cum : 0;
+    for (const line of lines) {
+      if (line === '') continue;
+      let o;
+      try {
+        o = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const p = o && o.payload;
+      if (!p || typeof p !== 'object') continue;
+      if (!project && typeof p.cwd === 'string' && p.cwd !== '') project = path.basename(p.cwd);
+      if (p.type !== 'token_count') continue;
+      const total = p.info && p.info.total_token_usage && p.info.total_token_usage.total_tokens;
+      if (typeof total !== 'number' || !isFinite(total)) continue;
+      const at = typeof o.timestamp === 'string' ? Date.parse(o.timestamp) : NaN;
+      // A repeated record adds nothing; a reset (new total below the running
+      // one) restarts rather than subtracting.
+      const delta = total >= running ? total - running : total;
+      running = total;
+      if (delta > 0 && !Number.isNaN(at)) addTokens(state, project || 'unknown', dayKey(at), delta);
+    }
+    state.files[file] = { at: consumed, cum: running, project, seen: Date.now() };
+  }
+}
+
+function addTokens(state, project, day, tokens) {
+  const key = `${project}\n${day}`;
+  state.days[key] = (state.days[key] || 0) + tokens;
+  state.dirty[key] = true;
+}
+
+/** Drops files and days that have aged past what the server will keep. */
+function pruneProjectState(state) {
+  const oldestDay = dayKey(Date.now() - PROJECT_HISTORY_DAYS * 24 * 60 * 60 * 1000);
+  for (const key of Object.keys(state.days)) {
+    if (key.slice(key.indexOf('\n') + 1) < oldestDay) delete state.days[key];
+  }
+  const cutoff = Date.now() - PROJECT_HISTORY_DAYS * 24 * 60 * 60 * 1000;
+  for (const [file, meta] of Object.entries(state.files)) {
+    if (!meta || typeof meta.seen !== 'number' || meta.seen < cutoff) delete state.files[file];
+  }
+}
+
+function projectStateFile(base) {
+  const key = crypto.createHash('sha256').update(`${base}\n${SOURCE}`).digest('hex').slice(0, 12);
+  return path.join(os.tmpdir(), `agstatus-projects-${key}.json`);
+}
+
+function loadProjectState(file) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return {
+      lastAttemptAt: typeof parsed.lastAttemptAt === 'number' ? parsed.lastAttemptAt : 0,
+      files: parsed.files && typeof parsed.files === 'object' ? parsed.files : {},
+      days: parsed.days && typeof parsed.days === 'object' ? parsed.days : {},
+      dirty: {},
+    };
+  } catch {
+    return { lastAttemptAt: 0, files: {}, days: {}, dirty: {} };
+  }
+}
+
+/**
+ * Scan this agent's own logs and report per-project token totals for the days
+ * that changed. `full` rescans every log from byte zero — the backfill path.
+ */
+async function reportProjectUsage(base, full) {
+  if (process.env.AGSTATUS_USAGE === 'off') return 0;
+  if (SOURCE !== 'claude' && SOURCE !== 'codex') return 0;
+
+  const stateFile = projectStateFile(base);
+  const state = full
+    ? { lastAttemptAt: 0, files: {}, days: {}, dirty: {} }
+    : loadProjectState(stateFile);
+  // AGSTATUS_PROJECT_FORCE skips the wait without discarding the consumed
+  // offsets — the way to pick up a just-finished session immediately, and how
+  // the tests exercise a second incremental pass.
+  const forced = process.env.AGSTATUS_PROJECT_FORCE === '1';
+  if (!full && !forced && Date.now() - state.lastAttemptAt < PROJECT_THROTTLE_MS) {
+    dbg('project totals throttled');
+    return 0;
+  }
+
+  if (SOURCE === 'codex') scanCodexLogs(state, full);
+  else scanClaudeLogs(state, full);
+  pruneProjectState(state);
+
+  const changed = full ? Object.keys(state.days) : Object.keys(state.dirty);
+  const rows = changed
+    .filter((k) => state.days[k] > 0)
+    .map((k) => {
+      const at = k.indexOf('\n');
+      return { project: k.slice(0, at), day: k.slice(at + 1), tokens: state.days[k] };
+    });
+
+  state.lastAttemptAt = Date.now();
+  try {
+    fs.writeFileSync(stateFile, JSON.stringify({
+      lastAttemptAt: state.lastAttemptAt, files: state.files, days: state.days,
+    }));
+  } catch {
+    // Unwritable tmp: reporting still works, it just rescans next time.
+  }
+  if (rows.length === 0) {
+    dbg('no project token changes to report');
+    return 0;
+  }
+  // The server replaces whole days, so chunks are independent and a partial
+  // failure just leaves those days to the next run.
+  for (let i = 0; i < rows.length; i += MAX_PROJECT_DAYS_PER_POST) {
+    await send('POST', `${base}/usage/projects`, {
+      source: SOURCE,
+      days: rows.slice(i, i + MAX_PROJECT_DAYS_PER_POST),
+    });
+  }
+  dbg(`reported ${rows.length} project-day total(s)`);
+  return rows.length;
+}
+
+async function maybeReportUsage(base, sessionId) {
+  if (process.env.AGSTATUS_USAGE === 'off') return;
+  // Each agent reports from its own source and only its own: Claude reads
+  // Claude Code's OAuth credentials, Codex reads Codex's rollout log. A Codex
+  // run has no business touching Claude credentials, even on a machine with
+  // both. Any other agent has no usage source we know how to read.
+  if (SOURCE !== 'claude' && SOURCE !== 'codex') return;
+
+  // Throttle across hook invocations via a per-server tmp file, keyed by source
+  // as well as board so two agents pointed at one board don't starve each other
+  // out of a shared slot.
   const stateFile = path.join(
     os.tmpdir(),
-    `agstatus-usage-${crypto.createHash('sha256').update(base).digest('hex').slice(0, 12)}.json`
+    `agstatus-usage-${crypto
+      .createHash('sha256')
+      .update(`${base}\n${SOURCE}`)
+      .digest('hex')
+      .slice(0, 12)}.json`
   );
   try {
     const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
@@ -362,24 +938,41 @@ async function maybeReportUsage(base) {
   } catch {
     // no state yet — proceed
   }
-  try {
-    fs.writeFileSync(stateFile, JSON.stringify({ lastAttemptAt: Date.now() }));
-  } catch {
-    return; // unwritable tmp — skip rather than fetch unthrottled forever
-  }
+  const claimSlot = () => {
+    try {
+      fs.writeFileSync(stateFile, JSON.stringify({ lastAttemptAt: Date.now() }));
+      return true;
+    } catch {
+      return false; // unwritable tmp — skip rather than run unthrottled forever
+    }
+  };
 
-  const token = await readClaudeOAuthToken();
-  if (!token) {
-    dbg('no usable Claude OAuth token (credentials file and keychain both unavailable)');
-    return;
-  }
-  const usage = await fetchClaudeUsage(token);
-  if (!usage) {
-    dbg('usage endpoint returned nothing usable');
-    return;
+  let usage;
+  if (SOURCE === 'codex') {
+    // Reading a local file costs nothing worth backing off from, and at
+    // SessionStart the log reliably has no limits yet — so the slot is claimed
+    // only once there is something to send. Claiming first would silence a
+    // session's first bars for the whole throttle window.
+    usage = readCodexUsage(sessionId);
+    if (!usage) return;
+    if (!claimSlot()) return;
+  } else {
+    // Claimed before the fetch so failed requests back off too, instead of
+    // hammering the usage endpoint every quiet event.
+    if (!claimSlot()) return;
+    const token = await readClaudeOAuthToken();
+    if (!token) {
+      dbg('no usable Claude OAuth token (credentials file and keychain both unavailable)');
+      return;
+    }
+    usage = await fetchClaudeUsage(token);
+    if (!usage) {
+      dbg('usage endpoint returned nothing usable');
+      return;
+    }
   }
   await send('POST', `${base}/usage`, usage);
-  dbg(`reported ${usage.windows.length} usage window(s)`);
+  dbg(`reported ${usage.windows.length} ${SOURCE} usage window(s)`);
 }
 
 async function main() {
@@ -472,12 +1065,51 @@ async function main() {
     project,
     source: SOURCE,
   });
-  // Piggyback plan-usage refresh on quiet events only — PreToolUse fires
-  // between every tool call and must stay as cheap as possible.
-  const usagePost = event === 'PreToolUse' ? Promise.resolve() : maybeReportUsage(base);
-  await Promise.all([statusPost, usagePost.catch(() => {})]);
+  // Claude's report costs a network round trip, so it stays off PreToolUse,
+  // which fires between every tool call. Codex reads a local file instead, and
+  // PreToolUse is most of what Codex fires at all (its only other events are
+  // SessionStart, Stop and PermissionRequest) — skipping it there would leave
+  // Codex bars minutes stale. The 5-minute throttle bounds the real work in
+  // both cases; off-slot invocations cost one small file read.
+  const usagePost =
+    event === 'PreToolUse' && SOURCE !== 'codex'
+      ? Promise.resolve()
+      : maybeReportUsage(base, session);
+  // Same reasoning as the usage report, and cheaper: off-slot runs stop at the
+  // throttle file, and a run that does scan is capped by its byte budget.
+  const projectPost =
+    event === 'PreToolUse' && SOURCE !== 'codex'
+      ? Promise.resolve(0)
+      : reportProjectUsage(base, false);
+  await Promise.all([statusPost, usagePost.catch(() => {}), projectPost.catch(() => {})]);
 }
 
-main()
-  .catch(() => {})
-  .finally(() => process.exit(0));
+/**
+ * `--backfill` re-reads every log from the beginning and reports the lot, so a
+ * board has project history from the day it is set up instead of only from the
+ * next turn onwards. Run by hand; the hook never takes this path, and it is the
+ * one mode allowed to take longer than the safety timeout or to print.
+ */
+if (process.argv.includes('--backfill')) {
+  clearTimeout(safety);
+  const rawUrl = process.env.CLAUDE_STATUS_URL || str(FILE_CONFIG.url);
+  if (!rawUrl) {
+    process.stderr.write('agstatus: set CLAUDE_STATUS_URL to your board URL first\n');
+    process.exit(1);
+  }
+  const backfillBase = rawUrl.replace(/\/$/, '').replace(/\/webhook$/, '');
+  process.stderr.write(`agstatus: scanning ${SOURCE} logs — this can take a minute…\n`);
+  reportProjectUsage(backfillBase, true)
+    .then((n) => {
+      process.stderr.write(`agstatus: reported ${n} project-day total(s) for ${SOURCE}\n`);
+      process.exit(0);
+    })
+    .catch((err) => {
+      process.stderr.write(`agstatus: backfill failed: ${err && err.message ? err.message : err}\n`);
+      process.exit(1);
+    });
+} else {
+  main()
+    .catch(() => {})
+    .finally(() => process.exit(0));
+}

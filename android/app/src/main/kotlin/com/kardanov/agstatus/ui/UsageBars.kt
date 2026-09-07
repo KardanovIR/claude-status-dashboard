@@ -4,9 +4,11 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -20,6 +22,8 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -42,7 +46,11 @@ import kotlin.math.roundToInt
  * window (current 5-hour session, weekly caps, …).
  */
 @Composable
-fun UsageBars(usage: List<UsageInfo>, modifier: Modifier = Modifier) {
+fun UsageBars(
+    usage: List<UsageInfo>,
+    onOpenDetail: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     // Redraws every minute so the "resets in …" countdowns stay honest.
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
@@ -52,25 +60,89 @@ fun UsageBars(usage: List<UsageInfo>, modifier: Modifier = Modifier) {
         }
     }
 
-    val shape = RoundedCornerShape(14.dp)
+    // Up to three blocks abreast, two on a phone-width screen, wrapping to
+    // further rows. Never more columns than blocks, so a lone agent spans the
+    // full width instead of leaving a hole.
+    val wide = LocalConfiguration.current.screenWidthDp >= 600
+    val columns = max(1, minOf(usage.size, if (wide) 3 else 2))
+    // Sharing a phone width leaves each block too narrow for a one-line row;
+    // those stack the label above the value instead.
+    val narrow = !wide && columns > 1
+
     Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .background(Theme.card, shape)
-            .border(1.dp, Theme.cardBorder, shape)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        for (info in usage) {
-            for (window in info.windows) {
-                UsageBarRow(sourceName = info.displayName, window = window, nowMillis = now)
+        for (row in usage.chunked(columns)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                for (info in row) {
+                    UsageSourceBlock(
+                        info = info,
+                        nowMillis = now,
+                        narrow = narrow,
+                        onOpenDetail = onOpenDetail,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                // Keep a short final row aligned with the ones above it.
+                repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
             }
         }
     }
 }
 
+/**
+ * One agent's limits: its name over its own bars, in its own card. The header
+ * carries the agent name so the rows inside don't repeat it. Tapping the block
+ * opens that agent's 30-day usage detail; the layout is unchanged, so the
+ * affordance is carried by the tap label screen readers announce.
+ */
 @Composable
-private fun UsageBarRow(sourceName: String, window: UsageWindow, nowMillis: Long) {
+private fun UsageSourceBlock(
+    info: UsageInfo,
+    nowMillis: Long,
+    narrow: Boolean,
+    onOpenDetail: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val shape = RoundedCornerShape(14.dp)
+    Column(
+        modifier = modifier
+            .clip(shape)
+            .background(Theme.card, shape)
+            .border(1.dp, Theme.cardBorder, shape)
+            .clickable(onClickLabel = "Show ${info.displayName} usage detail") {
+                onOpenDetail(info.source)
+            }
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(
+            text = info.displayName.uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = Theme.textPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        for (window in info.windows) {
+            UsageBarRow(
+                sourceName = info.displayName,
+                window = window,
+                nowMillis = nowMillis,
+                narrow = narrow,
+            )
+        }
+    }
+}
+
+@Composable
+private fun UsageBarRow(
+    sourceName: String,
+    window: UsageWindow,
+    nowMillis: Long,
+    narrow: Boolean = false,
+) {
     val barColor = Theme.usageColor(window.usedPct)
     val pctText = "${window.usedPct.roundToInt()}%"
     val reset = resetText(window.resetsAt, nowMillis)
@@ -85,18 +157,27 @@ private fun UsageBarRow(sourceName: String, window: UsageWindow, nowMillis: Long
         modifier = Modifier.clearAndSetSemantics { contentDescription = description },
         verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
-        Row(modifier = Modifier.fillMaxWidth()) {
+        val label: @Composable (Modifier) -> Unit = { m ->
             Text(
-                text = "$sourceName · ${window.displayLabel}".uppercase(),
+                text = window.displayLabel.uppercase(),
                 style = MaterialTheme.typography.labelSmall,
                 color = Theme.textSecondary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .alignByBaseline()
-                    .weight(1f)
-                    .padding(end = 8.dp),
+                modifier = m,
             )
+        }
+        // Each half of a phone screen fits the label OR the value, not both.
+        if (narrow) label(Modifier.fillMaxWidth())
+        Row(modifier = Modifier.fillMaxWidth()) {
+            if (!narrow) {
+                label(
+                    Modifier
+                        .alignByBaseline()
+                        .weight(1f)
+                        .padding(end = 8.dp),
+                )
+            }
             Text(
                 text = pctText,
                 style = TextStyle(

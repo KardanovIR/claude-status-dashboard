@@ -88,6 +88,7 @@ import kotlin.math.abs
 fun BoardScreen(
     store: SessionStore,
     onOpenHistory: (String) -> Unit,
+    onOpenUsage: (String) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenPair: () -> Unit,
     modifier: Modifier = Modifier,
@@ -187,6 +188,7 @@ fun BoardScreen(
             if (visibleUsage.isNotEmpty() && !boardGone) {
                 UsageBars(
                     usage = visibleUsage,
+                    onOpenDetail = onOpenUsage,
                     modifier = Modifier
                         .padding(horizontal = 16.dp)
                         .padding(top = 10.dp, bottom = 2.dp),

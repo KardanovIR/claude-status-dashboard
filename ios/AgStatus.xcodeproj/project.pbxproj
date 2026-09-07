@@ -25,6 +25,7 @@
 		A10000000000000000000010 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000010 /* Assets.xcassets */; };
 		A10000000000000000000011 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012 /* PrivacyInfo.xcprivacy */; };
 		A10000000000000000000012 /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000013 /* NotificationManager.swift */; };
+		A10000000000000000000013 /* UsageDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000015 /* UsageDetailView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -48,6 +49,7 @@
 		B10000000000000000000012 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		B10000000000000000000013 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
 		B10000000000000000000014 /* AgStatus.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AgStatus.entitlements; sourceTree = "<group>"; };
+		B10000000000000000000015 /* UsageDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageDetailView.swift; sourceTree = "<group>"; };
 		C10000000000000000000001 /* AgStatus.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AgStatus.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -78,6 +80,7 @@
 				B10000000000000000000003 /* WelcomeView.swift */,
 				B10000000000000000000004 /* BoardView.swift */,
 				B10000000000000000000005 /* SessionCardView.swift */,
+				B10000000000000000000015 /* UsageDetailView.swift */,
 				B10000000000000000000006 /* PairSheet.swift */,
 				B10000000000000000000007 /* ScannerView.swift */,
 				B10000000000000000000008 /* SettingsView.swift */,
@@ -180,6 +183,7 @@
 				A10000000000000000000003 /* WelcomeView.swift in Sources */,
 				A10000000000000000000004 /* BoardView.swift in Sources */,
 				A10000000000000000000005 /* SessionCardView.swift in Sources */,
+				A10000000000000000000013 /* UsageDetailView.swift in Sources */,
 				A10000000000000000000006 /* PairSheet.swift in Sources */,
 				A10000000000000000000007 /* ScannerView.swift in Sources */,
 				A10000000000000000000008 /* SettingsView.swift in Sources */,

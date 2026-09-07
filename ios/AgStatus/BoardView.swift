@@ -41,6 +41,11 @@ struct BoardView: View {
             .animation(.snappy, value: visibleUsage)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.background.ignoresSafeArea())
+            // A second destination, on its own value type so it can't collide
+            // with the session-id (String) destination inside the list.
+            .navigationDestination(for: UsageDetailRoute.self) { route in
+                UsageDetailView(source: route.source)
+            }
             .navigationTitle("AgStatus")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Theme.background, for: .navigationBar)
@@ -93,11 +98,25 @@ struct BoardView: View {
         }
     }
 
-    /// Debug-only deep link so screenshot automation can reach the history
-    /// screen, which has no launch argument and cannot be tapped by simctl.
+    /// Debug-only deep links so screenshot automation can reach the pushed
+    /// screens, which have no launch argument and cannot be tapped by simctl.
+    /// AGSTATUS_OPEN_HISTORY=1 opens the first session's timeline;
+    /// AGSTATUS_OPEN_USAGE=<source> opens that agent's usage history.
     private func openHistoryForScreenshots() async {
         #if DEBUG
-        guard ProcessInfo.processInfo.environment["AGSTATUS_OPEN_HISTORY"] == "1" else { return }
+        let environment = ProcessInfo.processInfo.environment
+        if let source = environment["AGSTATUS_OPEN_USAGE"], !source.isEmpty {
+            // Demo usage is seeded synchronously; a real board's arrives over SSE.
+            for _ in 0..<40 {
+                if !store.usage.isEmpty { break }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            if path.isEmpty {
+                path.append(UsageDetailRoute(source: source))
+            }
+            return
+        }
+        guard environment["AGSTATUS_OPEN_HISTORY"] == "1" else { return }
         // Demo sessions are seeded synchronously; a real board arrives over SSE.
         for _ in 0..<40 {
             if !store.sessions.isEmpty { break }
@@ -404,23 +423,71 @@ struct BoardView: View {
 
 // MARK: - Usage bars
 
-/// Full-width plan-limit bars pinned above the board: one row per reported
-/// window (current 5-hour session, weekly caps, …).
+/// Plan-limit bars pinned above the board, grouped into one block per agent
+/// (current 5-hour session, weekly caps, per-model caps).
 struct UsageBarsView: View {
     let usage: [UsageInfo]
 
     /// Redraws every minute so the "resets in …" countdowns stay honest.
     private static let clock = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
     @State private var now = Date()
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    /// Up to three blocks abreast, two at a compact width, wrapping to further
+    /// rows. Never more columns than blocks, so a lone agent spans the width.
+    private var columnCount: Int {
+        let maxColumns = horizontalSizeClass == .compact ? 2 : 3
+        return max(1, min(usage.count, maxColumns))
+    }
+
+    /// Sharing a compact width leaves each block too narrow for a one-line
+    /// row; those blocks stack the label above the value instead.
+    private var narrowBlocks: Bool {
+        horizontalSizeClass == .compact && columnCount > 1
+    }
 
     var body: some View {
-        VStack(spacing: 12) {
+        LazyVGrid(
+            columns: Array(
+                repeating: GridItem(.flexible(), spacing: 10, alignment: .top),
+                count: columnCount
+            ),
+            spacing: 10
+        ) {
             ForEach(usage) { info in
-                ForEach(info.windows) { window in
-                    UsageBarRow(sourceName: info.displayName, window: window, now: now)
+                // The whole block opens that agent's last 30 days; the block
+                // itself is unchanged.
+                NavigationLink(value: UsageDetailRoute(source: info.source)) {
+                    UsageSourceBlock(info: info, now: now, narrow: narrowBlocks)
                 }
+                .buttonStyle(.plain)
+                .accessibilityHint("Shows the last 30 days")
             }
         }
+        .onReceive(Self.clock) { now = $0 }
+    }
+}
+
+/// One agent's limits: its name over its own bars, in its own card. The header
+/// carries the agent name so the rows inside don't repeat it.
+private struct UsageSourceBlock: View {
+    let info: UsageInfo
+    let now: Date
+    let narrow: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(info.displayName)
+                .font(.system(.caption2, design: .rounded).weight(.bold))
+                .kerning(0.6)
+                .textCase(.uppercase)
+                .foregroundStyle(Theme.textPrimary)
+                .lineLimit(1)
+            ForEach(info.windows) { window in
+                UsageBarRow(sourceName: info.displayName, window: window, now: now, narrow: narrow)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .background(
@@ -431,7 +498,6 @@ struct UsageBarsView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(Theme.cardBorder)
         )
-        .onReceive(Self.clock) { now = $0 }
     }
 }
 
@@ -439,6 +505,7 @@ private struct UsageBarRow: View {
     let sourceName: String
     let window: UsageWindow
     let now: Date
+    var narrow = false
 
     private var fraction: Double {
         min(max(window.usedPct / 100, 0), 1)
@@ -472,26 +539,44 @@ private struct UsageBarRow: View {
         return hours > 0 ? "resets in \(days)d \(hours)h" : "resets in \(days)d"
     }
 
-    var body: some View {
-        VStack(spacing: 5) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("\(sourceName) · \(window.label)")
-                    .font(.system(.caption2, design: .rounded).weight(.semibold))
-                    .kerning(0.4)
-                    .textCase(.uppercase)
+    private var label: some View {
+        Text(window.label)
+            .font(.system(.caption2, design: .rounded).weight(.semibold))
+            .kerning(0.4)
+            .textCase(.uppercase)
+            .foregroundStyle(Theme.textSecondary)
+            .lineLimit(1)
+    }
+
+    private var value: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text(pctText)
+                .font(.system(.caption, design: .rounded).weight(.bold))
+                .monospacedDigit()
+                .foregroundStyle(Theme.textPrimary)
+            if let resetText {
+                Text("· \(resetText)")
+                    .font(.system(.caption2, design: .rounded))
                     .foregroundStyle(Theme.textSecondary)
                     .lineLimit(1)
-                Spacer(minLength: 8)
-                Text(pctText)
-                    .font(.system(.caption, design: .rounded).weight(.bold))
-                    .monospacedDigit()
-                    .foregroundStyle(Theme.textPrimary)
-                if let resetText {
-                    Text("· \(resetText)")
-                        .font(.system(.caption2, design: .rounded))
-                        .foregroundStyle(Theme.textSecondary)
-                        .lineLimit(1)
-                        .layoutPriority(-1)
+                    // Truncating this to a bare "·" helps nobody: drop it whole.
+                    .layoutPriority(narrow ? 0 : -1)
+            }
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if narrow {
+                // Each half of a phone screen fits the label OR the value, not
+                // both, so give each its own line.
+                label
+                value
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    label
+                    Spacer(minLength: 8)
+                    value
                 }
             }
             GeometryReader { geo in

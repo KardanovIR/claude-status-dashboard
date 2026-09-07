@@ -24,6 +24,9 @@ object Theme {
     val textPrimary = Color(0xFFE9EDF5)
     val textSecondary = Color(0xFF8B93A7)
 
+    /** The web's --muted-2: axis ticks, footnotes, and other quiet asides. */
+    val textTertiary = Color(0xFF5B6278)
+
     val idle = Color(0xFF8B93A7)
     val planning = Color(0xFF4D9FFF)
     val coding = Color(0xFFB17AFF)
@@ -46,6 +49,17 @@ object Theme {
         usedPct >= 60 -> testing
         else -> done
     }
+
+    /**
+     * Limit-history line colors, in the web dashboard's order, so the same
+     * window keeps the same color on every client.
+     */
+    private val usageLines = listOf(planning, coding, testing, done, blocked, idle)
+
+    fun usageLineColor(index: Int): Color = usageLines[index.mod(usageLines.size)]
+
+    /** Tokens-per-day bars: the done green, half-strength so lines read over it. */
+    val usageTokenBar: Color = done.copy(alpha = 0.5f)
 }
 
 private val AgStatusColorScheme = darkColorScheme(

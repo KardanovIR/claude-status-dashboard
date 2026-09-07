@@ -189,6 +189,11 @@ struct UsageInfo: Identifiable, Codable, Equatable, Sendable {
 
     /// Human name for the source, e.g. "Claude".
     var displayName: String {
+        Self.displayName(for: source)
+    }
+
+    /// Human name for a bare source id, for screens that only carry the id.
+    static func displayName(for source: String) -> String {
         switch source {
         case "claude": return "Claude"
         case "codex": return "Codex"
@@ -212,6 +217,182 @@ struct UsageInfo: Identifiable, Codable, Equatable, Sendable {
         windows = (try? container.decode([UsageWindow].self, forKey: .windows)) ?? []
         updatedAt = (try? container.decode(Int64.self, forKey: .updatedAt)) ?? 0
     }
+}
+
+// MARK: - Usage history
+
+/// Accepts integral or floating JSON numbers — JavaScript emits both for epoch
+/// milliseconds and for token counts.
+private func decodeNumber<Key>(_ container: KeyedDecodingContainer<Key>, _ key: Key) -> Double? {
+    guard let value = try? container.decode(Double.self, forKey: key), value.isFinite else { return nil }
+    return value
+}
+
+/// Epoch milliseconds from either JSON number shape; 0 when absent or absurd.
+private func decodeMillis<Key>(_ container: KeyedDecodingContainer<Key>, _ key: Key) -> Int64 {
+    guard let value = decodeNumber(container, key),
+          let millis = Int64(exactly: value.rounded()) else { return 0 }
+    return millis
+}
+
+/// One recorded reading of a plan-limit window. The server writes a point only
+/// when the percentage *changed*, so a series is a step function — and a board
+/// that has only just started watching legitimately has a single point.
+struct UsageHistoryPoint: Codable, Equatable, Sendable {
+    /// Epoch milliseconds.
+    var at: Int64
+    /// Percent of the limit consumed at that moment, 0–100.
+    var usedPct: Double
+
+    init(at: Int64, usedPct: Double) {
+        self.at = at
+        self.usedPct = usedPct
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case at, usedPct
+    }
+
+    /// Tolerant decoding, mirroring Session: nothing is required, the
+    /// percentage is clamped, and a garbled timestamp becomes 0 (dropped by
+    /// UsageHistorySeries).
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        at = decodeMillis(container, .at)
+        let rawPct = decodeNumber(container, .usedPct) ?? 0
+        usedPct = min(max(rawPct, 0), 100)
+    }
+}
+
+/// The readings recorded for one window of one agent, oldest first.
+struct UsageHistorySeries: Identifiable, Codable, Equatable, Sendable {
+    var source: String
+    var windowId: String
+    var points: [UsageHistoryPoint]
+
+    var id: String { "\(source)/\(windowId)" }
+
+    init(source: String, windowId: String, points: [UsageHistoryPoint]) {
+        self.source = source
+        self.windowId = windowId
+        self.points = points
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case source, windowId, points
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        source = (try? container.decode(String.self, forKey: .source)) ?? ""
+        windowId = (try? container.decode(String.self, forKey: .windowId)) ?? ""
+        // Sampling walks the points in order and stops early, so sort here once
+        // rather than trusting the wire order.
+        points = ((try? container.decode([UsageHistoryPoint].self, forKey: .points)) ?? [])
+            .filter { $0.at > 0 }
+            .sorted { $0.at < $1.at }
+    }
+}
+
+/// Absolute tokens one project spent on one UTC day (not a delta).
+struct UsageProjectDay: Codable, Equatable, Sendable {
+    var source: String
+    var project: String
+    /// UTC day, "YYYY-MM-DD".
+    var day: String
+    var tokens: Double
+
+    init(source: String, project: String, day: String, tokens: Double) {
+        self.source = source
+        self.project = project
+        self.day = day
+        self.tokens = tokens
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case source, project, day, tokens
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        source = (try? container.decode(String.self, forKey: .source)) ?? ""
+        project = (try? container.decode(String.self, forKey: .project)) ?? ""
+        day = (try? container.decode(String.self, forKey: .day)) ?? ""
+        tokens = max(0, decodeNumber(container, .tokens) ?? 0)
+    }
+}
+
+/// `GET <board>/api/usage/history?days=30` — limit readings and per-project
+/// token totals for *every* source; callers filter to the one being shown.
+struct UsageHistory: Codable, Equatable, Sendable {
+    var days: Int
+    var history: [UsageHistorySeries]
+    var projects: [UsageProjectDay]
+
+    static let defaultDays = 30
+    static let empty = UsageHistory(days: defaultDays, history: [], projects: [])
+
+    init(days: Int, history: [UsageHistorySeries], projects: [UsageProjectDay]) {
+        self.days = days
+        self.history = history
+        self.projects = projects
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case days, history, projects
+    }
+
+    /// Tolerant decoding: an older server that answers with something else
+    /// entirely leaves an empty screen rather than an error.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        days = (try? container.decode(Int.self, forKey: .days)) ?? Self.defaultDays
+        history = (try? container.decode([UsageHistorySeries].self, forKey: .history)) ?? []
+        projects = (try? container.decode([UsageProjectDay].self, forKey: .projects)) ?? []
+    }
+}
+
+extension UsageHistory {
+
+    /// The `days` UTC days ending today, oldest first, as "YYYY-MM-DD".
+    static func dayRange(_ days: Int) -> [String] {
+        let count = min(max(days, 1), 365)
+        // UTC days are exactly 86400s wide, so plain epoch arithmetic is safe.
+        let todayStart = Int64(Date().timeIntervalSince1970 / 86_400) * 86_400
+        return (0..<count).reversed().map { dayString(todayStart - Int64($0) * 86_400) }
+    }
+
+    /// Start of a "YYYY-MM-DD" UTC day in epoch milliseconds; 0 if unparseable.
+    static func dayStartMillis(_ day: String) -> Int64 {
+        guard let date = dayFormatter.date(from: day) else { return 0 }
+        return Int64(date.timeIntervalSince1970 * 1000)
+    }
+
+    /// Step-samples a recorded series onto a day grid: for each day the last
+    /// point at or before the end of that day, and nil for the days before the
+    /// series starts (the board simply didn't know the limit yet).
+    static func sampleSeries(_ points: [UsageHistoryPoint], onto days: [String]) -> [Double?] {
+        days.map { day in
+            let end = dayStartMillis(day) + 86_400_000 - 1
+            var value: Double?
+            for point in points {
+                if point.at <= end { value = point.usedPct } else { break }
+            }
+            return value
+        }
+    }
+
+    private static func dayString(_ epochSeconds: Int64) -> String {
+        dayFormatter.string(from: Date(timeIntervalSince1970: Double(epochSeconds)))
+    }
+
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
 }
 
 // MARK: - Board

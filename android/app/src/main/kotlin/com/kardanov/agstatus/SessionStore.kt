@@ -323,6 +323,23 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         return fresh
     }
 
+    /**
+     * Recorded limit history and per-project tokens behind the usage detail
+     * screen. Demo mode synthesises it offline; a server too old to serve the
+     * endpoint — or any transient failure — degrades to an empty screen.
+     */
+    suspend fun usageHistory(days: Int = UsageDetail.DEFAULT_DAYS): UsageHistory {
+        if (isDemo) return DemoData.usageHistory(days)
+        val current = _board.value ?: return UsageHistory(days = days)
+        return try {
+            AgStatusApi.usageHistory(current, days)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            UsageHistory(days = days)
+        }
+    }
+
     /** A session's timeline, newest first. Failures read as an empty history. */
     suspend fun history(sessionId: String): List<HistoryEvent> {
         if (isDemo) {

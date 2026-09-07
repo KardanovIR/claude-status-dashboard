@@ -35,17 +35,21 @@ enum DemoData {
                     project: "etl-jobs",
                     createdAt: now - 18 * 60_000,
                     updatedAt: now - 3 * 60_000),
+            // A Codex session so the demo board shows both agents' limit
+            // blocks, not just Claude's.
             Session(id: "demo-docs-site",
                     name: "docs-site",
                     status: .done,
                     message: "All tasks complete — 12 files changed",
                     project: "docs",
+                    source: "codex",
                     createdAt: now - 3 * 3_600_000,
                     updatedAt: now - 26 * 60_000),
         ]
     }
 
-    /// Plan-limit bars matching a busy-but-not-throttled evening.
+    /// Plan-limit bars matching a busy-but-not-throttled evening: one block
+    /// per agent, each with its own session, all-models and per-model windows.
     static func usage() -> [UsageInfo] {
         let now = nowMillis()
         return [
@@ -65,7 +69,140 @@ enum DemoData {
                                       resetsAt: now + 2 * 86_400_000 + 5 * 3_600_000),
                       ],
                       updatedAt: now),
+            UsageInfo(source: "codex",
+                      windows: [
+                          UsageWindow(id: "week",
+                                      label: "Weekly (all models)",
+                                      usedPct: 47,
+                                      resetsAt: now + 4 * 86_400_000 + 2 * 3_600_000),
+                          UsageWindow(id: "session_gpt_6_astra",
+                                      label: "Session (GPT-6-Astra)",
+                                      usedPct: 22,
+                                      resetsAt: now + 96 * 60_000),
+                          UsageWindow(id: "week_gpt_6_astra",
+                                      label: "Weekly (GPT-6-Astra)",
+                                      usedPct: 38,
+                                      resetsAt: now + 4 * 86_400_000 + 2 * 3_600_000),
+                      ],
+                      updatedAt: now),
         ]
+    }
+
+    /// Offline stand-in for `/api/usage/history`: a month of plausible token
+    /// spend per project, with the plan-limit readings recorded over it. The
+    /// limit series deliberately start partway through the range — a board only
+    /// knows the limits it has actually seen — and each one lands on the same
+    /// percentage the demo bars show, so the two screens agree. Seeded, so the
+    /// demo (and its screenshots) look the same on every launch.
+    static func usageHistory(days: Int = UsageHistory.defaultDays) -> UsageHistory {
+        let grid = UsageHistory.dayRange(days)
+        var rng = SeededGenerator(seed: 0x51E5_A6ED_D0C5)
+        var series: [UsageHistorySeries] = []
+        var projects: [UsageProjectDay] = []
+
+        for plan in demoPlans {
+            for window in plan.windows {
+                series.append(limitSeries(source: plan.source, window: window, grid: grid, rng: &rng))
+            }
+            for project in plan.projects {
+                projects.append(contentsOf: tokenRows(source: plan.source,
+                                                      project: project,
+                                                      grid: grid,
+                                                      rng: &rng))
+            }
+        }
+        return UsageHistory(days: grid.count, history: series, projects: projects)
+    }
+
+    /// What each demo agent has been spending, and on what.
+    private struct DemoPlan {
+        let source: String
+        /// One per limit window: its id, how far back the board first recorded
+        /// it, where it stands today, and whether it accrues over a week.
+        let windows: [(id: String, startsDaysAgo: Int, endPct: Double, weekly: Bool)]
+        /// Projects and their share of this agent's daily spend.
+        let projects: [(name: String, weight: Double)]
+    }
+
+    private static let demoPlans: [DemoPlan] = [
+        DemoPlan(source: "claude",
+                 windows: [("session", 9, 34, false),
+                           ("week", 22, 62, true),
+                           ("week_fable", 22, 41, true)],
+                 projects: [("acme-api", 1.0),
+                            ("acme-web", 0.66),
+                            ("etl-jobs", 0.31),
+                            ("infra-scripts", 0.12)]),
+        DemoPlan(source: "codex",
+                 windows: [("week", 16, 47, true),
+                           ("session_gpt_6_astra", 6, 22, false),
+                           ("week_gpt_6_astra", 16, 38, true)],
+                 projects: [("docs", 1.0), ("acme-web", 0.42)]),
+    ]
+
+    /// A step function: one reading per day, kept only when it changed.
+    private static func limitSeries(source: String,
+                                    window: (id: String, startsDaysAgo: Int, endPct: Double, weekly: Bool),
+                                    grid: [String],
+                                    rng: inout SeededGenerator) -> UsageHistorySeries {
+        let first = max(0, grid.count - window.startsDaysAgo)
+        let now = nowMillis()
+        var value = Double.random(in: 4...12, using: &rng)
+        var last: Double?
+        var points: [UsageHistoryPoint] = []
+
+        for index in first..<grid.count {
+            if window.weekly {
+                // Weekly caps saw-tooth: they climb all week, then reset.
+                if (grid.count - 1 - index) % 7 == 6 {
+                    value = Double.random(in: 2...9, using: &rng)
+                } else {
+                    value = min(96, value + Double.random(in: 3...13, using: &rng))
+                }
+            } else {
+                // A session window is short-lived; each day stands on its own.
+                value = Double.random(in: 6...58, using: &rng)
+            }
+            // Today's reading is the one the board's bars already show.
+            let reading = (index == grid.count - 1 ? window.endPct : value).rounded()
+            guard reading != last else { continue }
+            last = reading
+            let at = min(now, UsageHistory.dayStartMillis(grid[index]) + 18 * 3_600_000)
+            points.append(UsageHistoryPoint(at: at, usedPct: reading))
+        }
+        return UsageHistorySeries(source: source, windowId: window.id, points: points)
+    }
+
+    /// Absolute per-day totals, with the quiet days a real month has.
+    private static func tokenRows(source: String,
+                                  project: (name: String, weight: Double),
+                                  grid: [String],
+                                  rng: inout SeededGenerator) -> [UsageProjectDay] {
+        var rows: [UsageProjectDay] = []
+        for (index, day) in grid.enumerated() {
+            if Double.random(in: 0..<1, using: &rng) < 0.18 { continue } // a day off
+            let ramp = 0.55 + 0.45 * Double(index) / Double(max(1, grid.count - 1))
+            let jitter = Double.random(in: 0.45...1.45, using: &rng)
+            let tokens = (26_000_000 * project.weight * ramp * jitter).rounded()
+            rows.append(UsageProjectDay(source: source, project: project.name, day: day, tokens: tokens))
+        }
+        return rows
+    }
+
+    /// splitmix64 — a few lines of deterministic randomness, so the demo screen
+    /// is the same every time without pulling in a dependency.
+    private struct SeededGenerator: RandomNumberGenerator {
+        private var state: UInt64
+
+        init(seed: UInt64) { state = seed }
+
+        mutating func next() -> UInt64 {
+            state &+= 0x9E37_79B9_7F4A_7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+            z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+            return z ^ (z >> 31)
+        }
     }
 
     /// Advances a random subset of sessions (at least one) along plausible

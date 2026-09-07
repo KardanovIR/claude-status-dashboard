@@ -32,6 +32,7 @@ import com.kardanov.agstatus.ui.HistoryScreen
 import com.kardanov.agstatus.ui.PairSheet
 import com.kardanov.agstatus.ui.ScannerScreen
 import com.kardanov.agstatus.ui.SettingsScreen
+import com.kardanov.agstatus.ui.UsageDetailScreen
 import com.kardanov.agstatus.ui.WelcomeScreen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -43,9 +44,15 @@ import kotlinx.coroutines.withTimeoutOrNull
  *
  *     adb shell am start -n com.kardanov.agstatus/.MainActivity \
  *         --ez agstatus_demo true --ez agstatus_open_history true
+ *
+ * The usage detail screen takes the source to open:
+ *
+ *     adb shell am start -n com.kardanov.agstatus/.MainActivity \
+ *         --ez agstatus_demo true --es agstatus_open_usage claude
  */
 private const val EXTRA_DEMO = "agstatus_demo"
 private const val EXTRA_OPEN_HISTORY = "agstatus_open_history"
+private const val EXTRA_OPEN_USAGE = "agstatus_open_usage"
 
 /** How long the screenshot hook waits for a board to produce its first session. */
 private const val OPEN_HISTORY_TIMEOUT_MS = 4_000L
@@ -70,11 +77,17 @@ class MainActivity : ComponentActivity() {
             store.startDemo()
         }
         val openHistory = BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_OPEN_HISTORY, false)
+        val openUsage =
+            if (BuildConfig.DEBUG) intent.getStringExtra(EXTRA_OPEN_USAGE)?.ifBlank { null } else null
 
         setContent {
             AgStatusTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = Theme.background) {
-                    AgStatusApp(store = store, openFirstHistory = openHistory)
+                    AgStatusApp(
+                        store = store,
+                        openFirstHistory = openHistory,
+                        openUsageSource = openUsage,
+                    )
                 }
             }
         }
@@ -113,14 +126,19 @@ private object Route {
     const val SCANNER = "scanner"
     const val ARG_SESSION_ID = "sessionId"
     const val HISTORY = "history/{$ARG_SESSION_ID}"
+    const val ARG_SOURCE = "source"
+    const val USAGE = "usage/{$ARG_SOURCE}"
 
     fun history(sessionId: String): String = "history/${Uri.encode(sessionId)}"
+
+    fun usage(source: String): String = "usage/${Uri.encode(source)}"
 }
 
 @Composable
 private fun AgStatusApp(
     store: SessionStore,
     openFirstHistory: Boolean,
+    openUsageSource: String? = null,
 ) {
     val navController = rememberNavController()
     val board by store.board.collectAsState()
@@ -154,6 +172,10 @@ private fun AgStatusApp(
         OpenFirstHistoryEffect(store, navController)
     }
 
+    if (openUsageSource != null) {
+        OpenUsageDetailEffect(store, navController, openUsageSource)
+    }
+
     KeepScreenAwakeEffect(store, showsBoard)
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -165,6 +187,7 @@ private fun AgStatusApp(
                 BoardScreen(
                     store = store,
                     onOpenHistory = { sessionId -> navController.navigate(Route.history(sessionId)) },
+                    onOpenUsage = { source -> navController.navigate(Route.usage(source)) },
                     onOpenSettings = { navController.navigate(Route.SETTINGS) },
                     onOpenPair = { showPairSheet = true },
                 )
@@ -176,6 +199,16 @@ private fun AgStatusApp(
                 HistoryScreen(
                     store = store,
                     sessionId = entry.arguments?.getString(Route.ARG_SESSION_ID).orEmpty(),
+                    onBack = { navController.popBackStack() },
+                )
+            }
+            composable(
+                route = Route.USAGE,
+                arguments = listOf(navArgument(Route.ARG_SOURCE) { type = NavType.StringType }),
+            ) { entry ->
+                UsageDetailScreen(
+                    store = store,
+                    source = entry.arguments?.getString(Route.ARG_SOURCE).orEmpty(),
                     onBack = { navController.popBackStack() },
                 )
             }
@@ -223,6 +256,25 @@ private fun KeepScreenAwakeEffect(store: SessionStore, showsBoard: Boolean) {
         if (idleMinutes <= 0) return@LaunchedEffect
         delay(idleMinutes * 60_000L)
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+}
+
+/**
+ * The same debug-only deep link for the usage detail screen, which hangs off a
+ * tap on a usage block.
+ */
+@Composable
+private fun OpenUsageDetailEffect(
+    store: SessionStore,
+    navController: NavHostController,
+    source: String,
+) {
+    LaunchedEffect(source) {
+        // Demo usage is seeded synchronously; a real board's arrives over SSE.
+        withTimeoutOrNull(OPEN_HISTORY_TIMEOUT_MS) { store.usage.first { it.isNotEmpty() } }
+        if (navController.currentDestination?.route == Route.BOARD) {
+            navController.navigate(Route.usage(source))
+        }
     }
 }
 

@@ -113,6 +113,22 @@ object AgStatusApi {
     }
 
     /**
+     * Recorded limit readings and per-project token totals for the last [days]
+     * days, feeding the usage detail screen. The endpoint is new, so an older
+     * server's 404 reads as "no history yet" rather than a dead board.
+     */
+    suspend fun usageHistory(board: Board, days: Int = UsageDetail.DEFAULT_DAYS): UsageHistory {
+        val asked = days.coerceIn(1, UsageDetail.MAX_DAYS)
+        val url = boardUrl(board)
+            .append("api", "usage", "history")
+            .newBuilder()
+            .addQueryParameter("days", asked.toString())
+            .build()
+        val body = sendAllowingMissingEndpoint("GET", url) ?: return UsageHistory(days = asked)
+        return decodeOrNull<UsageHistory>(body) ?: UsageHistory(days = asked)
+    }
+
+    /**
      * A session's timeline, newest first. Servers without the endpoint just
      * yield an empty history.
      */

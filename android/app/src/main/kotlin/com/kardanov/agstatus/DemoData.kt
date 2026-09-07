@@ -1,5 +1,7 @@
 package com.kardanov.agstatus
 
+import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 import kotlin.random.Random
 
 /**
@@ -39,19 +41,25 @@ object DemoData {
                 createdAt = now - 18 * 60_000L,
                 updatedAt = now - 3 * 60_000L,
             ),
+            // A Codex session so the demo board shows both agents' limit
+            // blocks, not just Claude's.
             Session(
                 id = "demo-docs-site",
                 name = "docs-site",
                 status = AgentStatus.DONE,
                 message = "All tasks complete — 12 files changed",
                 project = "docs",
+                source = "codex",
                 createdAt = now - 3 * 3_600_000L,
                 updatedAt = now - 26 * 60_000L,
             ),
         )
     }
 
-    /** Plan-limit bars matching a busy-but-not-throttled evening. */
+    /**
+     * Plan-limit bars matching a busy-but-not-throttled evening: one block per
+     * agent, each with its own session, all-models and per-model windows.
+     */
     fun usage(): List<UsageInfo> {
         val now = System.currentTimeMillis()
         return listOf(
@@ -79,6 +87,54 @@ object DemoData {
                 ),
                 updatedAt = now,
             ),
+            UsageInfo(
+                source = "codex",
+                windows = listOf(
+                    UsageWindow(
+                        id = "week",
+                        label = "Weekly (all models)",
+                        usedPct = 47.0,
+                        resetsAt = now + 4 * 86_400_000L + 2 * 3_600_000L,
+                    ),
+                    UsageWindow(
+                        id = "session_gpt_6_astra",
+                        label = "Session (GPT-6-Astra)",
+                        usedPct = 22.0,
+                        resetsAt = now + 96 * 60_000L,
+                    ),
+                    UsageWindow(
+                        id = "week_gpt_6_astra",
+                        label = "Weekly (GPT-6-Astra)",
+                        usedPct = 38.0,
+                        resetsAt = now + 4 * 86_400_000L + 2 * 3_600_000L,
+                    ),
+                ),
+                updatedAt = now,
+            ),
+        )
+    }
+
+    /**
+     * A month of plausible detail behind those bars, generated locally so demo
+     * mode never touches the network: weekly caps sawtoothing as they reset,
+     * session windows wandering, and per-project token totals underneath.
+     * Deterministic, so a demo screenshot looks the same every launch.
+     */
+    fun usageHistory(
+        days: Int = UsageDetail.DEFAULT_DAYS,
+        nowMillis: Long = System.currentTimeMillis(),
+    ): UsageHistory {
+        val range = UsageDetail.dayRange(days, nowMillis)
+        if (range.isEmpty()) return UsageHistory(days = days)
+        val blocks = usage()
+        return UsageHistory(
+            days = days,
+            history = blocks.flatMap { info ->
+                info.windows.mapIndexed { index, window ->
+                    demoSeries(info.source, window, range, index, nowMillis)
+                }
+            },
+            projects = blocks.flatMap { demoProjectDays(it.source, range) },
         )
     }
 
@@ -140,6 +196,84 @@ object DemoData {
     }
 
     // MARK: - Internals
+
+    /**
+     * One window's recorded readings. Weekly caps climb through a seven-day
+     * cycle and drop when they reset; session windows wander. A block's last
+     * window only starts halfway through the range, because a board records a
+     * limit from the day it first saw it — that late start is exactly what the
+     * detail screen's footnote is about. Readings are emitted only when the
+     * value changes, matching the step function the server stores.
+     */
+    private fun demoSeries(
+        source: String,
+        window: UsageWindow,
+        days: List<String>,
+        index: Int,
+        nowMillis: Long,
+    ): UsageSeries {
+        val random = Random(source.hashCode() * 31 + window.id.hashCode())
+        val weekly = window.id.startsWith("week")
+        val hours = if (weekly) intArrayOf(11) else intArrayOf(7, 13, 19)
+        val firstDay = if (index == 2 && days.size > 8) days.size / 2 else 0
+
+        val points = mutableListOf<UsagePoint>()
+        var previous = Double.NaN
+        // A session window wanders from wherever it was rather than being
+        // redrawn each reading: consecutive readings of a real limit correlate.
+        var level = 24.0 + random.nextInt(20)
+        for (dayIndex in firstDay until days.size) {
+            val phase = (dayIndex - firstDay) % 7
+            for (hour in hours) {
+                val at = UsageDetail.dayStartMillis(days[dayIndex]) + hour * 3_600_000L
+                if (at > nowMillis) continue // no readings from the future
+                val value = if (weekly) {
+                    5.0 + phase * 9.0 + random.nextInt(7)
+                } else {
+                    level = (level + random.nextInt(-11, 12)).coerceIn(6.0, 76.0)
+                    level
+                }
+                val rounded = value.roundToInt().toDouble()
+                if (rounded != previous) {
+                    points += UsagePoint(at = at, usedPct = rounded)
+                    previous = rounded
+                }
+            }
+        }
+        // Land on the percentage the board's bars are showing right now.
+        if (previous != window.usedPct) {
+            points += UsagePoint(at = nowMillis, usedPct = window.usedPct)
+        }
+        return UsageSeries(source = source, windowId = window.id, points = points)
+    }
+
+    /**
+     * Daily per-project token totals. Quiet days are deliberate: a flat block
+     * of thirty identical bars reads as fake at a glance.
+     */
+    private fun demoProjectDays(source: String, days: List<String>): List<ProjectDay> {
+        val projects = demoProjects[source] ?: return emptyList()
+        val random = Random(source.hashCode())
+        val rows = mutableListOf<ProjectDay>()
+        for (day in days) {
+            val quiet = random.nextDouble() < 0.16
+            for ((project, weight) in projects) {
+                if (quiet || random.nextDouble() < 0.22) continue
+                val spread = 0.45 + random.nextDouble() * 1.15
+                // Rounded to 100K, the granularity a real token report lands on.
+                val tokens = (weight * spread * 12_000_000.0).roundToLong() / 100_000L * 100_000L
+                if (tokens <= 0L) continue
+                rows += ProjectDay(source = source, project = project, day = day, tokens = tokens)
+            }
+        }
+        return rows
+    }
+
+    /** The demo sessions' projects, weighted so one clearly leads the board. */
+    private val demoProjects: Map<String, List<Pair<String, Double>>> = mapOf(
+        "claude" to listOf("acme-api" to 1.0, "acme-web" to 0.64, "etl-jobs" to 0.27),
+        "codex" to listOf("docs" to 0.58, "acme-web" to 0.31),
+    )
 
     private fun advance(session: Session, now: Long): Session {
         val status = transitions[session.status]?.random() ?: session.status

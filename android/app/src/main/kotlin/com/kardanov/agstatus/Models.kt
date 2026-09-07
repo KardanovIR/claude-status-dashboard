@@ -7,6 +7,12 @@ import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+import java.util.Locale
+import kotlin.math.roundToLong
 
 /**
  * Core value types, mirroring the iOS app's Models.swift so both clients speak
@@ -108,11 +114,153 @@ data class UsageInfo(
     val updatedAt: Long = 0,
 ) {
     /** Human name for the source, e.g. "Claude". */
-    val displayName: String get() = when (source) {
-        "claude" -> "Claude"
-        "codex" -> "Codex"
-        else -> source.replaceFirstChar { it.uppercase() }
+    val displayName: String get() = sourceDisplayName(source)
+}
+
+/**
+ * Human name for an agent kind. Lives outside [UsageInfo] because the usage
+ * detail screen names a source it may have no current reading for.
+ */
+fun sourceDisplayName(source: String): String = when (source) {
+    "claude" -> "Claude"
+    "codex" -> "Codex"
+    else -> source.replaceFirstChar { it.uppercase() }
+}
+
+// MARK: - Usage history
+
+/** One recorded reading of a limit window's utilization. */
+@Serializable
+data class UsagePoint(
+    /** Epoch milliseconds. */
+    val at: Long = 0,
+    val usedPct: Double = 0.0,
+)
+
+/**
+ * One window's recorded readings, oldest first. The server appends a point
+ * only when the value changed, so this is a step function — and a board that
+ * has only just started recording legitimately holds a single point.
+ */
+@Serializable
+data class UsageSeries(
+    val source: String = "",
+    val windowId: String = "",
+    val points: List<UsagePoint> = emptyList(),
+)
+
+/** Tokens one agent spent on one project during one UTC day — an absolute total. */
+@Serializable
+data class ProjectDay(
+    val source: String = "",
+    val project: String = "",
+    /** YYYY-MM-DD, UTC. */
+    val day: String = "",
+    val tokens: Long = 0,
+)
+
+/**
+ * `GET <board>/api/usage/history?days=N`. Both arrays cover every source, so
+ * a view filters them down to the one it is showing.
+ */
+@Serializable
+data class UsageHistory(
+    val days: Int = UsageDetail.DEFAULT_DAYS,
+    val history: List<UsageSeries> = emptyList(),
+    val projects: List<ProjectDay> = emptyList(),
+)
+
+/** One project's share of a source's tokens over the whole range. */
+data class ProjectTotal(val project: String, val tokens: Long)
+
+/**
+ * The arithmetic behind the usage detail screen, kept out of the composables
+ * so it can be tested — and so it stays identical to the web dashboard's
+ * (public/app.js, "usage detail") and the iOS app's.
+ */
+object UsageDetail {
+
+    const val DEFAULT_DAYS = 30
+
+    /** How far back the server will look; asking for more is pointless. */
+    const val MAX_DAYS = 90
+
+    private const val DAY_MILLIS = 86_400_000L
+
+    /** The [days] UTC days ending today, oldest first, as "YYYY-MM-DD". */
+    fun dayRange(days: Int, nowMillis: Long = System.currentTimeMillis()): List<String> {
+        if (days <= 0) return emptyList()
+        val today = Instant.ofEpochMilli(nowMillis).atZone(ZoneOffset.UTC).toLocalDate()
+        return (days - 1 downTo 0).map { today.minusDays(it.toLong()).toString() }
     }
+
+    /** Midnight UTC opening [day]. */
+    fun dayStartMillis(day: String): Long =
+        LocalDate.parse(day).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+
+    /** The last instant of [day] — the cutoff a step sample reads at. */
+    fun dayEndMillis(day: String): Long = dayStartMillis(day) + DAY_MILLIS - 1_000L
+
+    /**
+     * Step-samples a recorded series onto the day grid: for each day, the last
+     * reading taken at or before the end of it. A day before the series starts
+     * has no value at all, which is why this is a list of nullables.
+     */
+    fun sampleSeries(points: List<UsagePoint>, days: List<String>): List<Double?> =
+        days.map { day ->
+            val end = dayEndMillis(day)
+            var value: Double? = null
+            for (point in points) {
+                if (point.at > end) break
+                value = point.usedPct
+            }
+            value
+        }
+
+    /**
+     * Tokens this source spent on each day of the grid, in the grid's order.
+     * Rows outside the grid are ignored; a day nobody worked reads as zero.
+     */
+    fun tokensPerDay(projects: List<ProjectDay>, source: String, days: List<String>): List<Long> {
+        val byDay = HashMap<String, Long>(days.size)
+        for (row in projects) {
+            if (row.source != source) continue
+            byDay[row.day] = (byDay[row.day] ?: 0L) + row.tokens
+        }
+        return days.map { byDay[it] ?: 0L }
+    }
+
+    /** Per-project totals for this source over the range, largest first. */
+    fun projectTotals(projects: List<ProjectDay>, source: String): List<ProjectTotal> {
+        val byProject = LinkedHashMap<String, Long>()
+        for (row in projects) {
+            if (row.source != source) continue
+            byProject[row.project] = (byProject[row.project] ?: 0L) + row.tokens
+        }
+        return byProject.map { (project, tokens) -> ProjectTotal(project, tokens) }
+            .sortedByDescending { it.tokens }
+    }
+
+    /** "1.2B", "3.4M", "12K", "870" — the web dashboard's exact ladder. */
+    fun fmtTokens(tokens: Long): String = when {
+        tokens >= 1_000_000_000L -> String.format(Locale.US, "%.1fB", tokens / 1e9)
+        tokens >= 1_000_000L -> String.format(Locale.US, "%.1fM", tokens / 1e6)
+        tokens >= 1_000L -> "${(tokens / 1e3).roundToLong()}K"
+        else -> tokens.toString()
+    }
+
+    /** "9 Aug" — the UTC day, spelled for a tick label. */
+    fun dayLabel(day: String): String = LocalDate.parse(day).format(DAY_LABEL)
+
+    /**
+     * Ticks every seventh day, plus the final day when it would not collide
+     * with the tick before it.
+     */
+    fun showTick(index: Int, lastIndex: Int): Boolean =
+        index % 7 == 0 || (index == lastIndex && lastIndex % 7 > 2)
+
+    private val DAY_LABEL: DateTimeFormatter =
+        DateTimeFormatter.ofPattern("d MMM", Locale.getDefault())
 }
 
 // MARK: - Board

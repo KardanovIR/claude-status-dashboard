@@ -15,6 +15,27 @@ enum Theme {
     static let textPrimary = rgb(0xE9EDF5)
     static let textSecondary = rgb(0x8B93A7)
 
+    /// Dimmer than textSecondary: chart axes and de-emphasised values
+    /// (the web dashboard's --muted-2).
+    static let textTertiary = rgb(0x5B6278)
+    /// Light end of the project bar gradient (the web dashboard's #7cc0ff).
+    static let accentLight = rgb(0x7CC0FF)
+
+    /// Line colors for the usage-history chart, in the web dashboard's order.
+    static let seriesColors: [Color] = [
+        color(for: .planning),
+        color(for: .coding),
+        color(for: .testing),
+        color(for: .done),
+        color(for: .blocked),
+        color(for: .idle),
+    ]
+
+    /// The nth line color, wrapping around for boards with many windows.
+    static func seriesColor(_ index: Int) -> Color {
+        seriesColors[((index % seriesColors.count) + seriesColors.count) % seriesColors.count]
+    }
+
     static func color(for status: AgentStatus) -> Color {
         switch status {
         case .idle: rgb(0x8B93A7)

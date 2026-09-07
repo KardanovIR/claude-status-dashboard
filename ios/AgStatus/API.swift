@@ -114,6 +114,23 @@ enum AgStatusAPI {
         return (try? decode([UsageInfo].self, from: data)) ?? []
     }
 
+    /// Recorded plan-limit history and per-project token totals for the whole
+    /// board, covering the last `days` UTC days. Both arrays span every source;
+    /// the caller filters to the one it shows. The endpoint is new, so older
+    /// servers 404 (surfacing as `.boardNotFound`) — callers show an empty
+    /// screen rather than treating that as a missing board.
+    static func usageHistory(days: Int, for board: Board) async throws -> UsageHistory {
+        let path = board.boardURL
+            .appendingPathComponent("api")
+            .appendingPathComponent("usage")
+            .appendingPathComponent("history")
+        var components = URLComponents(url: path, resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "days", value: String(days))]
+        let data = try await send("GET", components?.url ?? path)
+        return (try? decode(UsageHistory.self, from: data))
+            ?? UsageHistory(days: days, history: [], projects: [])
+    }
+
     /// A session's timeline, newest first. Older servers without the
     /// endpoint just yield an empty history.
     static func history(of sessionId: String, for board: Board) async throws -> [HistoryEvent] {

@@ -5,7 +5,9 @@ import crypto from 'crypto';
 import { AppConfig } from './config';
 import { Pusher } from './push';
 import {
+  dayKey,
   LEGACY_WS,
+  MAX_HISTORY_DAYS,
   PAIR_CODE_TTL_MS,
   STATUSES,
   Status,
@@ -30,6 +32,12 @@ const USAGE_SOURCE_RE = /^[a-z][a-z0-9_-]{0,23}$/;
 const USAGE_WINDOW_ID_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 const USAGE_LABEL_MAX = 48;
 const MAX_USAGE_WINDOWS = 6;
+const PROJECT_NAME_MAX = 120;
+// Sized to fit inside the 16kb JSON body limit (~65 bytes a row); a backfill
+// spanning more than this sends several reports.
+const MAX_PROJECT_DAYS_PER_REPORT = 200;
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const DEFAULT_HISTORY_DAYS = 30;
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const INDEX_HTML = path.join(PUBLIC_DIR, 'index.html');
@@ -188,6 +196,66 @@ export function createApp(cfg: AppConfig): CreatedApp {
     res.json({ ok: true, session });
   }
 
+  /**
+   * Token spend per project and day, reported by the hook from the agent's own
+   * local logs. Whole days are replaced, so a backfill can be re-run safely.
+   */
+  function handleProjectUsage(wsId: string, req: Request, res: Response): void {
+    if (cfg.multiTenant && cfg.rateLimit && !store.allowWebhook(wsId)) {
+      res.status(429).json({ error: 'rate limit exceeded' });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const source = typeof body.source === 'string' ? body.source : '';
+    if (!USAGE_SOURCE_RE.test(source)) {
+      res.status(400).json({ error: `source must match ${USAGE_SOURCE_RE}` });
+      return;
+    }
+    const raw = body.days;
+    if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_PROJECT_DAYS_PER_REPORT) {
+      res.status(400).json({ error: `days must be 1-${MAX_PROJECT_DAYS_PER_REPORT} objects` });
+      return;
+    }
+    const days: Array<{ project: string; day: string; tokens: number }> = [];
+    const seen = new Set<string>();
+    for (const item of raw) {
+      if (typeof item !== 'object' || item === null) {
+        res.status(400).json({ error: 'each day must be an object' });
+        return;
+      }
+      const d = item as Record<string, unknown>;
+      const project = clean(d.project, PROJECT_NAME_MAX);
+      const day = typeof d.day === 'string' ? d.day : '';
+      const tokens =
+        typeof d.tokens === 'number' && Number.isFinite(d.tokens) ? Math.max(0, Math.floor(d.tokens)) : -1;
+      if (!project || !DAY_RE.test(day) || tokens < 0) {
+        res.status(400).json({ error: 'each day needs a project, a YYYY-MM-DD day and numeric tokens' });
+        return;
+      }
+      const key = `${project}\n${day}`;
+      if (seen.has(key)) continue; // last one wins rather than 400 on a dupe
+      seen.add(key);
+      days.push({ project, day, tokens });
+    }
+    store.setProjectDays(wsId, source, days);
+    res.json({ ok: true, days: days.length });
+  }
+
+  /** Both series behind the usage detail screen: limit over time, and by project. */
+  function handleUsageHistory(wsId: string, req: Request, res: Response): void {
+    const asked = Number(req.query.days);
+    const days =
+      Number.isFinite(asked) && asked > 0
+        ? Math.min(Math.floor(asked), MAX_HISTORY_DAYS)
+        : DEFAULT_HISTORY_DAYS;
+    const since = Date.now() - days * 24 * 60 * 60 * 1000;
+    res.json({
+      days,
+      history: store.getUsageHistory(wsId, since),
+      projects: store.getProjectDays(wsId, dayKey(since)),
+    });
+  }
+
   function handleUsage(wsId: string, req: Request, res: Response): void {
     if (cfg.multiTenant && cfg.rateLimit && !store.allowWebhook(wsId)) {
       res.status(429).json({ error: 'rate limit exceeded' });
@@ -258,9 +326,15 @@ export function createApp(cfg: AppConfig): CreatedApp {
 
     app.post('/usage', requireSecret, (req, res) => handleUsage(LEGACY_WS, req, res));
 
+    app.post('/usage/projects', requireSecret, (req, res) =>
+      handleProjectUsage(LEGACY_WS, req, res)
+    );
+
     app.get('/api/usage', (_req, res) => {
       res.json(store.getUsage(LEGACY_WS));
     });
+
+    app.get('/api/usage/history', (req, res) => handleUsageHistory(LEGACY_WS, req, res));
 
     app.get('/api/sessions/:id/history', (req, res) => {
       res.json(store.getHistory(LEGACY_WS, req.params.id));
@@ -392,10 +466,22 @@ export function createApp(cfg: AppConfig): CreatedApp {
       handleUsage(wsId, req, res);
     });
 
+    app.post('/w/:token/usage/projects', (req, res) => {
+      const wsId = resolveWs(req, res);
+      if (!wsId) return;
+      handleProjectUsage(wsId, req, res);
+    });
+
     app.get('/w/:token/api/usage', (req, res) => {
       const wsId = resolveWs(req, res);
       if (!wsId) return;
       res.json(store.getUsage(wsId));
+    });
+
+    app.get('/w/:token/api/usage/history', (req, res) => {
+      const wsId = resolveWs(req, res);
+      if (!wsId) return;
+      handleUsageHistory(wsId, req, res);
     });
 
     app.get('/w/:token/api/sessions/:id/history', (req, res) => {

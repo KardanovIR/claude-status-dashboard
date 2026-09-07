@@ -58,6 +58,30 @@ export interface Usage {
 /** Usage older than this is dropped from reads — stale percentages mislead. */
 export const USAGE_TTL_MS = 24 * 60 * 60 * 1000;
 
+/** One recorded reading of a limit window's utilization. */
+export interface UsagePoint {
+  at: number; // epoch milliseconds
+  usedPct: number;
+}
+
+/** Tokens one agent spent on one project during one UTC day. */
+export interface ProjectDay {
+  source: string;
+  project: string;
+  day: string; // YYYY-MM-DD, UTC
+  tokens: number;
+}
+
+/** How far back the usage detail view may look. */
+export const MAX_HISTORY_DAYS = 90;
+/** Points held in memory per (source, window) — a plan limit moves slowly. */
+const MAX_USAGE_POINTS = 2000;
+
+/** The UTC day an instant falls in, as YYYY-MM-DD. */
+export function dayKey(at: number): string {
+  return new Date(at).toISOString().slice(0, 10);
+}
+
 /** One entry in a session's timeline: what the agent switched to, and when. */
 export interface SessionEvent {
   /** Monotonically increasing per session; stable identity for clients. */
@@ -108,6 +132,10 @@ export class Store {
   private usageBySource = new Map<string, Map<string, Usage>>();
   // Per-session timelines (ascending seq), wsId → sessionId → events.
   private events = new Map<string, Map<string, SessionEvent[]>>();
+  // Limit utilization over time, wsId → `${source}\n${windowId}` → ascending points.
+  private usagePoints = new Map<string, Map<string, UsagePoint[]>>();
+  // Token spend per agent and project, wsId → `${source}\n${project}\n${day}` → row.
+  private projectDays = new Map<string, Map<string, ProjectDay>>();
   // Next seq per `${wsId}\n${sessionId}` — spans soft-deleted rows so a
   // restarted server never reuses a primary key.
   private eventSeq = new Map<string, number>();
@@ -179,6 +207,25 @@ export class Store {
         updated_at BIGINT NOT NULL,
         deleted_at BIGINT,
         PRIMARY KEY (workspace_id, source)
+      );
+      CREATE TABLE IF NOT EXISTS usage_history (
+        workspace_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        window_id TEXT NOT NULL,
+        at BIGINT NOT NULL,
+        used_pct DOUBLE PRECISION NOT NULL,
+        deleted_at BIGINT,
+        PRIMARY KEY (workspace_id, source, window_id, at)
+      );
+      CREATE TABLE IF NOT EXISTS usage_project_days (
+        workspace_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        project TEXT NOT NULL,
+        day TEXT NOT NULL,
+        tokens BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL,
+        deleted_at BIGINT,
+        PRIMARY KEY (workspace_id, source, project, day)
       );
       CREATE TABLE IF NOT EXISTS session_events (
         workspace_id TEXT NOT NULL,
@@ -264,6 +311,57 @@ export class Store {
         this.usageBySource.set(row.workspace_id, map);
       }
       map.set(row.source, { source: row.source, windows, updatedAt: Number(row.updated_at) });
+    }
+
+    // Only the retained window is loaded: older points are left on disk rather
+    // than deleted, per the soft-delete rule, but never reach memory.
+    const historySince = Date.now() - MAX_HISTORY_DAYS * 24 * 60 * 60 * 1000;
+    const points = await pool.query(
+      `SELECT workspace_id, source, window_id, at, used_pct FROM usage_history
+       WHERE deleted_at IS NULL AND at >= $1 ORDER BY at`,
+      [historySince]
+    );
+    for (const row of points.rows as Array<{
+      workspace_id: string; source: string; window_id: string; at: string; used_pct: string;
+    }>) {
+      let ws = this.usagePoints.get(row.workspace_id);
+      if (!ws) {
+        ws = new Map();
+        this.usagePoints.set(row.workspace_id, ws);
+      }
+      const key = `${row.source}\n${row.window_id}`;
+      let list = ws.get(key);
+      if (!list) {
+        list = [];
+        ws.set(key, list);
+      }
+      list.push({ at: Number(row.at), usedPct: Number(row.used_pct) });
+    }
+    for (const ws of this.usagePoints.values()) {
+      for (const list of ws.values()) {
+        if (list.length > MAX_USAGE_POINTS) list.splice(0, list.length - MAX_USAGE_POINTS);
+      }
+    }
+
+    const projectDays = await pool.query(
+      `SELECT workspace_id, source, project, day, tokens FROM usage_project_days
+       WHERE deleted_at IS NULL AND day >= $1`,
+      [dayKey(historySince)]
+    );
+    for (const row of projectDays.rows as Array<{
+      workspace_id: string; source: string; project: string; day: string; tokens: string;
+    }>) {
+      let ws = this.projectDays.get(row.workspace_id);
+      if (!ws) {
+        ws = new Map();
+        this.projectDays.set(row.workspace_id, ws);
+      }
+      ws.set(`${row.source}\n${row.project}\n${row.day}`, {
+        source: row.source,
+        project: row.project,
+        day: row.day,
+        tokens: Number(row.tokens),
+      });
     }
 
     const events = await pool.query(
@@ -363,12 +461,16 @@ export class Store {
     this.deviceTokens.delete(wsId);
     this.usageBySource.delete(wsId);
     this.events.delete(wsId);
+    this.usagePoints.delete(wsId);
+    this.projectDays.delete(wsId);
     if (existed) {
       const now = Date.now();
       this.exec('UPDATE sessions SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
       this.exec('UPDATE devices SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
       this.exec('UPDATE usage_limits SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
       this.exec('UPDATE session_events SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
+      this.exec('UPDATE usage_history SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
+      this.exec('UPDATE usage_project_days SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
       this.exec('UPDATE workspaces SET deleted_at = $2 WHERE id = $1', [wsId, now]);
     }
     return existed;
@@ -534,6 +636,7 @@ export class Store {
     }
     const usage: Usage = { source, windows, updatedAt: Date.now() };
     map.set(source, usage);
+    this.recordUsagePoints(wsId, source, windows, usage.updatedAt);
     this.exec(
       `INSERT INTO usage_limits (workspace_id, source, windows, updated_at)
        VALUES ($1, $2, $3, $4)
@@ -542,6 +645,117 @@ export class Store {
       [wsId, source, JSON.stringify(windows), usage.updatedAt]
     );
     return usage;
+  }
+
+  /**
+   * Appends a point for every window whose utilization actually moved. A plan
+   * limit is a step function and reports arrive every few minutes, mostly
+   * repeating the last value, so recording only the changes keeps the series
+   * small without losing its shape.
+   */
+  private recordUsagePoints(wsId: string, source: string, windows: UsageWindow[], at: number): void {
+    let ws = this.usagePoints.get(wsId);
+    if (!ws) {
+      ws = new Map();
+      this.usagePoints.set(wsId, ws);
+    }
+    for (const w of windows) {
+      const key = `${source}\n${w.id}`;
+      let list = ws.get(key);
+      if (!list) {
+        list = [];
+        ws.set(key, list);
+      }
+      const prev = list[list.length - 1];
+      if (prev && prev.usedPct === w.usedPct) continue;
+      list.push({ at, usedPct: w.usedPct });
+      if (list.length > MAX_USAGE_POINTS) list.splice(0, list.length - MAX_USAGE_POINTS);
+      this.exec(
+        `INSERT INTO usage_history (workspace_id, source, window_id, at, used_pct)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (workspace_id, source, window_id, at) DO NOTHING`,
+        [wsId, source, w.id, at, w.usedPct]
+      );
+    }
+  }
+
+  /**
+   * Recorded utilization per (source, window) since `since`. Each series keeps
+   * the last reading from *before* the cutoff as its first point: without that
+   * anchor a step chart has nothing to draw from until the first change lands
+   * inside the window.
+   */
+  getUsageHistory(
+    wsId: string,
+    since: number
+  ): Array<{ source: string; windowId: string; points: UsagePoint[] }> {
+    const ws = this.usagePoints.get(wsId);
+    if (!ws) return [];
+    const out: Array<{ source: string; windowId: string; points: UsagePoint[] }> = [];
+    for (const [key, list] of ws) {
+      const [source, windowId] = key.split('\n');
+      let start = list.findIndex((p) => p.at >= since);
+      if (start === -1) start = list.length - 1; // all older: keep the newest as the anchor
+      else if (start > 0) start -= 1;
+      const points = start < 0 ? [] : list.slice(start);
+      if (points.length > 0) out.push({ source, windowId, points });
+    }
+    return out.sort(
+      (a, b) => a.source.localeCompare(b.source) || a.windowId.localeCompare(b.windowId)
+    );
+  }
+
+  /**
+   * Replaces the token totals for the given (source, project, day) rows. Whole
+   * days are replaced rather than incremented so a re-run — a backfill, or a
+   * hook re-reporting today — converges instead of double-counting.
+   */
+  setProjectDays(
+    wsId: string,
+    source: string,
+    days: Array<{ project: string; day: string; tokens: number }>
+  ): void {
+    let ws = this.projectDays.get(wsId);
+    if (!ws) {
+      ws = new Map();
+      this.projectDays.set(wsId, ws);
+      // Same legacy-mode concern as upsertSession: keep the workspace row
+      // present so persisted rows satisfy the workspace_id relationship.
+      if (this.pool && !this.workspaces.has(wsId)) {
+        const now = Date.now();
+        this.exec(Store.INSERT_WS, [wsId, now, now]);
+      }
+    }
+    const now = Date.now();
+    for (const d of days) {
+      ws.set(`${source}\n${d.project}\n${d.day}`, {
+        source,
+        project: d.project,
+        day: d.day,
+        tokens: d.tokens,
+      });
+      this.exec(
+        `INSERT INTO usage_project_days (workspace_id, source, project, day, tokens, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (workspace_id, source, project, day) DO UPDATE SET
+           tokens = EXCLUDED.tokens, updated_at = EXCLUDED.updated_at, deleted_at = NULL`,
+        [wsId, source, d.project, d.day, d.tokens, now]
+      );
+    }
+  }
+
+  /** Token spend per (source, project, day) on or after `sinceDay` (YYYY-MM-DD). */
+  getProjectDays(wsId: string, sinceDay: string): ProjectDay[] {
+    const ws = this.projectDays.get(wsId);
+    if (!ws) return [];
+    return Array.from(ws.values())
+      .filter((d) => d.day >= sinceDay)
+      .sort(
+        (a, b) =>
+          a.day.localeCompare(b.day) ||
+          a.source.localeCompare(b.source) ||
+          a.project.localeCompare(b.project)
+      );
   }
 
   /** Current plan usage for a workspace, freshest first. Stale entries are dropped. */

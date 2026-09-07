@@ -1,6 +1,6 @@
 # Data safety
 
-Google Play Data safety declaration for **AgStatus Android** (`com.kardanov.agstatus`, versionName 1.1.0). Every answer below is derived from the Android source in this repo, not from the iOS app.
+Google Play Data safety declaration for **AgStatus Android** (`com.kardanov.agstatus`, versionName 1.3.0). Every answer below is derived from the Android source in this repo, not from the iOS app.
 
 ## What the Android app actually transmits
 
@@ -10,7 +10,7 @@ The complete set of outbound traffic, from `Api.kt` and `SseClient.kt` — there
 | --- | --- | --- |
 | `GET <server>/api/config` | — | Probe for legacy vs. multi-tenant |
 | `POST <server>/api/workspaces` | empty | Server answers with a new board token |
-| `GET <board>/api/sessions`, `/api/usage`, `/api/sessions/<id>/history` | — | Read-only |
+| `GET <board>/api/sessions`, `/api/usage`, `/api/usage/history`, `/api/sessions/<id>/history` | — | Read-only |
 | `GET <board>/events` | — | SSE stream, read-only |
 | `POST <board>/pair` | empty | Server answers with a short-lived pairing code |
 | `DELETE <board>/sessions/<id>`, `DELETE <board>` | — | User-initiated deletion |

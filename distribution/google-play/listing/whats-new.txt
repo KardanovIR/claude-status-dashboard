@@ -1,8 +1,4 @@
-First release of AgStatus for Android.
-
-- A live board of your coding agent sessions: project, status, and current activity.
-- Session timeline: every status change with a timestamp.
-- Usage bars for plan limit windows and their reset times.
-- Set up by scanning the QR code from your terminal, pasting a board URL, or pairing a machine with a code.
-- Demo mode, so you can look around with no server.
-- Works with the hosted board or your own self-hosted server.
+- Limits are now grouped per agent, so Claude and Codex each get their own block side by side.
+- Codex limits are reported too, including per-model session and weekly windows.
+- Tap an agent's limits to open a usage detail screen: tokens per day over the last 30 days, the plan limit charted over the top, and which projects the tokens went to.
+- Reset times no longer show a countdown for a window that has already reset.

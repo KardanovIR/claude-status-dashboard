@@ -153,6 +153,7 @@
           <li><a href="#hooks-claude-code-plugin">Claude Code plugin</a></li>
           <li><a href="#hooks-how-events-map-to-statuses">How events map to statuses</a></li>
           <li><a href="#hooks-plan-usage-bars">Plan-usage bars</a></li>
+          <li><a href="#hooks-focus-optional-opt-in">Focus (optional, opt-in)</a></li>
           <li><a href="#hooks-openai-codex-specifics">OpenAI Codex specifics</a></li>
           <li><a href="#hooks-manual-setup-the-bash-hook-deprecated">Manual setup: the bash hook (deprecated)</a></li>
           <li><a href="#hooks-troubleshooting">Troubleshooting</a></li>
@@ -293,6 +294,13 @@ everything else in <code>settings.json</code> is left untouched.</p>
 board URL to <code>~/.agstatus.json</code>, which the hook reads whenever the
 <code>CLAUDE_STATUS_URL</code> env var is absent. Reporting starts immediately — the
 session you run it in appears on the board.</p>
+<p><code>~/.agstatus.json</code> is also the home of the optional <code>&quot;focus&quot;: true</code> key that
+turns on <a href="#hooks-focus-optional-opt-in">Focus</a> for this machine — every install
+channel shares the file, and the hook checks that key whichever way the
+board URL arrived. The listener installer (a later step of that feature) is
+the sanctioned writer of the key; setting it by hand does nothing on its
+own — without the machine id file that installer creates, the hook adds no
+<code>host</code> object and writes no record.</p>
 <p>Don&#39;t combine the plugin with an <code>agstatus init</code> install on the same
 machine: both hooks would fire and every status would post twice. Pick one
 (<code>npx agstatus uninstall</code> removes the other). The plugin covers Claude Code
@@ -434,6 +442,65 @@ usage endpoint has changed before, and the Codex rollout format is internal.
 The hook degrades silently on both: unknown shapes mean missing bars, never a
 blocked agent. Run with <code>AGSTATUS_DEBUG=1</code> to see on stderr what it read and
 reported.</p>
+<h3 id="hooks-focus-optional-opt-in"><a class="anchor" href="#hooks-focus-optional-opt-in">Focus (optional, opt-in)</a></h3>
+<p>Focus lets a tap on a session card bring that session&#39;s terminal to the
+front on the machine running it. It is <strong>off by default and opt-in per
+machine</strong>: until <code>&quot;focus&quot;: true</code> is in a machine&#39;s <code>~/.agstatus.json</code>, the
+hook on that machine sends exactly the payload the rest of this page
+describes — nothing about the feature changes it for anyone else. (A machine
+that turns Focus off again sends <code>host: null</code> so a live card clears.)</p>
+<p>When a machine opts in, each status update additionally carries a <code>host</code>
+object:</p>
+<ul>
+<li><code>machine</code> — the short label chosen at install (default <code>Mac</code> / <code>PC</code> /
+<code>Linux</code>, never the hostname) and a random id that is specific to this
+board and this machine, so it links nothing across boards.</li>
+<li><code>app</code> — the app the agent is running in: a <code>slug</code> from a fixed list
+(<code>agterm</code>, <code>iterm2</code>, <code>kitty</code>, <code>vscode</code>, <code>herdr</code>, <code>tmux</code>, …), a display
+<code>name</code>, and a <code>kind</code> (<code>terminal</code>, <code>multiplexer</code>, <code>ide</code>, <code>desktop-app</code>,
+<code>unknown</code>). Sessions inside Herdr, tmux, zellij or screen report the
+multiplexer; the listener on that machine works out the outer terminal
+itself when a tap arrives.</li>
+</ul>
+<p>Everything the machine needs in order to act on a tap — pid, tty, working
+directory, terminal and pane ids, socket paths — never goes on the wire. The
+hook writes it to a local record under the per-machine state directory, one
+file per session and agent process, mode <code>0600</code>:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>OS</th>
+<th>Location</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>macOS</td>
+<td><code>~/Library/Application Support/AgStatus/sessions/</code></td>
+</tr>
+<tr>
+<td>Linux</td>
+<td><code>$XDG_STATE_HOME/agstatus/sessions/</code> (<code>~/.local/state/agstatus/sessions/</code> when the variable is unset)</td>
+</tr>
+<tr>
+<td>Windows</td>
+<td><code>%LOCALAPPDATA%\AgStatus\sessions\</code></td>
+</tr>
+</tbody></table></div>
+<p>The record is written only while Focus is on and is read by nothing but the
+listener on that machine. <code>SessionEnd</code> (Claude Code) stamps <code>ended_at</code> on
+the record and keeps the file, so the listener still knows where the session
+last ran if it is resumed later; the listener&#39;s garbage collection sweeps a
+record 7 days after <code>ended_at</code>, or once it has sat idle for 30 days with a
+dead pid — which is also how Codex records go away, since Codex has no
+session-end hook. <code>AGSTATUS_FOCUS=off</code> in the
+environment switches off both the <code>host</code> object and the record even when the
+file says <code>true</code>. The full protocol — what the listener may run, how it
+validates a command, which terminals get pane-level focus — is in
+<a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/docs/design/focus-protocol.md">docs/design/focus-protocol.md</a>.</p>
+<p>Codex users: Codex re-checks the hooks it has been told to trust, and an
+updated hook script may need approving again — if Codex sessions stop
+reporting after an upgrade, run <code>/hooks</code> inside Codex and re-approve the
+AgStatus entries.</p>
 <h3 id="hooks-openai-codex-specifics"><a class="anchor" href="#hooks-openai-codex-specifics">OpenAI Codex specifics</a></h3>
 <p><code>agstatus init</code> configures Codex automatically when <code>~/.codex</code> exists
 (<code>CODEX_HOME</code> is respected; <code>--no-codex</code> opts out, <code>--codex</code> forces it):</p>
@@ -473,6 +540,10 @@ a 10 s timeout (the script itself exits within ~4 s).</p>
 <tr>
 <td><code>AGSTATUS_USAGE=off</code></td>
 <td>Node hook only. Never read or report plan usage (see <a href="#hooks-plan-usage-bars">Plan-usage bars</a>).</td>
+</tr>
+<tr>
+<td><code>AGSTATUS_FOCUS=off</code></td>
+<td>Node hook only. Never add the <code>host</code> object to the payload or write the local session record, even when <code>~/.agstatus.json</code> has <code>&quot;focus&quot;: true</code> (see <a href="#hooks-focus-optional-opt-in">Focus</a>).</td>
 </tr>
 <tr>
 <td><code>AGSTATUS_SOURCE</code></td>
@@ -890,12 +961,18 @@ under <a href="#api-legacy-single-tenant-endpoints">Legacy endpoints</a> apply.<
   &quot;message&quot;: &quot;Editing server.ts&quot;,
   &quot;project&quot;: &quot;my-repo&quot;,
   &quot;source&quot;: &quot;claude&quot;,
+  &quot;host&quot;: {
+    &quot;machine&quot;: { &quot;id&quot;: &quot;9f2c1b7e4d3a8f0c5e6b2a1d9c8f7e6b&quot;, &quot;name&quot;: &quot;Mac&quot; },
+    &quot;app&quot;: { &quot;slug&quot;: &quot;herdr&quot;, &quot;name&quot;: &quot;herdr&quot;, &quot;kind&quot;: &quot;multiplexer&quot; }
+  },
   &quot;createdAt&quot;: 1752096000000,
   &quot;updatedAt&quot;: 1752096030000
 }
 </code></pre>
 <p>Timestamps are epoch milliseconds. <code>status</code> is one of <code>idle</code>, <code>planning</code>,
-<code>coding</code>, <code>testing</code>, <code>blocked</code>, <code>done</code>.</p>
+<code>coding</code>, <code>testing</code>, <code>blocked</code>, <code>done</code>. <code>host</code> says where the session runs
+(see the <a href="#api-webhook-body-and-validation">webhook table</a>); it is <code>null</code> for
+the many sessions whose hook has not opted in, and the key is always present.</p>
 <h3 id="api-shared-endpoints-both-modes"><a class="anchor" href="#api-shared-endpoints-both-modes">Shared endpoints (both modes)</a></h3>
 <div class="table-wrap"><table>
 <thead>
@@ -965,15 +1042,27 @@ the same JSON body and upsert a session by <code>session_id</code>:</p>
 <td>no</td>
 <td>Agent kind that owns the session, e.g. <code>claude</code> or <code>codex</code> (same regex as the usage <code>source</code>). Defaults to <code>claude</code>; omitted on update = carried forward. Dashboards use it to show only the limit bars of agents present on the board.</td>
 </tr>
+<tr>
+<td><code>host</code></td>
+<td>object | null</td>
+<td>no</td>
+<td>Where the session runs, sent by hooks that opted in to Focus: <code>{&quot;machine&quot;: {&quot;id&quot;, &quot;name&quot;}, &quot;app&quot;: {&quot;slug&quot;, &quot;name&quot;, &quot;kind&quot;}}</code>. Omitted = carried forward; <code>null</code> = cleared (the hook opted out). <code>machine.id</code> must match <code>^[0-9a-f]{32}$</code> (a per-board hash, never a raw machine id) or the post is <code>400</code>. <code>machine.name</code> and <code>app.name</code> are trimmed and truncated to 32 chars; blank ones become <code>Machine</code> and the slug. <code>app.slug</code> is one of <code>agterm</code>, <code>iterm2</code>, <code>kitty</code>, <code>wezterm</code>, <code>terminal</code>, <code>ghostty</code>, <code>alacritty</code>, <code>warp</code>, <code>vscode</code>, <code>cursor</code>, <code>windsurf</code>, <code>jetbrains</code>, <code>zed</code>, <code>claude-desktop</code>, <code>codex-desktop</code>, <code>herdr</code>, <code>tmux</code>, <code>zellij</code>, <code>screen</code>, <code>windows-terminal</code>, <code>other</code> — anything else is stored as <code>other</code>; <code>app.kind</code> is one of <code>terminal</code>, <code>multiplexer</code>, <code>ide</code>, <code>desktop-app</code>, <code>unknown</code> — anything else becomes <code>unknown</code>. Every other key is dropped.</td>
+</tr>
 </tbody></table></div>
 <p>Control characters are stripped from all string fields. Omitted optional
 fields carry the previous value forward on update. The JSON body is capped at
-16 KB.</p>
+16 KB. <code>host</code> is the one nullable field: it goes out as <code>null</code> on every
+session that has none (REST and SSE alike), and it is scrubbed from the
+stored row whenever a session is dismissed, evicted, expired or its
+workspace deleted. It never appears in the session timeline or in push
+notifications.</p>
 <p><strong>Response</strong> — <code>200 OK</code>:</p>
 <pre><code class="language-json">{ &quot;ok&quot;: true, &quot;session&quot;: { &quot;id&quot;: &quot;sess-abc&quot;, &quot;status&quot;: &quot;coding&quot;, ... } }
 </code></pre>
-<p><strong>Errors</strong> — <code>400</code> on missing/malformed <code>session_id</code> or invalid <code>status</code>;
-<code>401</code> on bad secret (legacy mode with <code>WEBHOOK_SECRET</code> set); <code>404</code> unknown
+<p><strong>Errors</strong> — <code>400</code> on missing/malformed <code>session_id</code>, invalid <code>status</code>,
+malformed <code>source</code>, or a <code>host</code> that is neither an object nor <code>null</code> or whose
+<code>machine.id</code> fails the regex; <code>401</code> on bad secret (legacy mode with
+<code>WEBHOOK_SECRET</code> set); <code>404</code> unknown
 workspace (multi-tenant); <code>413</code> on bodies over 16 KB; <code>429</code> over the
 per-workspace rate limit (multi-tenant).</p>
 <h3 id="api-plan-usage"><a class="anchor" href="#api-plan-usage">Plan usage</a></h3>
@@ -1140,7 +1229,7 @@ sessions return <code>[]</code>.</p>
 </thead>
 <tbody><tr>
 <td><code>POST /webhook</code></td>
-<td>Create/update a session (see above).</td>
+<td>Create/update a session (see above; <code>host</code> included).</td>
 <td>yes*</td>
 </tr>
 <tr>
@@ -1235,7 +1324,7 @@ workspace:</p>
 </tr>
 <tr>
 <td><code>POST /w/&lt;token&gt;/webhook</code></td>
-<td>Create/update a session. <code>200</code> with <code>{ok, session}</code>; <code>400</code> on validation errors; <code>429</code> over the rate limit.</td>
+<td>Create/update a session (same body as legacy, <code>host</code> included). <code>200</code> with <code>{ok, session}</code>; <code>400</code> on validation errors; <code>429</code> over the rate limit.</td>
 </tr>
 <tr>
 <td><code>POST /w/&lt;token&gt;/usage</code></td>
@@ -1414,9 +1503,9 @@ are closed.</p>
 <td><code>413</code>.</td>
 </tr>
 </tbody></table></div>
-<p>In both modes: <code>name</code>/<code>project</code> truncate to 120 chars, <code>message</code> to 300;
-control characters are stripped. Push alerts per (session, kind) are
-debounced to one per minute.</p>
+<p>In both modes: <code>name</code>/<code>project</code> truncate to 120 chars, <code>message</code> to 300,
+<code>host.machine.name</code>/<code>host.app.name</code> to 32; control characters are stripped.
+Push alerts per (session, kind) are debounced to one per minute.</p>
 
 </section>
   </main>

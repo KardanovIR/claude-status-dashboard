@@ -6,8 +6,11 @@ import { AppConfig } from './config';
 import { Pusher } from './push';
 import {
   dayKey,
+  Host,
   LEGACY_WS,
+  MACHINE_ID_RE,
   MAX_HISTORY_DAYS,
+  normalizeHost,
   PAIR_CODE_TTL_MS,
   STATUSES,
   Status,
@@ -18,7 +21,7 @@ import {
 
 export type { AppConfig } from './config';
 export { Store, STATUSES } from './store';
-export type { Session } from './store';
+export type { Host, Session } from './store';
 
 const SESSION_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 const DEVICE_TOKEN_RE = /^[0-9a-fA-F]{16,200}$/;
@@ -51,6 +54,23 @@ const isStatus = (s: unknown): s is Status =>
 /** Strips control characters and truncates; non-strings become undefined (carry-forward). */
 const clean = (v: unknown, max: number): string | undefined =>
   typeof v === 'string' ? v.replace(CONTROL_CHARS_RE, '').slice(0, max) : undefined;
+
+/**
+ * Validates the `host` field of a webhook. undefined = absent (carry forward),
+ * null = the hook opted out (clear); 'invalid' rejects the post. Only a
+ * non-object or a bad machine id is a hard error — the shape itself is then
+ * rebuilt by normalizeHost(), which downgrades unknown slugs and kinds, cleans
+ * and defaults the names and drops everything else.
+ */
+function parseHost(raw: unknown): Host | null | undefined | 'invalid' {
+  if (raw === undefined) return undefined;
+  if (raw === null) return null;
+  if (typeof raw !== 'object' || Array.isArray(raw)) return 'invalid';
+  const machine = (raw as { machine?: unknown }).machine;
+  const id = typeof machine === 'object' && machine !== null ? (machine as { id?: unknown }).id : undefined;
+  if (typeof id !== 'string' || !MACHINE_ID_RE.test(id)) return 'invalid';
+  return normalizeHost(raw)!;
+}
 
 /**
  * Validates and normalizes the `windows` array of a usage report. Returns null
@@ -179,6 +199,13 @@ export function createApp(cfg: AppConfig): CreatedApp {
       res.status(400).json({ error: `source must match ${USAGE_SOURCE_RE}` });
       return;
     }
+    const host = parseHost(body.host);
+    if (host === 'invalid') {
+      res.status(400).json({
+        error: `host must be an object or null; host.machine.id must match ${MACHINE_ID_RE}`,
+      });
+      return;
+    }
     const input: UpsertInput = {
       id,
       status: body.status,
@@ -186,6 +213,7 @@ export function createApp(cfg: AppConfig): CreatedApp {
       message: clean(body.message, MESSAGE_MAX),
       project: clean(body.project, NAME_MAX),
       source: body.source as string | undefined,
+      host,
     };
     const max = cfg.multiTenant ? MAX_SESSIONS_PER_WORKSPACE : Infinity;
     const { session, evictedId, prevStatus } = store.upsertSession(wsId, input, max);

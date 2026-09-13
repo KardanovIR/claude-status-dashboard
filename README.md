@@ -66,6 +66,9 @@ Created the board in the app first? Pair your machine to it with a code:
   app hands out short-lived codes to pair more machines.
 - **Demo mode** — try the iOS app with fake sessions, no server, no data sent.
 - **Privacy switch** — `--minimal` sends tool names only, never command text.
+- **Focus (opt-in)** — tap a session on the board to bring its terminal to
+  the front on the machine running it; see
+  [docs/design/focus-protocol.md](docs/design/focus-protocol.md).
 - **Self-hostable** — one Node process, optional PostgreSQL persistence, Docker image,
   bundled TLS proxy. Single-user and multi-tenant modes.
 - **MIT licensed** — server, dashboard, CLI, and apps.

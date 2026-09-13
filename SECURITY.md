@@ -37,6 +37,10 @@ Definitely report:
 - Anything in the CLI or hooks that could execute code, corrupt
   `~/.claude/settings.json` beyond its own entries, or exfiltrate data
   beyond the documented status payload.
+- Anything that could make the Focus listener run a command not derived
+  from its own allow-listed strategy table (a tap carries only ids — see
+  [docs/design/focus-protocol.md](docs/design/focus-protocol.md)), or
+  read/write the local session record with the wrong permissions.
 - iOS app issues around Keychain storage of the board token or push handling.
 
 Out of scope: reports that require the attacker to already possess the board

@@ -4,6 +4,63 @@ import type { Pool } from 'pg';
 export const STATUSES = ['idle', 'planning', 'coding', 'testing', 'blocked', 'done'] as const;
 export type Status = (typeof STATUSES)[number];
 
+/** Apps a session can be hosted in; anything else the hook reports becomes 'other'. */
+export const HOST_SLUGS = [
+  'agterm', 'iterm2', 'kitty', 'wezterm', 'terminal', 'ghostty', 'alacritty', 'warp',
+  'vscode', 'cursor', 'windsurf', 'jetbrains', 'zed', 'claude-desktop', 'codex-desktop',
+  'herdr', 'tmux', 'zellij', 'screen', 'windows-terminal', 'other',
+] as const;
+export type HostSlug = (typeof HOST_SLUGS)[number];
+
+export const HOST_KINDS = ['terminal', 'multiplexer', 'ide', 'desktop-app', 'unknown'] as const;
+export type HostKind = (typeof HOST_KINDS)[number];
+
+/**
+ * Where a session runs, as far as the board needs to know: a label for the
+ * card and a per-board machine id to route a focus command to. Opt-in on the
+ * hook side, so most sessions have none. Never a path, tty, pid or bundle id.
+ */
+export interface Host {
+  machine: { id: string; name: string };
+  app: { slug: HostSlug; name: string; kind: HostKind };
+}
+
+// A per-board hash the hook derives from its machine id, never the raw id.
+export const MACHINE_ID_RE = /^[0-9a-f]{32}$/;
+const HOST_NAME_MAX = 32;
+const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F]/g;
+
+const isHostSlug = (s: unknown): s is HostSlug =>
+  typeof s === 'string' && (HOST_SLUGS as readonly string[]).includes(s);
+const isHostKind = (s: unknown): s is HostKind =>
+  typeof s === 'string' && (HOST_KINDS as readonly string[]).includes(s);
+
+/** A host label: control characters stripped, trimmed, truncated; blank or non-string → fallback. */
+const hostName = (v: unknown, fallback: string): string => {
+  const s = typeof v === 'string' ? v.replace(CONTROL_CHARS_RE, '').trim().slice(0, HOST_NAME_MAX) : '';
+  return s || fallback;
+};
+
+/**
+ * Rebuilds a Host key by key from whatever came in — a webhook body or a
+ * stored column — so the board only ever sees these six values. null unless
+ * raw is a plain object whose machine.id is well-formed; unknown slugs and
+ * kinds are downgraded, names are cleaned and defaulted, every other key is
+ * dropped.
+ */
+export function normalizeHost(raw: unknown): Host | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const h = raw as Record<string, unknown>;
+  const machine = (typeof h.machine === 'object' && h.machine !== null ? h.machine : {}) as Record<string, unknown>;
+  const app = (typeof h.app === 'object' && h.app !== null ? h.app : {}) as Record<string, unknown>;
+  if (typeof machine.id !== 'string' || !MACHINE_ID_RE.test(machine.id)) return null;
+  const slug = isHostSlug(app.slug) ? app.slug : 'other';
+  return {
+    machine: { id: machine.id, name: hostName(machine.name, 'Machine') },
+    app: { slug, name: hostName(app.name, slug), kind: isHostKind(app.kind) ? app.kind : 'unknown' },
+  };
+}
+
 export interface Session {
   id: string;
   name: string;
@@ -12,6 +69,8 @@ export interface Session {
   project: string;
   /** Agent kind that owns the session ("claude", "codex", …). */
   source: string;
+  /** Absent or null = the hook did not report a host. Stored as null. */
+  host?: Host | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -24,6 +83,8 @@ export interface UpsertInput {
   message?: string;
   project?: string;
   source?: string;
+  // undefined = carry forward, null = clear (the hook opted out), object = set
+  host?: Host | null;
 }
 
 export interface Device {
@@ -187,6 +248,7 @@ export class Store {
         created_at BIGINT NOT NULL,
         updated_at BIGINT NOT NULL,
         deleted_at BIGINT,
+        host TEXT,
         PRIMARY KEY (workspace_id, id)
       );
       CREATE TABLE IF NOT EXISTS devices (
@@ -239,8 +301,9 @@ export class Store {
       );
     `);
 
-    // Databases created before this column existed.
+    // Databases created before these columns existed.
     await pool.query('ALTER TABLE devices ADD COLUMN IF NOT EXISTS apns_server TEXT');
+    await pool.query('ALTER TABLE sessions ADD COLUMN IF NOT EXISTS host TEXT');
 
     // node-postgres returns BIGINT as string to avoid precision loss; every
     // epoch-ms value here fits a double, so Number() them on the way in.
@@ -262,6 +325,14 @@ export class Store {
         map = new Map();
         this.sessions.set(wsId, map);
       }
+      // Re-validated on the way in: a column that is not JSON, or is JSON of
+      // the wrong shape, loads as no host; the next post with one overwrites it.
+      let host: Host | null = null;
+      try {
+        if (typeof row.host === 'string') host = normalizeHost(JSON.parse(row.host));
+      } catch {
+        // not JSON at all
+      }
       map.set(row.id as string, {
         id: row.id as string,
         name: row.name as string,
@@ -269,6 +340,7 @@ export class Store {
         message: row.message as string,
         project: row.project as string,
         source: (row.source as string) || 'claude',
+        host,
         createdAt: Number(row.created_at),
         updatedAt: Number(row.updated_at),
       });
@@ -465,7 +537,7 @@ export class Store {
     this.projectDays.delete(wsId);
     if (existed) {
       const now = Date.now();
-      this.exec('UPDATE sessions SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
+      this.exec('UPDATE sessions SET deleted_at = $2, host = NULL WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
       this.exec('UPDATE devices SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
       this.exec('UPDATE usage_limits SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
       this.exec('UPDATE session_events SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
@@ -502,6 +574,8 @@ export class Store {
       message: input.message !== undefined ? input.message : prev?.message ?? '',
       project: input.project !== undefined ? input.project : prev?.project ?? '',
       source: input.source ?? prev?.source ?? 'claude',
+      // Always a key (null, never undefined) so the wire shape is stable.
+      host: input.host !== undefined ? input.host : prev?.host ?? null,
       createdAt: prev?.createdAt ?? now,
       updatedAt: now,
     };
@@ -515,7 +589,7 @@ export class Store {
       if (oldest) {
         map.delete(oldest.id);
         this.exec(
-          'UPDATE sessions SET deleted_at = $3 WHERE workspace_id = $1 AND id = $2',
+          'UPDATE sessions SET deleted_at = $3, host = NULL WHERE workspace_id = $1 AND id = $2',
           [wsId, oldest.id, now]
         );
         this.dropEvents(wsId, oldest.id);
@@ -530,12 +604,12 @@ export class Store {
       this.recordEvent(wsId, session.id, session.status, session.message, now);
     }
     this.exec(
-      `INSERT INTO sessions (workspace_id, id, name, status, message, project, source, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO sessions (workspace_id, id, name, status, message, project, source, host, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT (workspace_id, id) DO UPDATE SET
          name = EXCLUDED.name, status = EXCLUDED.status, message = EXCLUDED.message,
-         project = EXCLUDED.project, source = EXCLUDED.source, updated_at = EXCLUDED.updated_at,
-         deleted_at = NULL`,
+         project = EXCLUDED.project, source = EXCLUDED.source, host = EXCLUDED.host,
+         updated_at = EXCLUDED.updated_at, deleted_at = NULL`,
       [
         wsId,
         session.id,
@@ -544,6 +618,7 @@ export class Store {
         session.message,
         session.project,
         session.source,
+        session.host ? JSON.stringify(session.host) : null,
         session.createdAt,
         session.updatedAt,
       ]
@@ -829,7 +904,7 @@ export class Store {
     const removed = this.sessions.get(wsId)?.delete(id) ?? false;
     if (removed) {
       this.exec(
-        'UPDATE sessions SET deleted_at = $3 WHERE workspace_id = $1 AND id = $2',
+        'UPDATE sessions SET deleted_at = $3, host = NULL WHERE workspace_id = $1 AND id = $2',
         [wsId, id, Date.now()]
       );
       this.dropEvents(wsId, id);
@@ -844,7 +919,7 @@ export class Store {
       map.clear();
     }
     this.exec(
-      'UPDATE sessions SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL',
+      'UPDATE sessions SET deleted_at = $2, host = NULL WHERE workspace_id = $1 AND deleted_at IS NULL',
       [wsId, Date.now()]
     );
   }
@@ -918,7 +993,7 @@ export class Store {
         if (s.updatedAt < cutoff) {
           map.delete(id);
           this.exec(
-            'UPDATE sessions SET deleted_at = $3 WHERE workspace_id = $1 AND id = $2',
+            'UPDATE sessions SET deleted_at = $3, host = NULL WHERE workspace_id = $1 AND id = $2',
             [wsId, id, Date.now()]
           );
           this.dropEvents(wsId, id);

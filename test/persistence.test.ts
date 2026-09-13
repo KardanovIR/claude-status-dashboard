@@ -71,6 +71,104 @@ describe.skipIf(!TEST_PG_URL)('persistence (PostgreSQL)', () => {
     }
   });
 
+  it('a session host survives a restart, and every soft delete scrubs it from the row', async () => {
+    const host = {
+      machine: { id: '9f2c'.repeat(8), name: 'Mac' },
+      app: { slug: 'herdr', name: 'herdr', kind: 'multiplexer' },
+    };
+    const first = makeApp({ databaseUrl: dbUrl });
+    await first.ready;
+    const token = await createWorkspace(first.app);
+    await request(first.app).post(`/w/${token}/webhook`).send(webhookBody('hosted', { host })).expect(200);
+    await request(first.app).post(`/w/${token}/webhook`).send(webhookBody('dismissed', { host })).expect(200);
+    await request(first.app).post(`/w/${token}/webhook`).send(webhookBody('bare')).expect(200);
+    await first.store.flush();
+    first.shutdown();
+
+    const second = makeApp({ databaseUrl: dbUrl });
+    await second.ready;
+    try {
+      const list = await request(second.app).get(`/w/${token}/api/sessions`).expect(200);
+      const byId = new Map(list.body.map((s: { id: string; host: unknown }) => [s.id, s.host]));
+      expect(byId.get('hosted')).toEqual(host);
+      expect(byId.get('dismissed')).toEqual(host);
+      expect(byId.get('bare')).toBeNull();
+
+      // One session dismissed, then the whole workspace: both soft deletes
+      // must leave the row flagged AND without its host.
+      await request(second.app).delete(`/w/${token}/sessions/dismissed`).expect(200);
+      await request(second.app).delete(`/w/${token}`).expect(200);
+      await second.store.flush();
+    } finally {
+      second.shutdown();
+    }
+
+    const { Pool } = await import('pg');
+    const pool = new Pool({ connectionString: dbUrl, max: 1 });
+    try {
+      const rows = await pool.query(
+        'SELECT id, host, deleted_at FROM sessions WHERE id IN ($1, $2) ORDER BY id',
+        ['dismissed', 'hosted']
+      );
+      expect(rows.rows).toHaveLength(2);
+      for (const row of rows.rows as Array<{ id: string; host: string | null; deleted_at: string | null }>) {
+        expect(row.deleted_at, row.id).not.toBeNull();
+        expect(row.host, row.id).toBeNull();
+      }
+    } finally {
+      await pool.end();
+    }
+
+    const third = makeApp({ databaseUrl: dbUrl });
+    await third.ready;
+    try {
+      await request(third.app).get(`/w/${token}/api/sessions`).expect(404);
+    } finally {
+      third.shutdown();
+    }
+  });
+
+  it('a malformed host column loads as null instead of failing the load', async () => {
+    // Not JSON, and well-formed JSON of the wrong shape: none of it may reach
+    // the board, and none of it may break the load.
+    const corrupt: Record<string, string> = {
+      'not-json': '{not json',
+      'wrong-shape': '{"cwd":"/Users/x"}',
+      'a-string': '"x"',
+      'an-array': '[]',
+    };
+    const first = makeApp({ databaseUrl: dbUrl });
+    await first.ready;
+    const token = await createWorkspace(first.app);
+    for (const id of Object.keys(corrupt)) {
+      await request(first.app).post(`/w/${token}/webhook`).send(webhookBody(id)).expect(200);
+    }
+    await first.store.flush();
+    first.shutdown();
+
+    const { Pool } = await import('pg');
+    const pool = new Pool({ connectionString: dbUrl, max: 1 });
+    try {
+      for (const [id, host] of Object.entries(corrupt)) {
+        await pool.query('UPDATE sessions SET host = $2 WHERE id = $1', [id, host]);
+      }
+    } finally {
+      await pool.end();
+    }
+
+    const second = makeApp({ databaseUrl: dbUrl });
+    await second.ready;
+    try {
+      const list = await request(second.app).get(`/w/${token}/api/sessions`).expect(200);
+      expect(list.body.map((s: { id: string }) => s.id).sort()).toEqual(Object.keys(corrupt).sort());
+      for (const s of list.body as Array<{ id: string; host: unknown }>) {
+        expect(s.host, s.id).toBeNull();
+      }
+    } finally {
+      second.shutdown();
+    }
+  });
+
   it('write ordering holds: an upsert never resurrects a later delete', async () => {
     const first = makeApp({ databaseUrl: dbUrl });
     await first.ready;

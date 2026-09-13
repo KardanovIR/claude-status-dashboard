@@ -96,6 +96,14 @@ board URL to `~/.agstatus.json`, which the hook reads whenever the
 `CLAUDE_STATUS_URL` env var is absent. Reporting starts immediately — the
 session you run it in appears on the board.
 
+`~/.agstatus.json` is also the home of the optional `"focus": true` key that
+turns on [Focus](#focus-optional-opt-in) for this machine — every install
+channel shares the file, and the hook checks that key whichever way the
+board URL arrived. The listener installer (a later step of that feature) is
+the sanctioned writer of the key; setting it by hand does nothing on its
+own — without the machine id file that installer creates, the hook adds no
+`host` object and writes no record.
+
 Don't combine the plugin with an `agstatus init` install on the same
 machine: both hooks would fire and every status would post twice. Pick one
 (`npx agstatus uninstall` removes the other). The plugin covers Claude Code
@@ -225,6 +233,56 @@ The hook degrades silently on both: unknown shapes mean missing bars, never a
 blocked agent. Run with `AGSTATUS_DEBUG=1` to see on stderr what it read and
 reported.
 
+## Focus (optional, opt-in)
+
+Focus lets a tap on a session card bring that session's terminal to the
+front on the machine running it. It is **off by default and opt-in per
+machine**: until `"focus": true` is in a machine's `~/.agstatus.json`, the
+hook on that machine sends exactly the payload the rest of this page
+describes — nothing about the feature changes it for anyone else. (A machine
+that turns Focus off again sends `host: null` so a live card clears.)
+
+When a machine opts in, each status update additionally carries a `host`
+object:
+
+- `machine` — the short label chosen at install (default `Mac` / `PC` /
+  `Linux`, never the hostname) and a random id that is specific to this
+  board and this machine, so it links nothing across boards.
+- `app` — the app the agent is running in: a `slug` from a fixed list
+  (`agterm`, `iterm2`, `kitty`, `vscode`, `herdr`, `tmux`, …), a display
+  `name`, and a `kind` (`terminal`, `multiplexer`, `ide`, `desktop-app`,
+  `unknown`). Sessions inside Herdr, tmux, zellij or screen report the
+  multiplexer; the listener on that machine works out the outer terminal
+  itself when a tap arrives.
+
+Everything the machine needs in order to act on a tap — pid, tty, working
+directory, terminal and pane ids, socket paths — never goes on the wire. The
+hook writes it to a local record under the per-machine state directory, one
+file per session and agent process, mode `0600`:
+
+| OS      | Location |
+| ------- | -------- |
+| macOS   | `~/Library/Application Support/AgStatus/sessions/` |
+| Linux   | `$XDG_STATE_HOME/agstatus/sessions/` (`~/.local/state/agstatus/sessions/` when the variable is unset) |
+| Windows | `%LOCALAPPDATA%\AgStatus\sessions\` |
+
+The record is written only while Focus is on and is read by nothing but the
+listener on that machine. `SessionEnd` (Claude Code) stamps `ended_at` on
+the record and keeps the file, so the listener still knows where the session
+last ran if it is resumed later; the listener's garbage collection sweeps a
+record 7 days after `ended_at`, or once it has sat idle for 30 days with a
+dead pid — which is also how Codex records go away, since Codex has no
+session-end hook. `AGSTATUS_FOCUS=off` in the
+environment switches off both the `host` object and the record even when the
+file says `true`. The full protocol — what the listener may run, how it
+validates a command, which terminals get pane-level focus — is in
+[docs/design/focus-protocol.md](design/focus-protocol.md).
+
+Codex users: Codex re-checks the hooks it has been told to trust, and an
+updated hook script may need approving again — if Codex sessions stop
+reporting after an upgrade, run `/hooks` inside Codex and re-approve the
+AgStatus entries.
+
 ## OpenAI Codex specifics
 
 `agstatus init` configures Codex automatically when `~/.codex` exists
@@ -251,6 +309,7 @@ a 10 s timeout (the script itself exits within ~4 s).
 | `CLAUDE_STATUS_SECRET` | Optional. Sent as `X-Webhook-Secret` (legacy servers with `WEBHOOK_SECRET` set). Workspace boards don't need it — the token in the URL is the auth. |
 | `AGSTATUS_DETAIL=off`  | Node hook only. Send tool names instead of command text (what `--minimal` sets). |
 | `AGSTATUS_USAGE=off`   | Node hook only. Never read or report plan usage (see [Plan-usage bars](#plan-usage-bars)). |
+| `AGSTATUS_FOCUS=off`   | Node hook only. Never add the `host` object to the payload or write the local session record, even when `~/.agstatus.json` has `"focus": true` (see [Focus](#focus-optional-opt-in)). |
 | `AGSTATUS_SOURCE`      | Node hook only. Agent kind tag on sessions (default `claude`; the Codex integration sets `codex`). Scopes which limit bars a dashboard shows. |
 | `AGSTATUS_DEBUG=1`     | Node hook only. Prints diagnostics to **stderr** (never stdout). The hook fails silently by design, so this is how you find out why plan-usage bars stopped appearing. |
 

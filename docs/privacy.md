@@ -1,6 +1,6 @@
 # AgStatus Privacy Policy
 
-_Last updated: July 9, 2026_
+_Last updated: September 13, 2026_
 
 AgStatus is an open-source status board for coding agents (such as Claude
 Code). This policy covers the AgStatus iOS app and the hosted AgStatus
@@ -53,6 +53,23 @@ folder name is the same one already shown on the board's cards.
 
 Data is stored under your board's token and is visible to anyone who has
 your board URL. Treat the URL like a secret.
+
+## Focus (optional)
+
+Focus — tapping a session on the board to bring its terminal to the front on
+the machine running it — is off by default. If Focus is turned on for a
+machine (`agstatus listener install`, or `"focus": true` in
+`~/.agstatus.json`), status updates from coding agents on that machine
+additionally include: a short label you chose for the machine (default
+"Mac"), a random identifier specific to this board and this machine, and the
+name and kind of the app the session is running in (for example "agterm,
+terminal"). The listener keeps a connection open to your board so it can
+receive taps; it sends nothing but the acknowledgement of a tap. Nothing
+about your files, folders, terminal, or environment leaves the machine —
+those details stay in a local file only the listener reads, and are removed
+when Focus is turned off and the listener is uninstalled (the listener ships
+in a later release). Turning Focus off clears the labels from your board.
+Machines with Focus off send exactly what the table above lists.
 
 ## Push notifications
 

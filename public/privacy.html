@@ -120,7 +120,7 @@
 
 <main>
   <h1>Privacy Policy</h1>
-  <p class="updated">Last updated: August 2, 2026</p>
+  <p class="updated">Last updated: September 13, 2026</p>
 
   <p class="lede">
     AgStatus is an open-source status board for coding agents such as Claude Code and OpenAI Codex.
@@ -167,6 +167,21 @@
     logs. No prompts, code, file contents or conversation ever leave your machine; the project folder
     name is the same one already shown on the board's cards. <code>AGSTATUS_USAGE=off</code> disables
     this too.</p>
+
+  <h2>Focus (optional)</h2>
+  <p>Focus — tapping a session on the board to bring its terminal to the front on the machine
+    running it — is off by default. If Focus is turned on for a machine
+    (<code>agstatus listener install</code>, or <code>"focus": true</code> in
+    <code>~/.agstatus.json</code>), status updates from coding agents on that machine
+    additionally include: a short label you chose for the machine (default "Mac"), a random
+    identifier specific to this board and this machine, and the name and kind of the app the
+    session is running in (for example "agterm, terminal"). The listener keeps a connection open
+    to your board so it can receive taps; it sends nothing but the acknowledgement of a tap.
+    <strong>Nothing about your files, folders, terminal, or environment leaves the
+    machine</strong> — those details stay in a local file only the listener reads, and are
+    removed when Focus is turned off and the listener is uninstalled (the listener ships in a
+    later release). Turning Focus off clears the labels from your board. Machines with Focus off
+    send exactly what the table above lists.</p>
 
   <h2>What we do not collect</h2>
   <ul>

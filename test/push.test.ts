@@ -338,6 +338,35 @@ describe('push dispatch', () => {
     }
   });
 
+  it('the aps payload stays alert/sound/thread-id even when the session carries a host', async () => {
+    // The phone resolves the machine from its own snapshot by thread-id; the
+    // host summary must never ride along in a push (it is opt-in board data).
+    const mock = await mockApns();
+    const { app } = makeApp({ apns: apnsCfg(mock.url) });
+    const token = await createWorkspace(app);
+    await request(app).post(`/w/${token}/devices`).send(registerBody(DEVICE_A)).expect(200);
+
+    const host = {
+      machine: { id: 'ab'.repeat(16), name: 'Mac' },
+      app: { slug: 'herdr', name: 'herdr', kind: 'multiplexer' },
+    };
+    await request(app)
+      .post(`/w/${token}/webhook`)
+      .send(webhookBody('sess-host', { name: 'Agent', status: 'blocked', message: 'stuck', host }))
+      .expect(200);
+    await waitFor(() => mock.requests.length === 1, 'the push');
+
+    const body = mock.requests[0].body as { aps: Record<string, unknown> };
+    expect(Object.keys(body)).toEqual(['aps']);
+    expect(Object.keys(body.aps).sort()).toEqual(['alert', 'sound', 'thread-id']);
+    expect(body.aps).toEqual({
+      alert: { title: 'Agent needs input', body: 'stuck' },
+      sound: 'default',
+      'thread-id': 'sess-host',
+    });
+    expect(JSON.stringify(body)).not.toContain(host.machine.id);
+  });
+
   it('done goes only to notify_done devices, with the done title', async () => {
     const mock = await mockApns();
     const { app } = makeApp({ apns: apnsCfg(mock.url) });

@@ -21,13 +21,19 @@ The server runs in one of two modes:
   "message": "Editing server.ts",
   "project": "my-repo",
   "source": "claude",
+  "host": {
+    "machine": { "id": "9f2c1b7e4d3a8f0c5e6b2a1d9c8f7e6b", "name": "Mac" },
+    "app": { "slug": "herdr", "name": "herdr", "kind": "multiplexer" }
+  },
   "createdAt": 1752096000000,
   "updatedAt": 1752096030000
 }
 ```
 
 Timestamps are epoch milliseconds. `status` is one of `idle`, `planning`,
-`coding`, `testing`, `blocked`, `done`.
+`coding`, `testing`, `blocked`, `done`. `host` says where the session runs
+(see the [webhook table](#webhook-body-and-validation)); it is `null` for
+the many sessions whose hook has not opted in, and the key is always present.
 
 ## Shared endpoints (both modes)
 
@@ -50,10 +56,15 @@ the same JSON body and upsert a session by `session_id`:
 | `message`    | string | no       | Short description of the current activity (shown on the card). Truncated to 300 chars. |
 | `project`    | string | no       | Project or repo the session is working on. Truncated to 120 chars. |
 | `source`     | string | no       | Agent kind that owns the session, e.g. `claude` or `codex` (same regex as the usage `source`). Defaults to `claude`; omitted on update = carried forward. Dashboards use it to show only the limit bars of agents present on the board. |
+| `host`       | object \| null | no | Where the session runs, sent by hooks that opted in to Focus: `{"machine": {"id", "name"}, "app": {"slug", "name", "kind"}}`. Omitted = carried forward; `null` = cleared (the hook opted out). `machine.id` must match `^[0-9a-f]{32}$` (a per-board hash, never a raw machine id) or the post is `400`. `machine.name` and `app.name` are trimmed and truncated to 32 chars; blank ones become `Machine` and the slug. `app.slug` is one of `agterm`, `iterm2`, `kitty`, `wezterm`, `terminal`, `ghostty`, `alacritty`, `warp`, `vscode`, `cursor`, `windsurf`, `jetbrains`, `zed`, `claude-desktop`, `codex-desktop`, `herdr`, `tmux`, `zellij`, `screen`, `windows-terminal`, `other` — anything else is stored as `other`; `app.kind` is one of `terminal`, `multiplexer`, `ide`, `desktop-app`, `unknown` — anything else becomes `unknown`. Every other key is dropped. |
 
 Control characters are stripped from all string fields. Omitted optional
 fields carry the previous value forward on update. The JSON body is capped at
-16 KB.
+16 KB. `host` is the one nullable field: it goes out as `null` on every
+session that has none (REST and SSE alike), and it is scrubbed from the
+stored row whenever a session is dismissed, evicted, expired or its
+workspace deleted. It never appears in the session timeline or in push
+notifications.
 
 **Response** — `200 OK`:
 
@@ -61,8 +72,10 @@ fields carry the previous value forward on update. The JSON body is capped at
 { "ok": true, "session": { "id": "sess-abc", "status": "coding", ... } }
 ```
 
-**Errors** — `400` on missing/malformed `session_id` or invalid `status`;
-`401` on bad secret (legacy mode with `WEBHOOK_SECRET` set); `404` unknown
+**Errors** — `400` on missing/malformed `session_id`, invalid `status`,
+malformed `source`, or a `host` that is neither an object nor `null` or whose
+`machine.id` fails the regex; `401` on bad secret (legacy mode with
+`WEBHOOK_SECRET` set); `404` unknown
 workspace (multi-tenant); `413` on bodies over 16 KB; `429` over the
 per-workspace rate limit (multi-tenant).
 
@@ -182,7 +195,7 @@ sessions return `[]`.
 
 | Method & path          | Purpose                                        | Auth |
 | ---------------------- | ---------------------------------------------- | ---- |
-| `POST /webhook`        | Create/update a session (see above).           | yes* |
+| `POST /webhook`        | Create/update a session (see above; `host` included). | yes* |
 | `POST /usage`          | Report plan usage (see [Plan usage](#plan-usage)). | yes* |
 | `POST /usage/projects` | Report per-project token spend (see [Usage history](#usage-history-and-per-project-spend)). | yes* |
 | `GET /events`          | SSE stream (see [format](#sse-event-format)).  | no   |
@@ -235,7 +248,7 @@ workspace:
 | `GET /w/<token>`                 | Dashboard UI for this workspace. |
 | `GET /w/<token>/api/sessions`    | JSON list of the workspace's sessions (newest first). |
 | `GET /w/<token>/events`          | SSE stream (see [format](#sse-event-format)). `429` past 10 concurrent connections. |
-| `POST /w/<token>/webhook`        | Create/update a session. `200` with `{ok, session}`; `400` on validation errors; `429` over the rate limit. |
+| `POST /w/<token>/webhook`        | Create/update a session (same body as legacy, `host` included). `200` with `{ok, session}`; `400` on validation errors; `429` over the rate limit. |
 | `POST /w/<token>/usage`          | Report plan usage (see [Plan usage](#plan-usage)). |
 | `POST /w/<token>/usage/projects` | Report per-project token spend (see [Usage history](#usage-history-and-per-project-spend)). |
 | `GET /w/<token>/api/usage`       | Current plan usage list. |
@@ -329,6 +342,6 @@ To keep a shared instance healthy, multi-tenant workspaces are capped:
 | Live workspaces | `MAX_WORKSPACES` (default 10000) | Creation returns `503`. |
 | Request body | 16 KB | `413`. |
 
-In both modes: `name`/`project` truncate to 120 chars, `message` to 300;
-control characters are stripped. Push alerts per (session, kind) are
-debounced to one per minute.
+In both modes: `name`/`project` truncate to 120 chars, `message` to 300,
+`host.machine.name`/`host.app.name` to 32; control characters are stripped.
+Push alerts per (session, kind) are debounced to one per minute.

@@ -45,7 +45,7 @@ Non-negotiables that survived review:
 ```
 hook ──(opt-in, cached)──▶ <state>/sessions/<session_id>/<pid>.json          LOCAL, full detail, 0600
 hook ──(opt-in)──────────▶ POST /webhook { …, host: {machine, app} }          WIRE, minimal summary
-listener ─▶ GET /w/:token/events?listener=<machine_id>&name=…                presence + command stream
+listener ─▶ GET /w/:token/events?listener=<machine_id>&key=<machine_key>&name=…   presence + command stream
 phone ────▶ POST /w/:token/commands {id, type, session_id}                    server attaches machine_id
 server ───▶ SSE `command` ─▶ listener: claim ─▶ validate record ─▶ act ─▶ POST …/commands/:id/ack
 server ───▶ SSE `command_ack` (and `expired` at TTL) ─▶ phone; GET /commands/:id for polling
@@ -73,7 +73,7 @@ Sent on every status post when `focus === true` (strict boolean) **and** `machin
 }
 ```
 
-- `machine.id` = the first 32 characters of the lowercase hex SHA-256 of `machineId + "\n" + base`, exactly as `readMachine()` in `cli/assets/agstatus-hook.js` computes it — `` crypto.createHash('sha256').update(`${machineId}\n${base}`).digest('hex').slice(0, 32) `` — so the listener and the installer must hash the same bytes in the same order:
+- `machine.id` is derived in two rounds, so that the listener has a credential the board never sees: the **machine key** is the lowercase hex SHA-256 of `machineId + "\n" + base` — `` crypto.createHash('sha256').update(`${machineId}\n${base}`).digest('hex') `` (64 hex) — and `machine.id` is the first 32 characters of the lowercase hex SHA-256 of that key: `` crypto.createHash('sha256').update(key).digest('hex').slice(0, 32) ``. The key goes only from the listener to the server (`?key=` on the presence subscribe, `machine_key` in claim and ack bodies; §3.3) and never into the webhook, so every viewer knows the id from the snapshot and none can claim, ack or pose as the machine. The server verifies `sha256(key)[0..32] === id` and stores nothing. *(Step-3 review change, 2026-09-14: the hook's `readMachine()` adopted the two-round derivation the same day; `machineKey()` in `cli/assets/agstatus-hook.js` is the reference implementation.)* The listener and the installer must hash the same bytes in the same order:
   - `machineId` — the `machineId` string from `machine.json`, whitespace-trimmed and otherwise as stored (case preserved, not lower-cased). It must match `/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i`, else the hook treats the machine as not opted in.
   - one `\n` (LF, no CR).
   - `base` — the board URL the hook is configured with, **not** the bare token: `CLAUDE_STATUS_URL` as given (untrimmed), else `url` from `~/.agstatus.json` whitespace-trimmed; then `rawUrl.replace(/\/$/, '').replace(/\/webhook$/, '')` — strip **one** trailing `/`, then **one** trailing `/webhook`, in that order, and nothing else (no scheme or host case folding, no query stripping). So `…/w/<token>/webhook`, `…/w/<token>/webhook/` and `…/w/<token>` hash alike; `…/w/<token>//` does not.
@@ -91,13 +91,13 @@ Why keep a wire summary at all, given the listener could answer everything at ta
 
 Server: validates `type` against the enum and both ids as UUIDs; looks the session up in the workspace (404), requires `session.host` (409 `no_host`) and attaches `machine_id` itself; per-workspace limiter separate from webhooks (10/min) and a cap of 10 pending per workspace (429); coalesces — a new pending command for the same `(session_id, type, machine_id)` replaces the older. Stores **in memory only**, modelled on `pairCodes` (map + `expiresAt` + sweep) — a 120 s object must not become a permanent soft-deleted row. Responds `{ id, delivered: true|false }` where `delivered` means a listener for that `machine_id` is currently connected.
 
-State machine: `pending → claimed → done | expired`. Listener `POST /w/:token/commands/:id/claim` before acting (409 if already claimed — makes execution exactly-once across a LaunchAgent plus a stray manual run). `POST …/:id/ack` body `{ "result": "focused" | "activated" | "selected" | "resumed" | "failed", "reach": "pane" | "tab" | "window" | "app" | "thread", "reason": <enum> }`. `reason` ∈ `no-record | remote | not-running | app-not-running | consent-needed | mux-detached | ambiguous | unsupported-host | bad-record | respawn-failed | unsupported-type`. **No free text in acks** — the natural implementation leaks cwd, tty and stderr to every board viewer. At TTL the server broadcasts `command_ack {result: "failed", reason: "expired"}` so every command terminates observably; the phone also has a hard 15 s local timeout.
+State machine: `pending → claimed → done | expired`. Listener `POST /w/:token/commands/:id/claim` body `{ "machine_key": <64 hex, §3.2> }` before acting (403 `wrong_machine` unless the key hashes to the command's `machine_id`; 409 if already claimed — makes execution exactly-once across a LaunchAgent plus a stray manual run). `POST …/:id/ack` body `{ "machine_key": …, "result": "focused" | "activated" | "selected" | "resumed" | "failed", "reach": "pane" | "tab" | "window" | "app" | "thread", "reason": <enum> }`. `reason` ∈ `no-record | remote | not-running | app-not-running | consent-needed | mux-detached | ambiguous | unsupported-host | bad-record | respawn-failed | unsupported-type`. **No free text in acks** — the natural implementation leaks cwd, tty and stderr to every board viewer. At TTL the server broadcasts `command_ack {result: "failed", reason: "expired"}` so every command terminates observably; the phone also has a hard 15 s local timeout.
 
-SSE: new events `command` (to listeners), `command_ack`, `machine` (presence `{id, name, online, lastSeen}`); on listener connect the server sends `snapshot`, then a `commands` frame with that machine's unclaimed pending items (no separate GET needed). `GET /w/:token/commands/:id` returns the state for a phone that backgrounded (iOS drops SSE on background — `RootView.swift:36-40`) and polls on return.
+SSE: new events `command` (to listeners), `command_ack`, `machine` (presence `{id, name, online, since}` / `{id, online: false, lastSeen}` — no platform or version, which the privacy text does not list); on listener connect (`?listener=<machine_id>&key=<machine_key>&name=…`, 403 `wrong_key` unless the key hashes to the id) the server sends `snapshot`, then a `commands` frame with that machine's unclaimed pending items (no separate GET needed). A session that leaves the board (dismissed, cleared, evicted, expired) fails its pending commands as `superseded`, ack broadcast next to the `remove`. `GET /w/:token/commands/:id` returns the state for a phone that backgrounded (iOS drops SSE on background — `RootView.swift:36-40`) and polls on return.
 
-Legacy single-tenant mode: mount the same handlers in the legacy route group behind `requireSecret`, as every other feature is (`src/app.ts:325-359`), or state in docs that Focus is multi-tenant only and have the installer refuse a legacy URL. Pick one before step 3 ships.
+Legacy single-tenant mode (decided in step 3): the same handlers are mounted in the legacy route group, the command `POST`s and the `?listener=` branch of `GET /events` behind `requireSecret` as every other write is; a plain viewer connect stays open.
 
-Listener connections are counted separately from viewer SSE slots (one per `machine_id`; a new connection for the same id replaces the old), reconnect with exponential backoff + jitter (1 s → 60 s), and treat 429 as "sleep 60 s".
+Listener connections are counted separately from viewer SSE slots (one per `machine_id`; a new connection for the same id replaces the old — only with the right key), are limited to 30 connects/min per workspace because each one is broadcast to every viewer, reconnect with exponential backoff + jitter (1 s → 60 s), and treat 429 as "sleep 60 s".
 
 ## 4. Local record
 
@@ -249,7 +249,7 @@ agterm with two open windows (`window select` raising a non-active window was no
 
 ## 11. Open decisions
 
-- Legacy single-tenant: mount commands there, or declare Focus multi-tenant only?
+- ~~Legacy single-tenant: mount commands there, or declare Focus multi-tenant only?~~ Mounted, behind the secret (§3.3).
 - Do we want the wire summary at all, or the leaner variant (§12)?
 - Ghostty: is the AppleScript `terminal.id` equal to `GHOSTTY_SURFACE_ID`? Irrelevant while we join on tty/cwd; worth knowing.
 - Should `resume` be gated behind a second per-machine opt-in (`resume: true`), given it is the one action that starts a process?

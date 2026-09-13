@@ -27,6 +27,12 @@ export interface Host {
 
 // A per-board hash the hook derives from its machine id, never the raw id.
 export const MACHINE_ID_RE = /^[0-9a-f]{32}$/;
+// The listener's credential for that id: the hash the id is itself derived
+// from (id = sha256(key)[0..32]). Every board viewer sees the id; only the
+// machine holds the key, so a viewer cannot claim, ack or pose as it.
+export const MACHINE_KEY_RE = /^[0-9a-f]{64}$/;
+export const machineIdForKey = (key: string): string =>
+  crypto.createHash('sha256').update(key).digest('hex').slice(0, 32);
 const HOST_NAME_MAX = 32;
 const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F]/g;
 
@@ -133,6 +139,52 @@ export interface ProjectDay {
   tokens: number;
 }
 
+export const COMMAND_TYPES = ['focus', 'resume'] as const;
+export type CommandType = (typeof COMMAND_TYPES)[number];
+
+export const COMMAND_RESULTS = ['focused', 'activated', 'selected', 'resumed', 'failed'] as const;
+export type CommandResult = (typeof COMMAND_RESULTS)[number];
+
+/** How far the listener got: the exact pane, a tab, a window, only the app, or a Codex thread. */
+export const COMMAND_REACHES = ['pane', 'tab', 'window', 'app', 'thread'] as const;
+export type CommandReach = (typeof COMMAND_REACHES)[number];
+
+/** Why a command failed. An enum on purpose: a free-text reason would leak cwd/tty/stderr to every viewer. */
+export const COMMAND_REASONS = [
+  'no-record', 'remote', 'not-running', 'app-not-running', 'consent-needed', 'mux-detached',
+  'ambiguous', 'unsupported-host', 'bad-record', 'respawn-failed', 'unsupported-type',
+  'superseded', 'expired',
+] as const;
+export type CommandReason = (typeof COMMAND_REASONS)[number];
+
+export type CommandState = 'pending' | 'claimed' | 'done' | 'expired';
+
+/**
+ * A tap on a card, waiting for the listener on the machine that hosts the
+ * session. Carries only ids: the listener derives every action from its own
+ * local record. In memory only (like pairing codes) — a two-minute object
+ * must not become a permanent soft-deleted row, and a restart just lets the
+ * phone time out.
+ */
+export interface Command {
+  id: string;
+  wsId: string;
+  type: CommandType;
+  sessionId: string;
+  machineId: string;
+  state: CommandState;
+  createdAt: number;
+  expiresAt: number;
+  claimedAt?: number;
+  doneAt?: number;
+  result?: CommandResult;
+  reach?: CommandReach;
+  reason?: CommandReason;
+}
+
+export type ClaimError = 'not_found' | 'wrong_machine' | 'already_claimed' | 'expired';
+export type AckError = 'not_found' | 'wrong_machine' | 'not_claimed' | 'already_done' | 'expired';
+
 /** How far back the usage detail view may look. */
 export const MAX_HISTORY_DAYS = 90;
 /** Points held in memory per (source, window) — a plan limit moves slowly. */
@@ -161,6 +213,12 @@ export const LEGACY_WS = '_legacy';
 export const TOKEN_RE = /^ags_[A-Za-z0-9_-]{32}$/;
 
 const WEBHOOKS_PER_MINUTE = 120;
+const COMMANDS_PER_MINUTE = 10;
+// Every listener connect is broadcast to every viewer; a reconnect loop must not flood them.
+const LISTENER_CONNECTS_PER_MINUTE = 30;
+export const MAX_PENDING_COMMANDS_PER_WORKSPACE = 10;
+/** Done and expired commands stay readable this long, so a phone that backgrounded can still poll them. */
+export const COMMAND_GRACE_MS = 10 * 60 * 1000;
 const LAST_SEEN_WRITE_THROTTLE_MS = 60_000;
 const MAX_DEVICES_PER_WORKSPACE = 10;
 
@@ -202,6 +260,14 @@ export class Store {
   private eventSeq = new Map<string, number>();
   // Escrowed pairing codes, keyed by the normalized (dash-less) code.
   private pairCodes = new Map<string, { rawToken: string; expiresAt: number }>();
+  // Focus commands, wsId → id → command; in memory only, swept like pair codes.
+  private commands = new Map<string, Map<string, Command>>();
+  private commandWindows = new Map<string, { windowStart: number; count: number }>();
+  private listenerWindows = new Map<string, { windowStart: number; count: number }>();
+  // Commands the server finished itself — expired (by the sweep or lazily on
+  // read) or cancelled with their session — and has not yet handed to app.ts,
+  // so each gets exactly one command_ack broadcast.
+  private unannounced: Command[] = [];
   private pool: Pool | null = null;
   // Writes are fire-and-forget but strictly ordered: each is chained onto this
   // queue so an upsert can never overtake the delete that preceded it.
@@ -535,6 +601,9 @@ export class Store {
     this.events.delete(wsId);
     this.usagePoints.delete(wsId);
     this.projectDays.delete(wsId);
+    this.commands.delete(wsId);
+    this.commandWindows.delete(wsId);
+    this.listenerWindows.delete(wsId);
     if (existed) {
       const now = Date.now();
       this.exec('UPDATE sessions SET deleted_at = $2, host = NULL WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
@@ -593,6 +662,7 @@ export class Store {
           [wsId, oldest.id, now]
         );
         this.dropEvents(wsId, oldest.id);
+        this.cancelCommands(wsId, oldest.id);
         evictedId = oldest.id;
       }
     }
@@ -894,6 +964,10 @@ export class Store {
     }
   }
 
+  getSession(wsId: string, id: string): Session | null {
+    return this.sessions.get(wsId)?.get(id) ?? null;
+  }
+
   getSessions(wsId: string): Session[] {
     const map = this.sessions.get(wsId);
     if (!map) return [];
@@ -908,6 +982,7 @@ export class Store {
         [wsId, id, Date.now()]
       );
       this.dropEvents(wsId, id);
+      this.cancelCommands(wsId, id);
     }
     return removed;
   }
@@ -918,6 +993,7 @@ export class Store {
       for (const id of map.keys()) this.dropEvents(wsId, id);
       map.clear();
     }
+    this.cancelCommands(wsId, null);
     this.exec(
       'UPDATE sessions SET deleted_at = $2, host = NULL WHERE workspace_id = $1 AND deleted_at IS NULL',
       [wsId, Date.now()]
@@ -926,14 +1002,32 @@ export class Store {
 
   /** Fixed-window webhook rate limit per workspace. */
   allowWebhook(wsId: string): boolean {
+    return this.allowInWindow(this.webhookWindows, wsId, WEBHOOKS_PER_MINUTE);
+  }
+
+  /** Fixed-window Focus-command rate limit per workspace, separate from the webhook budget. */
+  allowCommand(wsId: string): boolean {
+    return this.allowInWindow(this.commandWindows, wsId, COMMANDS_PER_MINUTE);
+  }
+
+  /** Fixed-window limit on listener connects per workspace (each one is broadcast to every viewer). */
+  allowListenerConnect(wsId: string): boolean {
+    return this.allowInWindow(this.listenerWindows, wsId, LISTENER_CONNECTS_PER_MINUTE);
+  }
+
+  private allowInWindow(
+    windows: Map<string, { windowStart: number; count: number }>,
+    wsId: string,
+    perMinute: number,
+  ): boolean {
     const now = Date.now();
-    const win = this.webhookWindows.get(wsId);
+    const win = windows.get(wsId);
     if (!win || now - win.windowStart >= 60_000) {
-      this.webhookWindows.set(wsId, { windowStart: now, count: 1 });
+      windows.set(wsId, { windowStart: now, count: 1 });
       return true;
     }
     win.count += 1;
-    return win.count <= WEBHOOKS_PER_MINUTE;
+    return win.count <= perMinute;
   }
 
   /**
@@ -984,6 +1078,201 @@ export class Store {
     }
   }
 
+  // ---- Focus commands ------------------------------------------------------
+
+  private isPending(cmd: Command, now: number): boolean {
+    return cmd.state === 'pending' && now < cmd.expiresAt;
+  }
+
+  /** Fails a live command on the server's behalf; the caller decides how its ack gets out. */
+  private failCommand(cmd: Command, now: number, state: 'done' | 'expired', reason: CommandReason): void {
+    cmd.state = state;
+    cmd.doneAt = now;
+    cmd.result = 'failed';
+    cmd.reason = reason;
+  }
+
+  /** Flips a live command to expired and queues it for the sweep's broadcast. */
+  private expireCommand(cmd: Command, now: number): void {
+    this.failCommand(cmd, now, 'expired', 'expired');
+    this.unannounced.push(cmd);
+  }
+
+  /** The command, expired on the spot if its TTL passed; null when unknown or already swept. */
+  private liveCommand(wsId: string, id: string, now: number): Command | null {
+    const cmd = this.commands.get(wsId)?.get(id);
+    if (!cmd) return null;
+    if ((cmd.state === 'pending' || cmd.state === 'claimed') && now >= cmd.expiresAt) {
+      this.expireCommand(cmd, now);
+    }
+    return cmd;
+  }
+
+  /**
+   * Records a new pending command. Null when the id is already taken in this
+   * workspace (the phone retried with the same client uuid; it should poll
+   * the existing one instead).
+   */
+  createCommand(
+    input: { wsId: string; id: string; type: CommandType; sessionId: string; machineId: string },
+    ttlMs: number,
+  ): Command | null {
+    let map = this.commands.get(input.wsId);
+    if (!map) {
+      map = new Map();
+      this.commands.set(input.wsId, map);
+    }
+    if (map.has(input.id)) return null;
+    const now = Date.now();
+    const cmd: Command = {
+      id: input.id,
+      wsId: input.wsId,
+      type: input.type,
+      sessionId: input.sessionId,
+      machineId: input.machineId,
+      state: 'pending',
+      createdAt: now,
+      expiresAt: now + ttlMs,
+    };
+    map.set(cmd.id, cmd);
+    return cmd;
+  }
+
+  getCommand(wsId: string, id: string): Command | null {
+    return this.liveCommand(wsId, id, Date.now());
+  }
+
+  /**
+   * pending → claimed, only from pending and only with the key of the machine
+   * the command was routed to. The key never reaches a viewer, so the machine
+   * id alone (which every viewer sees) cannot claim.
+   */
+  claimCommand(wsId: string, id: string, machineKey: string): { ok: true; command: Command } | { ok: false; error: ClaimError } {
+    const now = Date.now();
+    const cmd = this.liveCommand(wsId, id, now);
+    if (!cmd) return { ok: false, error: 'not_found' };
+    if (machineIdForKey(machineKey) !== cmd.machineId) return { ok: false, error: 'wrong_machine' };
+    if (cmd.state === 'expired') return { ok: false, error: 'expired' };
+    if (cmd.state !== 'pending') return { ok: false, error: 'already_claimed' };
+    cmd.state = 'claimed';
+    cmd.claimedAt = now;
+    return { ok: true, command: cmd };
+  }
+
+  /** claimed → done, with the machine's key as for claim. The outcome is enums only; nothing free-form is ever stored. */
+  ackCommand(
+    wsId: string,
+    id: string,
+    machineKey: string,
+    outcome: { result: CommandResult; reach?: CommandReach; reason?: CommandReason },
+  ): { ok: true; command: Command } | { ok: false; error: AckError } {
+    const now = Date.now();
+    const cmd = this.liveCommand(wsId, id, now);
+    if (!cmd) return { ok: false, error: 'not_found' };
+    if (machineIdForKey(machineKey) !== cmd.machineId) return { ok: false, error: 'wrong_machine' };
+    if (cmd.state === 'expired') return { ok: false, error: 'expired' };
+    if (cmd.state === 'done') return { ok: false, error: 'already_done' };
+    if (cmd.state === 'pending') return { ok: false, error: 'not_claimed' };
+    cmd.state = 'done';
+    cmd.doneAt = now;
+    cmd.result = outcome.result;
+    if (outcome.reach) cmd.reach = outcome.reach;
+    if (outcome.reason) cmd.reason = outcome.reason;
+    return { ok: true, command: cmd };
+  }
+
+  /** Unclaimed, unexpired commands routed to one machine — what a (re)connecting listener has missed. */
+  pendingCommandsFor(wsId: string, machineId: string): Command[] {
+    const now = Date.now();
+    const pending: Command[] = [];
+    for (const cmd of this.commands.get(wsId)?.values() ?? []) {
+      if (cmd.machineId === machineId && this.isPending(cmd, now)) pending.push(cmd);
+    }
+    return pending.sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  countPending(wsId: string): number {
+    const now = Date.now();
+    let n = 0;
+    for (const cmd of this.commands.get(wsId)?.values() ?? []) {
+      if (this.isPending(cmd, now)) n += 1;
+    }
+    return n;
+  }
+
+  /** The pending command a new one for the same card would coalesce with, if any. */
+  private findPending(wsId: string, sessionId: string, type: CommandType, machineId: string, now: number): Command | null {
+    for (const cmd of this.commands.get(wsId)?.values() ?? []) {
+      if (cmd.sessionId !== sessionId || cmd.type !== type || cmd.machineId !== machineId) continue;
+      if (this.isPending(cmd, now)) return cmd;
+    }
+    return null;
+  }
+
+  /** Whether a new command for this card would supersede one that is still pending. */
+  hasPending(wsId: string, sessionId: string, type: CommandType, machineId: string): boolean {
+    return this.findPending(wsId, sessionId, type, machineId, Date.now()) !== null;
+  }
+
+  /**
+   * Coalesces a re-tap: an older pending command for the same session, type
+   * and machine is finished as failed/superseded and returned so its ack can
+   * be broadcast. Null when there was none.
+   */
+  supersedePending(wsId: string, sessionId: string, type: CommandType, machineId: string): Command | null {
+    const now = Date.now();
+    const cmd = this.findPending(wsId, sessionId, type, machineId, now);
+    if (!cmd) return null;
+    this.failCommand(cmd, now, 'done', 'superseded');
+    return cmd;
+  }
+
+  /**
+   * Fails the pending commands aimed at one session (null: at every session
+   * of the workspace) as superseded — the card is gone, so nobody is waiting
+   * and the listener must not raise a window for it. Claimed ones are left to
+   * ack or expire. Queued for app.ts to broadcast (takeFinishedCommands).
+   */
+  private cancelCommands(wsId: string, sessionId: string | null): void {
+    const now = Date.now();
+    for (const cmd of this.commands.get(wsId)?.values() ?? []) {
+      if (sessionId !== null && cmd.sessionId !== sessionId) continue;
+      if (!this.isPending(cmd, now)) continue;
+      this.failCommand(cmd, now, 'done', 'superseded');
+      this.unannounced.push(cmd);
+    }
+  }
+
+  /**
+   * Every command the server finished itself since the last call — expired,
+   * or cancelled with its session — each for exactly one broadcast.
+   */
+  takeFinishedCommands(): Command[] {
+    const finished = this.unannounced;
+    this.unannounced = [];
+    return finished;
+  }
+
+  /**
+   * Expires live commands past their TTL and forgets finished ones past the
+   * grace period. Returns what finished server-side since the last drain
+   * (including what a read expired lazily) so app.ts can broadcast each
+   * exactly once.
+   */
+  sweepCommands(now: number = Date.now()): Command[] {
+    for (const [wsId, map] of this.commands) {
+      for (const [id, cmd] of map) {
+        if (cmd.state === 'pending' || cmd.state === 'claimed') {
+          if (now >= cmd.expiresAt) this.expireCommand(cmd, now);
+        } else if (now >= (cmd.doneAt ?? cmd.expiresAt) + COMMAND_GRACE_MS) {
+          map.delete(id);
+        }
+      }
+      if (map.size === 0) this.commands.delete(wsId);
+    }
+    return this.takeFinishedCommands();
+  }
+
   /** Removes sessions not updated within ttlMs. Returns what was removed, for broadcasting. */
   sweepExpiredSessions(ttlMs: number): Array<{ wsId: string; id: string }> {
     const cutoff = Date.now() - ttlMs;
@@ -997,6 +1286,7 @@ export class Store {
             [wsId, id, Date.now()]
           );
           this.dropEvents(wsId, id);
+          this.cancelCommands(wsId, id);
           removed.push({ wsId, id });
         }
       }

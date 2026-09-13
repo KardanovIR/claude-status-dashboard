@@ -5,11 +5,21 @@ import crypto from 'crypto';
 import { AppConfig } from './config';
 import { Pusher } from './push';
 import {
+  AckError,
+  ClaimError,
+  Command,
+  COMMAND_REACHES,
+  COMMAND_REASONS,
+  COMMAND_RESULTS,
+  COMMAND_TYPES,
   dayKey,
   Host,
   LEGACY_WS,
   MACHINE_ID_RE,
+  MACHINE_KEY_RE,
+  machineIdForKey,
   MAX_HISTORY_DAYS,
+  MAX_PENDING_COMMANDS_PER_WORKSPACE,
   normalizeHost,
   PAIR_CODE_TTL_MS,
   STATUSES,
@@ -21,7 +31,7 @@ import {
 
 export type { AppConfig } from './config';
 export { Store, STATUSES } from './store';
-export type { Host, Session } from './store';
+export type { Command, Host, Session } from './store';
 
 const SESSION_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 const DEVICE_TOKEN_RE = /^[0-9a-fA-F]{16,200}$/;
@@ -41,6 +51,13 @@ const PROJECT_NAME_MAX = 120;
 const MAX_PROJECT_DAYS_PER_REPORT = 200;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DEFAULT_HISTORY_DAYS = 30;
+// Focus: a tap is {id, type, session_id}; the id is a client uuid so a retry
+// can be told apart from a second tap.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_LISTENERS_PER_WORKSPACE = 5;
+const LISTENER_NAME_MAX = 32;
+const COMMAND_SWEEP_MS = 15_000;
+const ACK_KEYS = ['machine_key', 'result', 'reach', 'reason'];
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const INDEX_HTML = path.join(PUBLIC_DIR, 'index.html');
@@ -50,6 +67,12 @@ const DOCS_HTML = path.join(PUBLIC_DIR, 'docs.html');
 
 const isStatus = (s: unknown): s is Status =>
   typeof s === 'string' && (STATUSES as readonly string[]).includes(s);
+
+const isOneOf = <T extends string>(list: readonly T[], v: unknown): v is T =>
+  typeof v === 'string' && (list as readonly string[]).includes(v);
+
+const frame = (event: string, data: unknown): string =>
+  `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 
 /** Strips control characters and truncates; non-strings become undefined (carry-forward). */
 const clean = (v: unknown, max: number): string | undefined =>
@@ -100,6 +123,42 @@ function parseUsageWindows(raw: unknown): UsageWindow[] | null {
   return windows;
 }
 
+/** One connected Focus listener: the machine that can act on this board's commands. */
+interface Listener {
+  res: Response;
+  name: string;
+  connectedAt: number;
+}
+
+/** The wire shape of a command, as sent to its listener and returned in the `commands` frame. */
+const commandFrame = (cmd: Command) => ({
+  id: cmd.id,
+  type: cmd.type,
+  session_id: cmd.sessionId,
+  machine_id: cmd.machineId,
+  expires_in_ms: Math.max(0, cmd.expiresAt - Date.now()),
+});
+
+/** The `command_ack` event: ids and enums only, never a message. */
+const ackPayload = (cmd: Command) => ({
+  id: cmd.id,
+  session_id: cmd.sessionId,
+  machine_id: cmd.machineId,
+  type: cmd.type,
+  result: cmd.result ?? null,
+  reach: cmd.reach ?? null,
+  reason: cmd.reason ?? null,
+});
+
+const COMMAND_ERROR_STATUS: Record<ClaimError | AckError, number> = {
+  not_found: 404,
+  wrong_machine: 403,
+  already_claimed: 409,
+  not_claimed: 409,
+  already_done: 409,
+  expired: 410,
+};
+
 export interface CreatedApp {
   app: Express;
   store: Store;
@@ -112,6 +171,9 @@ export function createApp(cfg: AppConfig): CreatedApp {
   const store = new Store(cfg.databaseUrl);
   const pusher = new Pusher(cfg.apns, store);
   const sseClients = new Map<string, Set<Response>>();
+  // Focus listeners, wsId → machine id → stream. One per machine (a reconnect
+  // replaces the old stream), counted apart from the viewer slots above.
+  const listeners = new Map<string, Map<string, Listener>>();
   const timers: NodeJS.Timeout[] = [];
 
   // A reader that stops draining its socket never fires 'close', so writes pile
@@ -120,38 +182,93 @@ export function createApp(cfg: AppConfig): CreatedApp {
   // highWaterMark transiently.)
   const MAX_BUFFERED_BYTES = 1_000_000;
 
-  function safeWrite(clients: Set<Response>, res: Response, payload: string): void {
+  function safeWrite(res: Response, payload: string, evict: () => void): void {
     try {
       res.write(payload);
       if (res.socket && res.socket.writableLength > MAX_BUFFERED_BYTES) {
-        clients.delete(res);
+        evict();
         res.destroy();
       }
     } catch {
-      clients.delete(res);
+      evict();
       try { res.end(); } catch { /* already gone */ }
     }
   }
 
+  /** Forgets a listener stream — if it is still the machine's current one — and tells the board. */
+  function dropListener(wsId: string, machineId: string, entry: Listener): void {
+    const group = listeners.get(wsId);
+    if (!group || group.get(machineId) !== entry) return;
+    group.delete(machineId);
+    if (group.size === 0) listeners.delete(wsId);
+    broadcast(wsId, 'machine', { id: machineId, online: false, lastSeen: Date.now() });
+  }
+
+  // Presence is {id, name, online, since}: no platform or version, which the
+  // privacy page does not list and every viewer would otherwise learn.
+  const machineInfo = (id: string, l: Listener) => ({ id, name: l.name, online: true, since: l.connectedAt });
+
+  function onlineMachines(wsId: string): ReturnType<typeof machineInfo>[] {
+    const group = listeners.get(wsId);
+    return group ? Array.from(group, ([id, l]) => machineInfo(id, l)) : [];
+  }
+
+  /** To every stream of the workspace: viewers and listeners alike. */
   function broadcast(wsId: string, event: string, data: unknown): void {
+    const payload = frame(event, data);
     const clients = sseClients.get(wsId);
-    if (!clients) return;
-    const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-    for (const res of Array.from(clients)) {
-      safeWrite(clients, res, payload);
+    if (clients) {
+      for (const res of Array.from(clients)) {
+        safeWrite(res, payload, () => clients.delete(res));
+      }
     }
+    const group = listeners.get(wsId);
+    if (group) {
+      for (const [machineId, l] of Array.from(group)) {
+        safeWrite(l.res, payload, () => dropListener(wsId, machineId, l));
+      }
+    }
+  }
+
+  /** One `command_ack` per command the server finished itself, to its workspace. */
+  function announceAcks(cmds: Command[]): void {
+    for (const cmd of cmds) broadcast(cmd.wsId, 'command_ack', ackPayload(cmd));
+  }
+
+  /** A session left the board: viewers drop the card, and the taps still waiting on it fail. */
+  function announceRemoved(wsId: string, id: string): void {
+    broadcast(wsId, 'remove', { id });
+    announceAcks(store.takeFinishedCommands());
   }
 
   function closeStreams(wsId: string): void {
     const clients = sseClients.get(wsId);
-    if (!clients) return;
-    for (const res of Array.from(clients)) {
-      try {
-        res.write('event: snapshot\ndata: []\n\n');
-        res.end();
-      } catch { /* already gone */ }
+    if (clients) {
+      for (const res of Array.from(clients)) {
+        try {
+          res.write('event: snapshot\ndata: []\n\n');
+          res.end();
+        } catch { /* already gone */ }
+      }
+      sseClients.delete(wsId);
     }
-    sseClients.delete(wsId);
+    const group = listeners.get(wsId);
+    if (group) {
+      for (const l of group.values()) {
+        try { l.res.end(); } catch { /* already gone */ }
+      }
+      listeners.delete(wsId);
+    }
+  }
+
+  function openStream(res: Response): void {
+    res.set({
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    res.flushHeaders();
   }
 
   const app = express();
@@ -217,7 +334,7 @@ export function createApp(cfg: AppConfig): CreatedApp {
     };
     const max = cfg.multiTenant ? MAX_SESSIONS_PER_WORKSPACE : Infinity;
     const { session, evictedId, prevStatus } = store.upsertSession(wsId, input, max);
-    if (evictedId) broadcast(wsId, 'remove', { id: evictedId });
+    if (evictedId) announceRemoved(wsId, evictedId);
     broadcast(wsId, 'session', session);
     // Fire-and-forget: enqueues async APNs work, never throws or blocks.
     pusher.notifyTransition(wsId, session, prevStatus);
@@ -308,6 +425,10 @@ export function createApp(cfg: AppConfig): CreatedApp {
   }
 
   function handleEvents(wsId: string, req: Request, res: Response): void {
+    if (req.query.listener !== undefined) {
+      handleListener(wsId, req, res);
+      return;
+    }
     let clients = sseClients.get(wsId);
     if (!clients) {
       clients = new Set();
@@ -317,21 +438,227 @@ export function createApp(cfg: AppConfig): CreatedApp {
       res.status(429).json({ error: 'too many concurrent connections' });
       return;
     }
-    res.set({
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache, no-transform',
-      'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no',
-    });
-    res.flushHeaders();
+    openStream(res);
     clients.add(res);
-    safeWrite(clients, res, `event: snapshot\ndata: ${JSON.stringify(store.getSessions(wsId))}\n\n`);
+    const evict = (): void => { clients.delete(res); };
+    safeWrite(res, frame('snapshot', store.getSessions(wsId)), evict);
+    safeWrite(res, frame('machines', onlineMachines(wsId)), evict);
     const usage = store.getUsage(wsId);
     if (usage.length > 0) {
-      safeWrite(clients, res, `event: usage\ndata: ${JSON.stringify(usage)}\n\n`);
+      safeWrite(res, frame('usage', usage), evict);
     }
     req.on('close', () => {
       sseClients.get(wsId)?.delete(res);
+    });
+  }
+
+  /**
+   * A Focus listener subscribing on behalf of one machine
+   * (`?listener=<machine_id>&key=<machine_key>&name=`). It gets the snapshot,
+   * then the commands already waiting for it, then every event a viewer gets;
+   * the board learns it is online. Its slot is separate from the viewer cap.
+   * The key proves it is that machine: viewers know every machine id from the
+   * snapshot, and without the key one of them could take the machine's slot,
+   * end its real stream and read its commands.
+   */
+  function handleListener(wsId: string, req: Request, res: Response): void {
+    const q = req.query as Record<string, unknown>;
+    const machineId = typeof q.listener === 'string' ? q.listener : '';
+    if (!MACHINE_ID_RE.test(machineId)) {
+      res.status(400).json({ error: `listener must match ${MACHINE_ID_RE}` });
+      return;
+    }
+    const key = typeof q.key === 'string' ? q.key : '';
+    if (!MACHINE_KEY_RE.test(key)) {
+      res.status(400).json({ error: `key must match ${MACHINE_KEY_RE}` });
+      return;
+    }
+    if (machineIdForKey(key) !== machineId) {
+      res.status(403).json({ error: 'wrong_key' });
+      return;
+    }
+    // Each connect is broadcast to every viewer, so a reconnect loop is throttled here.
+    if (cfg.rateLimit && !store.allowListenerConnect(wsId)) {
+      res.status(429).json({ error: 'rate limit exceeded' });
+      return;
+    }
+    let group = listeners.get(wsId);
+    const previous = group?.get(machineId);
+    if (!previous && (group?.size ?? 0) >= MAX_LISTENERS_PER_WORKSPACE) {
+      res.status(429).json({ error: 'too many listeners' });
+      return;
+    }
+    if (!group) {
+      group = new Map();
+      listeners.set(wsId, group);
+    }
+    const entry: Listener = {
+      res,
+      name: (clean(q.name, LISTENER_NAME_MAX) ?? '').trim() || 'Machine',
+      connectedAt: Date.now(),
+    };
+    openStream(res);
+    // A reconnect replaces the machine's old stream. The old stream's close
+    // handler sees it is no longer current and stays quiet, so the board
+    // never sees a spurious offline.
+    group.set(machineId, entry);
+    if (previous) {
+      try { previous.res.end(); } catch { /* already gone */ }
+    }
+    const evict = (): void => dropListener(wsId, machineId, entry);
+    safeWrite(res, frame('snapshot', store.getSessions(wsId)), evict);
+    safeWrite(res, frame('commands', store.pendingCommandsFor(wsId, machineId).map(commandFrame)), evict);
+    broadcast(wsId, 'machine', machineInfo(machineId, entry));
+    req.on('close', evict);
+  }
+
+  // ---- Focus commands ------------------------------------------------------
+  // A tap on a card. The body carries ids only; the server routes it to the
+  // machine the session itself reported, and the listener there derives the
+  // action from its own local record. See docs/design/focus-protocol.md §3.3.
+
+  const commandId = (req: Request): string => (req.params.id ?? '').toLowerCase();
+
+  function handleCreateCommand(wsId: string, req: Request, res: Response): void {
+    if (cfg.rateLimit && !store.allowCommand(wsId)) {
+      res.status(429).json({ error: 'rate limit exceeded' });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof body.id !== 'string' || !UUID_RE.test(body.id)) {
+      res.status(400).json({ error: 'id must be a UUID' });
+      return;
+    }
+    const id = body.id.toLowerCase();
+    const type = body.type;
+    if (!isOneOf(COMMAND_TYPES, type)) {
+      res.status(400).json({ error: `type must be one of: ${COMMAND_TYPES.join(', ')}` });
+      return;
+    }
+    const sessionId = typeof body.session_id === 'string' ? body.session_id : '';
+    if (!SESSION_ID_RE.test(sessionId)) {
+      res.status(400).json({ error: 'session_id must match ^[A-Za-z0-9._:-]{1,128}$' });
+      return;
+    }
+    const session = store.getSession(wsId, sessionId);
+    if (!session) {
+      res.status(404).json({ error: 'unknown_session' });
+      return;
+    }
+    if (!session.host) {
+      res.status(409).json({ error: 'no_host' });
+      return;
+    }
+    // Only the machine the session reported itself on — never one the client names.
+    const machineId = session.host.machine.id;
+    if (store.getCommand(wsId, id)) {
+      res.status(409).json({ error: 'duplicate_id' });
+      return;
+    }
+    // A second tap on the same card while the first is still waiting replaces
+    // it, so it does not count against the cap: at the cap, a re-tap on a
+    // waiting card (the most common gesture) still goes through, while a tap
+    // on an eleventh card does not.
+    const retap = store.hasPending(wsId, sessionId, type, machineId);
+    if (store.countPending(wsId) - (retap ? 1 : 0) >= MAX_PENDING_COMMANDS_PER_WORKSPACE) {
+      res.status(429).json({ error: 'too_many_pending' });
+      return;
+    }
+    // The phone sees the replaced command fail as superseded.
+    const superseded = store.supersedePending(wsId, sessionId, type, machineId);
+    if (superseded) broadcast(wsId, 'command_ack', ackPayload(superseded));
+    const cmd = store.createCommand({ wsId, id, type, sessionId, machineId }, cfg.commandTtlMs)!;
+    const payload = commandFrame(cmd);
+    // Only that machine's listener hears the command; viewers learn the
+    // outcome from the ack.
+    const listener = listeners.get(wsId)?.get(machineId);
+    if (listener) {
+      safeWrite(listener.res, frame('command', payload), () => dropListener(wsId, machineId, listener));
+    }
+    res.json({ id, delivered: Boolean(listener), expires_in_ms: payload.expires_in_ms });
+  }
+
+  /** The listener's credential from a claim/ack body: the key its machine id is derived from. */
+  function machineKeyOf(body: Record<string, unknown>, res: Response): string | null {
+    const key = typeof body.machine_key === 'string' ? body.machine_key : '';
+    if (!MACHINE_KEY_RE.test(key)) {
+      res.status(400).json({ error: `machine_key must match ${MACHINE_KEY_RE}` });
+      return null;
+    }
+    return key;
+  }
+
+  function handleClaimCommand(wsId: string, req: Request, res: Response): void {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const machineKey = machineKeyOf(body, res);
+    if (machineKey === null) return;
+    const claimed = store.claimCommand(wsId, commandId(req), machineKey);
+    if (!claimed.ok) {
+      res.status(COMMAND_ERROR_STATUS[claimed.error]).json({ error: claimed.error });
+      return;
+    }
+    // Nothing is broadcast: a claim is between the server and the listener.
+    res.json({ ok: true, expires_in_ms: Math.max(0, claimed.command.expiresAt - Date.now()) });
+  }
+
+  function handleAckCommand(wsId: string, req: Request, res: Response): void {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    // Enums only. A free-text field here would put cwd, tty or stderr in front
+    // of every viewer, so an unknown key is rejected rather than dropped.
+    if (Object.keys(body).some((k) => !ACK_KEYS.includes(k))) {
+      res.status(400).json({ error: `ack accepts only: ${ACK_KEYS.join(', ')}` });
+      return;
+    }
+    const machineKey = machineKeyOf(body, res);
+    if (machineKey === null) return;
+    const result = body.result;
+    if (!isOneOf(COMMAND_RESULTS, result)) {
+      res.status(400).json({ error: `result must be one of: ${COMMAND_RESULTS.join(', ')}` });
+      return;
+    }
+    const reach = body.reach ?? undefined;
+    if (reach !== undefined && !isOneOf(COMMAND_REACHES, reach)) {
+      res.status(400).json({ error: `reach must be one of: ${COMMAND_REACHES.join(', ')}` });
+      return;
+    }
+    const reason = body.reason ?? undefined;
+    if (reason !== undefined && !isOneOf(COMMAND_REASONS, reason)) {
+      res.status(400).json({ error: `reason must be one of: ${COMMAND_REASONS.join(', ')}` });
+      return;
+    }
+    if (result === 'failed' && reason === undefined) {
+      res.status(400).json({ error: 'a failed result needs a reason' });
+      return;
+    }
+    const acked = store.ackCommand(wsId, commandId(req), machineKey, { result, reach, reason });
+    if (!acked.ok) {
+      res.status(COMMAND_ERROR_STATUS[acked.error]).json({ error: acked.error });
+      return;
+    }
+    broadcast(wsId, 'command_ack', ackPayload(acked.command));
+    res.json({ ok: true });
+  }
+
+  /** For a phone that backgrounded (iOS drops SSE) and polls on return. */
+  function handleGetCommand(wsId: string, req: Request, res: Response): void {
+    const cmd = store.getCommand(wsId, commandId(req));
+    if (!cmd) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    res.json({
+      id: cmd.id,
+      type: cmd.type,
+      session_id: cmd.sessionId,
+      machine_id: cmd.machineId,
+      state: cmd.state,
+      result: cmd.result ?? null,
+      reach: cmd.reach ?? null,
+      reason: cmd.reason ?? null,
+      created_at: cmd.createdAt,
+      expires_at: cmd.expiresAt,
+      claimed_at: cmd.claimedAt ?? null,
+      done_at: cmd.doneAt ?? null,
     });
   }
 
@@ -370,13 +697,14 @@ export function createApp(cfg: AppConfig): CreatedApp {
 
     app.delete('/sessions/:id', (req, res) => {
       const removed = store.deleteSession(LEGACY_WS, req.params.id);
-      if (removed) broadcast(LEGACY_WS, 'remove', { id: req.params.id });
+      if (removed) announceRemoved(LEGACY_WS, req.params.id);
       res.json({ ok: removed });
     });
 
     app.post('/sessions/clear', requireSecret, (_req, res) => {
       store.clearSessions(LEGACY_WS);
       broadcast(LEGACY_WS, 'snapshot', []);
+      announceAcks(store.takeFinishedCommands());
       res.json({ ok: true });
     });
 
@@ -384,7 +712,27 @@ export function createApp(cfg: AppConfig): CreatedApp {
       res.json(store.getSessions(LEGACY_WS));
     });
 
-    app.get('/events', (req, res) => handleEvents(LEGACY_WS, req, res));
+    // A plain viewer connect stays open, like every other read; the listener
+    // branch sits behind the secret like the command POSTs (a listener holds
+    // the secret anyway, and nobody else may take a machine's slot).
+    const guardListener = (req: Request, res: Response, next: NextFunction): void =>
+      req.query.listener === undefined ? next() : requireSecret(req, res, next);
+
+    app.get('/events', guardListener, (req, res) => handleEvents(LEGACY_WS, req, res));
+
+    app.get('/api/machines', (_req, res) => {
+      res.json(onlineMachines(LEGACY_WS));
+    });
+
+    app.post('/commands', requireSecret, (req, res) => handleCreateCommand(LEGACY_WS, req, res));
+
+    app.post('/commands/:id/claim', requireSecret, (req, res) =>
+      handleClaimCommand(LEGACY_WS, req, res)
+    );
+
+    app.post('/commands/:id/ack', requireSecret, (req, res) => handleAckCommand(LEGACY_WS, req, res));
+
+    app.get('/commands/:id', (req, res) => handleGetCommand(LEGACY_WS, req, res));
   }
 
   // ---- multi-tenant (workspace) mode ----------------------------------------
@@ -518,6 +866,36 @@ export function createApp(cfg: AppConfig): CreatedApp {
       res.json(store.getHistory(wsId, req.params.id));
     });
 
+    app.get('/w/:token/api/machines', (req, res) => {
+      const wsId = resolveWs(req, res);
+      if (!wsId) return;
+      res.json(onlineMachines(wsId));
+    });
+
+    app.post('/w/:token/commands', (req, res) => {
+      const wsId = resolveWs(req, res);
+      if (!wsId) return;
+      handleCreateCommand(wsId, req, res);
+    });
+
+    app.post('/w/:token/commands/:id/claim', (req, res) => {
+      const wsId = resolveWs(req, res);
+      if (!wsId) return;
+      handleClaimCommand(wsId, req, res);
+    });
+
+    app.post('/w/:token/commands/:id/ack', (req, res) => {
+      const wsId = resolveWs(req, res);
+      if (!wsId) return;
+      handleAckCommand(wsId, req, res);
+    });
+
+    app.get('/w/:token/commands/:id', (req, res) => {
+      const wsId = resolveWs(req, res);
+      if (!wsId) return;
+      handleGetCommand(wsId, req, res);
+    });
+
     app.post('/w/:token/pair', (req, res) => {
       if (!resolveWs(req, res)) return;
       // The raw token (not the hashed wsId) is what the claimer needs.
@@ -565,7 +943,7 @@ export function createApp(cfg: AppConfig): CreatedApp {
       const wsId = resolveWs(req, res);
       if (!wsId) return;
       const removed = store.deleteSession(wsId, req.params.id);
-      if (removed) broadcast(wsId, 'remove', { id: req.params.id });
+      if (removed) announceRemoved(wsId, req.params.id);
       res.json({ ok: removed });
     });
 
@@ -574,6 +952,7 @@ export function createApp(cfg: AppConfig): CreatedApp {
       if (!wsId) return;
       store.clearSessions(wsId);
       broadcast(wsId, 'snapshot', []);
+      announceAcks(store.takeFinishedCommands());
       res.json({ ok: true });
     });
 
@@ -613,17 +992,31 @@ export function createApp(cfg: AppConfig): CreatedApp {
   const keepalive = setInterval(() => {
     for (const clients of sseClients.values()) {
       for (const res of Array.from(clients)) {
-        safeWrite(clients, res, ': keepalive\n\n');
+        safeWrite(res, ': keepalive\n\n', () => clients.delete(res));
+      }
+    }
+    for (const [wsId, group] of listeners) {
+      for (const [machineId, l] of Array.from(group)) {
+        safeWrite(l.res, ': keepalive\n\n', () => dropListener(wsId, machineId, l));
       }
     }
   }, 25_000);
   keepalive.unref();
   timers.push(keepalive);
 
+  // Every command terminates observably: the ones nobody claimed or acked in
+  // time fail as expired, on the board and for a polling phone alike.
+  // The floor keeps a tiny TTL from turning this into a hot timer.
+  const commandSweep = setInterval(() => {
+    announceAcks(store.sweepCommands());
+  }, Math.max(1_000, Math.min(cfg.commandTtlMs, COMMAND_SWEEP_MS)));
+  commandSweep.unref();
+  timers.push(commandSweep);
+
   if (cfg.sessionTtlMs > 0) {
     const sweep = setInterval(() => {
       for (const { wsId, id } of store.sweepExpiredSessions(cfg.sessionTtlMs)) {
-        broadcast(wsId, 'remove', { id });
+        announceRemoved(wsId, id);
       }
     }, Math.min(cfg.sessionTtlMs, 60_000));
     sweep.unref();
@@ -648,7 +1041,7 @@ export function createApp(cfg: AppConfig): CreatedApp {
 
   function shutdown(): void {
     for (const t of timers) clearInterval(t);
-    for (const wsId of Array.from(sseClients.keys())) closeStreams(wsId);
+    for (const wsId of new Set([...sseClients.keys(), ...listeners.keys()])) closeStreams(wsId);
     pusher.shutdown();
     // Drains queued writes then closes the pool; nothing left to surface here.
     void store.close().catch(() => undefined);

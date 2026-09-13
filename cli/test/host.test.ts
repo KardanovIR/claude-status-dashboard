@@ -185,7 +185,9 @@ function readRecord(state: string, session = 'msg-test'): { file: string; record
 }
 
 function expectedMachineId(): string {
-  return crypto.createHash('sha256').update(`${MACHINE_ID}\n${base}`).digest('hex').slice(0, 32);
+  // Two rounds, like the hook: the key is the listener's credential, the id is on the wire.
+  const key = crypto.createHash('sha256').update(`${MACHINE_ID}\n${base}`).digest('hex');
+  return crypto.createHash('sha256').update(key).digest('hex').slice(0, 32);
 }
 
 describe('focus host summary', () => {

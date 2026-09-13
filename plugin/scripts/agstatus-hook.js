@@ -46,10 +46,13 @@
  * front. Everything the listener needs to do that (pid, tty, cwd, terminal
  * ids, socket paths) stays in a local 0600 record and never goes on the wire.
  * "focus": false sends `host: null` so a live card clears its labels.
- *   machine.id = sha256(machineId + "\n" + base).slice(0, 32), where machineId
- *   is the raw uuid in machine.json and base is the board URL as boardBase()
- *   normalizes it (no trailing "/", no "/webhook"). The listener computes the
- *   same value to filter commands; the raw id never goes on the wire.
+ *   machine key = sha256(machineId + "\n" + base) as 64 hex chars, and
+ *   machine.id = sha256(key).slice(0, 32) — where machineId is the raw uuid
+ *   in machine.json and base is the board URL as boardBase() normalizes it
+ *   (no trailing "/", no "/webhook"). Only the id goes on the wire; the key
+ *   is the listener's credential (it proves it is this machine when it
+ *   subscribes, claims and acks), so a viewer who sees the id cannot pose
+ *   as the machine. The raw id never leaves the machine.
  * First-time host detection is bounded as a whole (HOST_DETECT_DEADLINE_MS):
  * when it runs over, the post goes out without `host` (the server carries the
  * previous value forward) and the next event fills it in.
@@ -1151,15 +1154,23 @@ function focusStateDir() {
  * machine.json, created by `agstatus listener install`; read-only here. Missing
  * or malformed means this machine has not opted in, whatever the config says.
  * The raw id never goes on the wire: it is hashed with the board URL, so the
- * server sees no constant that could link one machine across boards.
+ * server sees no constant that could link one machine across boards. Two
+ * rounds, so the listener has a credential the board never sees:
  *
- *   machine.id = sha256(machineId + "\n" + base).slice(0, 32)
+ *   key        = sha256(machineId + "\n" + base)   (64 hex chars, listener only)
+ *   machine.id = sha256(key).slice(0, 32)            (on the wire)
  *
  * `base` is the board URL exactly as boardBase() normalizes it, so the same
  * board pasted with or without a trailing "/" or "/webhook" hashes alike. The
- * listener computes the identical value to filter commands; change neither
- * the ordering nor the separator without changing it there too.
+ * listener derives the same key to subscribe, claim and ack, and the server
+ * checks sha256(key)[0..32] against the id it stored; change neither the
+ * ordering nor the separator without changing them there too.
  */
+/** The listener's credential for this machine and board; see readMachine(). */
+function machineKey(machineId, base) {
+  return crypto.createHash('sha256').update(`${machineId}\n${base}`).digest('hex');
+}
+
 function readMachine(dir, base) {
   let parsed;
   try {
@@ -1172,7 +1183,7 @@ function readMachine(dir, base) {
   // Non-identifying by default — a Mac's hostname embeds the account's name.
   const fallback = process.platform === 'darwin' ? 'Mac' : process.platform === 'win32' ? 'PC' : 'Linux';
   return {
-    id: crypto.createHash('sha256').update(`${machineId}\n${base}`).digest('hex').slice(0, 32),
+    id: crypto.createHash('sha256').update(machineKey(machineId, base)).digest('hex').slice(0, 32),
     name: label(parsed.name, fallback),
   };
 }

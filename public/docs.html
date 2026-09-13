@@ -178,6 +178,7 @@
           <li><a href="#api-plan-usage">Plan usage</a></li>
           <li><a href="#api-usage-history-and-per-project-spend">Usage history and per-project spend</a></li>
           <li><a href="#api-session-history">Session history</a></li>
+          <li><a href="#api-focus-commands">Focus commands</a></li>
           <li><a href="#api-legacy-single-tenant-endpoints">Legacy (single-tenant) endpoints</a></li>
           <li><a href="#api-multi-tenant-workspace-endpoints">Multi-tenant: workspace endpoints</a></li>
           <li><a href="#api-sse-event-format">SSE event format</a></li>
@@ -1218,6 +1219,129 @@ keep-alive re-posts are not recorded):</p>
 clients. The last 100 entries are kept per session (older ones are
 soft-deleted); dismissing or expiring a session drops its history. Unknown
 sessions return <code>[]</code>.</p>
+<h3 id="api-focus-commands"><a class="anchor" href="#api-focus-commands">Focus commands</a></h3>
+<p>Focus lets a tap on a card bring the session&#39;s terminal to the front on the
+machine running it (design: <a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/docs/design/focus-protocol.md">docs/design/focus-protocol.md</a>).
+Three parties take part: a <strong>viewer</strong> (the phone or web board), the
+<strong>server</strong>, and a <strong>listener</strong> — the AgStatus process on each machine that
+opted in. A session can be focused only when its <code>host</code> is set and that
+machine&#39;s listener is online.</p>
+<pre><code>viewer   ─▶ POST …/commands {id, type, session_id}      server attaches machine_id from session.host
+server   ─▶ SSE `command` ─▶ listener                     only the listener for that machine
+listener ─▶ POST …/commands/:id/claim                    exactly-once, then acts locally
+listener ─▶ POST …/commands/:id/ack {result, reach, reason}
+server   ─▶ SSE `command_ack` ─▶ everyone                 or {result: &quot;failed&quot;, reason: &quot;expired&quot;} at the TTL
+viewer   ─▶ GET …/commands/:id                           polling, for a phone that backgrounded
+</code></pre>
+<p>Commands carry <strong>ids only</strong> — never a path, a binary or an argument — and
+live <strong>in memory only</strong>, like pairing codes: a restart drops them, and the
+phone simply sees its command time out. The paths below are shown for
+multi-tenant mode; legacy mode mounts the same handlers at the root
+(<code>POST /commands</code>, <code>POST /commands/:id/claim</code>, …) with the <code>POST</code>s behind
+<code>X-Webhook-Secret</code> when <code>WEBHOOK_SECRET</code> is set, like the webhook.</p>
+<h4 id="api-listener-presence"><a class="anchor" href="#api-listener-presence">Listener presence</a></h4>
+<p>A listener subscribes to the ordinary event stream with a <code>listener</code> query
+parameter and the machine&#39;s key:</p>
+<pre><code>GET /w/&lt;token&gt;/events?listener=&lt;machine_id&gt;&amp;key=&lt;machine_key&gt;&amp;name=&lt;label&gt;
+</code></pre>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Param</th>
+<th>Rule</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>listener</code></td>
+<td>Required. The machine id the hook reports in <code>host.machine.id</code>; must match <code>^[0-9a-f]{32}$</code> (<code>400</code> otherwise).</td>
+</tr>
+<tr>
+<td><code>key</code></td>
+<td>Required. The <strong>machine key</strong>: 64 lowercase hex, the value the id is derived from (<code>machine_id = sha256(key)[0..32]</code>, see the <a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/docs/design/focus-protocol.md#32-wire-summary--the-host-webhook-field">design</a>). <code>400</code> when malformed; <code>403 {&quot;error&quot;: &quot;wrong_key&quot;}</code> when it does not hash to <code>listener</code>. Only the machine holds the key — every viewer sees the id in the snapshot, so the id alone proves nothing, and a viewer can neither take a machine&#39;s slot nor end its stream.</td>
+</tr>
+<tr>
+<td><code>name</code></td>
+<td>Label shown on the board; control characters stripped, trimmed, truncated to 32 chars; blank → <code>Machine</code>. Nothing else from the query reaches the board.</td>
+</tr>
+</tbody></table></div>
+<p>Listener slots are separate from the 10 viewer slots: at most <strong>5 listeners
+per workspace</strong> (<code>429 {&quot;error&quot;: &quot;too many listeners&quot;}</code> for a 6th machine),
+one per <code>machine_id</code> — a new connection for a machine that is already
+connected replaces the old stream (the old one is ended without an
+<code>offline</code> event). Connects are limited to <strong>30/min per workspace</strong>
+(<code>429 {&quot;error&quot;: &quot;rate limit exceeded&quot;}</code>; the listener should sleep 60 s),
+since every one is broadcast to every viewer. On connect the listener
+receives <code>snapshot</code>, then a <code>commands</code> frame with the unclaimed commands
+waiting for that machine, and every viewer (and listener) receives
+<code>machine {online: true}</code>. When the stream closes everyone receives
+<code>machine {online: false}</code>. After that the listener gets every event a viewer
+gets, plus <code>command</code> frames addressed to its machine, and the same 25 s
+keepalive.</p>
+<p><code>GET /w/&lt;token&gt;/api/machines</code> (legacy: <code>GET /api/machines</code>) returns the
+machines currently online, the same array a viewer gets in its <code>machines</code>
+frame — id, label, and since when; no platform or version:</p>
+<pre><code class="language-json">[ { &quot;id&quot;: &quot;9f2c…&quot;, &quot;name&quot;: &quot;MacBook&quot;, &quot;online&quot;: true, &quot;since&quot;: 1752096000000 } ]
+</code></pre>
+<h4 id="api-command-endpoints"><a class="anchor" href="#api-command-endpoints">Command endpoints</a></h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Method &amp; path</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>POST /w/&lt;token&gt;/commands</code></td>
+<td>Send a command. Body <code>{&quot;id&quot;: &quot;&lt;client uuid&gt;&quot;, &quot;type&quot;: &quot;focus&quot;|&quot;resume&quot;, &quot;session_id&quot;: &quot;&lt;id&gt;&quot;}</code>. <code>id</code> is a UUID the client mints (normalized to lowercase) so a retry can be told from a second tap. <code>200 {id, delivered, expires_in_ms}</code> — <code>delivered</code> is whether a listener for the session&#39;s machine is connected right now.</td>
+</tr>
+<tr>
+<td><code>POST /w/&lt;token&gt;/commands/:id/claim</code></td>
+<td>Listener only. Body <code>{&quot;machine_key&quot;: &quot;&lt;64 hex&gt;&quot;}</code> — the key of the machine the command was routed to (see <a href="#api-listener-presence">presence</a>). Moves <code>pending → claimed</code>; a second claim fails, so execution is exactly-once across a LaunchAgent and a stray manual run. <code>200 {ok: true, expires_in_ms}</code>. Nothing is broadcast.</td>
+</tr>
+<tr>
+<td><code>POST /w/&lt;token&gt;/commands/:id/ack</code></td>
+<td>Listener only. Body <code>{&quot;machine_key&quot;, &quot;result&quot;, &quot;reach&quot;?, &quot;reason&quot;?}</code> — <strong>enums only, no other keys</strong> (see below). Moves <code>claimed → done</code>, answers <code>200 {ok: true}</code> and broadcasts <code>command_ack</code>.</td>
+</tr>
+<tr>
+<td><code>GET /w/&lt;token&gt;/commands/:id</code></td>
+<td><code>200 {id, type, session_id, machine_id, state, result, reach, reason, created_at, expires_at, claimed_at, done_at}</code> (unset values are <code>null</code>); <code>404</code> when unknown or already swept.</td>
+</tr>
+</tbody></table></div>
+<p><strong>Status codes.</strong> <code>POST /commands</code>: <code>400</code> on a malformed <code>id</code>, <code>type</code> or
+<code>session_id</code>; <code>404 {&quot;error&quot;: &quot;unknown_session&quot;}</code>; <code>409 {&quot;error&quot;: &quot;no_host&quot;}</code>
+when the session&#39;s hook has not opted in to Focus; <code>409 {&quot;error&quot;: &quot;duplicate_id&quot;}</code>;
+<code>429 {&quot;error&quot;: &quot;rate limit exceeded&quot;}</code> past 10 commands/min per workspace;
+<code>429 {&quot;error&quot;: &quot;too_many_pending&quot;}</code> at 10 pending commands per workspace (a
+re-tap on a card that is already waiting replaces its predecessor and is not
+counted). <code>claim</code>: <code>400</code> bad <code>machine_key</code>; <code>404 {&quot;error&quot;: &quot;not_found&quot;}</code>;
+<code>403 {&quot;error&quot;: &quot;wrong_machine&quot;}</code> when <code>machine_key</code> is not the key of the
+machine the command was routed to — the public <code>machine_id</code> is no
+credential; <code>409 {&quot;error&quot;: &quot;already_claimed&quot;}</code> unless the command is pending;
+<code>410 {&quot;error&quot;: &quot;expired&quot;}</code>. <code>ack</code>: <code>400</code> on an unknown body key, a bad
+<code>machine_key</code>, a value outside its enum, or <code>result: &quot;failed&quot;</code> without a
+<code>reason</code>; <code>404</code>/<code>403</code> as for claim; <code>409 {&quot;error&quot;: &quot;not_claimed&quot;}</code> while
+still pending; <code>409 {&quot;error&quot;: &quot;already_done&quot;}</code>; <code>410 {&quot;error&quot;: &quot;expired&quot;}</code>.</p>
+<p><strong>Enums.</strong> <code>type</code> ∈ <code>focus | resume</code>. <code>result</code> ∈
+<code>focused | activated | selected | resumed | failed</code>. <code>reach</code> (how far the
+listener got) ∈ <code>pane | tab | window | app | thread</code>. <code>reason</code> (required when
+<code>result</code> is <code>failed</code>) ∈ <code>no-record | remote | not-running | app-not-running | consent-needed | mux-detached | ambiguous | unsupported-host | bad-record | respawn-failed | unsupported-type | superseded | expired</code>. There is no free
+text anywhere on this channel: a message field would put the machine&#39;s cwd,
+tty or stderr in front of every board viewer.</p>
+<p><strong>Lifecycle.</strong> <code>pending → claimed → done</code>, or <code>→ expired</code> from either live
+state once <code>COMMAND_TTL_MS</code> (default 120000, 2 minutes; whole milliseconds,
+at least 1000) has passed — the server then broadcasts
+<code>command_ack {result: &quot;failed&quot;, reason: &quot;expired&quot;}</code> so every command
+terminates observably. A session that leaves the board (dismissed, cleared,
+evicted or expired) takes its pending commands with it: each is finished as
+<code>failed / superseded</code> and its <code>command_ack</code> follows the <code>remove</code> (or
+<code>snapshot</code>) event, so the listener never raises a window for a card nobody
+is looking at; a claimed one is left to ack or expire. The <code>machine_id</code> always comes from
+<code>session.host</code> on the server; a client cannot aim a command at a machine of
+its choosing. A second command for the same <code>(session_id, type, machine_id)</code>
+while the first is still pending <strong>supersedes</strong> it: the older one is
+finished as <code>failed / superseded</code> (its <code>command_ack</code> is broadcast) and the
+new one goes out. Done and expired commands stay readable through <code>GET</code> for
+10 minutes, then are forgotten.</p>
 <h3 id="api-legacy-single-tenant-endpoints"><a class="anchor" href="#api-legacy-single-tenant-endpoints">Legacy (single-tenant) endpoints</a></h3>
 <div class="table-wrap"><table>
 <thead>
@@ -1244,12 +1368,37 @@ sessions return <code>[]</code>.</p>
 </tr>
 <tr>
 <td><code>GET /events</code></td>
-<td>SSE stream (see <a href="#api-sse-event-format">format</a>).</td>
-<td>no</td>
+<td>SSE stream (see <a href="#api-sse-event-format">format</a>); <code>?listener=</code> subscribes a Focus listener (see <a href="#api-listener-presence">presence</a>).</td>
+<td>no; yes* with <code>?listener=</code></td>
 </tr>
 <tr>
 <td><code>GET /api/sessions</code></td>
 <td>JSON list of all sessions.</td>
+<td>no</td>
+</tr>
+<tr>
+<td><code>GET /api/machines</code></td>
+<td>Focus listeners currently online.</td>
+<td>no</td>
+</tr>
+<tr>
+<td><code>POST /commands</code></td>
+<td>Send a Focus command (see <a href="#api-focus-commands">Focus commands</a>).</td>
+<td>yes*</td>
+</tr>
+<tr>
+<td><code>POST /commands/:id/claim</code></td>
+<td>Listener claims a command.</td>
+<td>yes*</td>
+</tr>
+<tr>
+<td><code>POST /commands/:id/ack</code></td>
+<td>Listener reports the outcome.</td>
+<td>yes*</td>
+</tr>
+<tr>
+<td><code>GET /commands/:id</code></td>
+<td>Command state, for polling.</td>
 <td>no</td>
 </tr>
 <tr>
@@ -1280,7 +1429,7 @@ sessions return <code>[]</code>.</p>
 </tbody></table></div>
 <p>* Only when <code>WEBHOOK_SECRET</code> is configured: send <code>X-Webhook-Secret: &lt;value&gt;</code>,
 else <code>401</code>. Reads and <code>DELETE /sessions/:id</code> stay open so the dashboard can
-list and dismiss cards.</p>
+list and dismiss cards. Focus is otherwise identical in legacy mode.</p>
 <h3 id="api-multi-tenant-workspace-endpoints"><a class="anchor" href="#api-multi-tenant-workspace-endpoints">Multi-tenant: workspace endpoints</a></h3>
 <p>There are no accounts — a workspace is identified by an unguessable token
 embedded in its URLs (<code>ags_</code> + 32 URL-safe characters). Anyone who has the
@@ -1320,7 +1469,7 @@ workspace:</p>
 </tr>
 <tr>
 <td><code>GET /w/&lt;token&gt;/events</code></td>
-<td>SSE stream (see <a href="#api-sse-event-format">format</a>). <code>429</code> past 10 concurrent connections.</td>
+<td>SSE stream (see <a href="#api-sse-event-format">format</a>). <code>429</code> past 10 concurrent connections. <code>?listener=&lt;machine_id&gt;</code> subscribes a Focus listener instead, in its own slot budget (see <a href="#api-listener-presence">presence</a>).</td>
 </tr>
 <tr>
 <td><code>POST /w/&lt;token&gt;/webhook</code></td>
@@ -1347,6 +1496,26 @@ workspace:</p>
 <td>Session timeline (see <a href="#api-session-history">Session history</a>).</td>
 </tr>
 <tr>
+<td><code>GET /w/&lt;token&gt;/api/machines</code></td>
+<td>Focus listeners currently online (see <a href="#api-listener-presence">presence</a>).</td>
+</tr>
+<tr>
+<td><code>POST /w/&lt;token&gt;/commands</code></td>
+<td>Send a Focus command (see <a href="#api-focus-commands">Focus commands</a>).</td>
+</tr>
+<tr>
+<td><code>POST /w/&lt;token&gt;/commands/:id/claim</code></td>
+<td>Listener claims a command.</td>
+</tr>
+<tr>
+<td><code>POST /w/&lt;token&gt;/commands/:id/ack</code></td>
+<td>Listener reports the outcome.</td>
+</tr>
+<tr>
+<td><code>GET /w/&lt;token&gt;/commands/:id</code></td>
+<td>Command state, for polling.</td>
+</tr>
+<tr>
 <td><code>DELETE /w/&lt;token&gt;/sessions/:id</code></td>
 <td>Remove one session. Returns <code>{ok: boolean}</code>.</td>
 </tr>
@@ -1356,7 +1525,7 @@ workspace:</p>
 </tr>
 <tr>
 <td><code>DELETE /w/&lt;token&gt;</code></td>
-<td>Delete the whole workspace: all sessions and device registrations removed, event streams closed. Returns <code>{ok: true}</code>.</td>
+<td>Delete the whole workspace: all sessions, device registrations and pending commands removed, event and listener streams closed. Returns <code>{ok: true}</code>.</td>
 </tr>
 </tbody></table></div>
 <p>Any request with an invalid or unknown token returns
@@ -1422,6 +1591,24 @@ data: { &quot;id&quot;: &quot;sess-abc&quot; }
 event: usage
 data: [ { &quot;source&quot;: &quot;claude&quot;, &quot;windows&quot;: [ ... ], &quot;updatedAt&quot;: 1752096030000 } ]
 
+event: machines
+data: [ { &quot;id&quot;: &quot;9f2c…&quot;, &quot;name&quot;: &quot;MacBook&quot;, &quot;online&quot;: true, &quot;since&quot;: 1752096000000 } ]
+
+event: machine
+data: { &quot;id&quot;: &quot;9f2c…&quot;, &quot;name&quot;: &quot;MacBook&quot;, &quot;online&quot;: true, &quot;since&quot;: 1752096000000 }
+
+event: machine
+data: { &quot;id&quot;: &quot;9f2c…&quot;, &quot;online&quot;: false, &quot;lastSeen&quot;: 1752096900000 }
+
+event: commands
+data: [ { &quot;id&quot;: &quot;6c1f…&quot;, &quot;type&quot;: &quot;focus&quot;, &quot;session_id&quot;: &quot;sess-abc&quot;, &quot;machine_id&quot;: &quot;9f2c…&quot;, &quot;expires_in_ms&quot;: 98000 } ]
+
+event: command
+data: { &quot;id&quot;: &quot;6c1f…&quot;, &quot;type&quot;: &quot;focus&quot;, &quot;session_id&quot;: &quot;sess-abc&quot;, &quot;machine_id&quot;: &quot;9f2c…&quot;, &quot;expires_in_ms&quot;: 120000 }
+
+event: command_ack
+data: { &quot;id&quot;: &quot;6c1f…&quot;, &quot;session_id&quot;: &quot;sess-abc&quot;, &quot;machine_id&quot;: &quot;9f2c…&quot;, &quot;type&quot;: &quot;focus&quot;, &quot;result&quot;: &quot;focused&quot;, &quot;reach&quot;: &quot;tab&quot;, &quot;reason&quot;: null }
+
 : keepalive
 </code></pre>
 <ul>
@@ -1431,7 +1618,19 @@ after <code>sessions/clear</code> or workspace deletion.</li>
 <li><code>remove</code> — a session was deleted, evicted, or expired.</li>
 <li><code>usage</code> — the full plan-usage list (see <a href="#api-plan-usage">Plan usage</a>). Sent
 on connect when non-empty, and after every usage report.</li>
-<li>A <code>: keepalive</code> comment line is sent every 25 s.</li>
+<li><code>machines</code> — every Focus listener currently online. Sent to viewers once,
+right after <code>snapshot</code> (an empty array when none is connected).</li>
+<li><code>machine</code> — a listener came online (<code>{id, name, online: true, since}</code>) or
+went away (<code>{id, online: false, lastSeen}</code>). Sent to everyone.</li>
+<li><code>commands</code> — the unclaimed commands waiting for a listener&#39;s machine. Sent
+to that listener once, right after its <code>snapshot</code>.</li>
+<li><code>command</code> — a new command for the listener&#39;s machine. Sent <strong>only</strong> to
+that listener; viewers never see it.</li>
+<li><code>command_ack</code> — a command finished: the listener acked it, a re-tap or the
+session&#39;s removal superseded it, or it expired
+(<code>{result: &quot;failed&quot;, reason: &quot;expired&quot;}</code>). Sent to everyone. See
+<a href="#api-focus-commands">Focus commands</a>.</li>
+<li>A <code>: keepalive</code> comment line is sent every 25 s, on listener streams too.</li>
 </ul>
 <p>The server sets <code>Cache-Control: no-cache, no-transform</code> and
 <code>X-Accel-Buffering: no</code> so reverse proxies don&#39;t buffer the stream. When a
@@ -1471,6 +1670,31 @@ are closed.</p>
 <td>Outstanding pairing codes per workspace</td>
 <td>3</td>
 <td><code>429</code>.</td>
+</tr>
+<tr>
+<td>Focus commands per workspace</td>
+<td>10/min</td>
+<td><code>429</code> (its own budget, separate from the webhook&#39;s).</td>
+</tr>
+<tr>
+<td>Pending Focus commands per workspace</td>
+<td>10</td>
+<td><code>429 {&quot;error&quot;: &quot;too_many_pending&quot;}</code>.</td>
+</tr>
+<tr>
+<td>Focus listeners per workspace</td>
+<td>5 (one per machine)</td>
+<td><code>429</code> for a 6th machine; a reconnect replaces the machine&#39;s old stream.</td>
+</tr>
+<tr>
+<td>Focus listener connects per workspace</td>
+<td>30/min</td>
+<td><code>429</code>; the listener sleeps 60 s.</td>
+</tr>
+<tr>
+<td>Focus command TTL</td>
+<td>2 min (<code>COMMAND_TTL_MS</code>)</td>
+<td>Unclaimed or unacked commands fail as <code>expired</code> (a <code>command_ack</code> is broadcast); finished ones are forgotten 10 min later. Commands are in memory only — a restart drops them.</td>
 </tr>
 <tr>
 <td>Workspace creations</td>

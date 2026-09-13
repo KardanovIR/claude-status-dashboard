@@ -18,6 +18,7 @@ export const TEST_DEFAULTS: AppConfig = {
   trustProxy: false,
   rateLimit: false,
   maxWorkspaces: 10_000,
+  commandTtlMs: 120_000,
   version: 'test',
   apns: null,
 };

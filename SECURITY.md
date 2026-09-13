@@ -41,6 +41,10 @@ Definitely report:
   from its own allow-listed strategy table (a tap carries only ids — see
   [docs/design/focus-protocol.md](docs/design/focus-protocol.md)), or
   read/write the local session record with the wrong permissions.
+- The Focus command channel itself: a command reaching a machine other than
+  the one the session reported, a claim or ack accepted from the wrong
+  machine, free text reaching the board through an ack, or the listener
+  slots/command limits in [docs/api.md](docs/api.md#focus-commands) bypassed.
 - iOS app issues around Keychain storage of the board token or push handling.
 
 Out of scope: reports that require the attacker to already possess the board

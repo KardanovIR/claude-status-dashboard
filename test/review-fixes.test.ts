@@ -33,6 +33,14 @@ describe('configFromEnv hardening', () => {
     expect(configFromEnv({ MAX_WORKSPACES: '0' }).maxWorkspaces).toBe(10_000);
     expect(configFromEnv({ MAX_WORKSPACES: '50' }).maxWorkspaces).toBe(50);
   });
+
+  it('COMMAND_TTL_MS must be whole milliseconds of at least a second, else the default', () => {
+    for (const bad of ['soon', '0', '1', '0.5', '999', '1500.5', '-120000']) {
+      expect(configFromEnv({ COMMAND_TTL_MS: bad }).commandTtlMs, bad).toBe(120_000);
+    }
+    expect(configFromEnv({ COMMAND_TTL_MS: '1000' }).commandTtlMs).toBe(1000);
+    expect(configFromEnv({ COMMAND_TTL_MS: '30000' }).commandTtlMs).toBe(30_000);
+  });
 });
 
 describe('global workspace cap', () => {

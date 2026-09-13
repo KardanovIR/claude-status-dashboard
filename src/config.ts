@@ -11,6 +11,11 @@ export interface AppConfig {
   trustProxy: boolean;
   rateLimit: boolean;
   maxWorkspaces: number;
+  /**
+   * How long a Focus command (a tap on a session's card) waits for the
+   * listener on the machine that hosts the session before it expires.
+   */
+  commandTtlMs: number;
   version: string;
   /** APNs push credentials; null = push disabled (everything else still works). */
   apns: {
@@ -31,6 +36,7 @@ export interface AppConfig {
 
 const DEFAULT_MULTI_TENANT_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_WORKSPACES = 10_000;
+const DEFAULT_COMMAND_TTL_MS = 120_000;
 
 function pkgVersion(): string {
   try {
@@ -143,6 +149,19 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AppConfig {
     }
   }
 
+  let commandTtlMs = DEFAULT_COMMAND_TTL_MS;
+  const cmdTtlRaw = env.COMMAND_TTL_MS;
+  if (cmdTtlRaw !== undefined && cmdTtlRaw.trim() !== '') {
+    const n = Number(cmdTtlRaw);
+    // Whole milliseconds, at least a second: below that no listener could
+    // ever claim, and the sweep timer would spin.
+    if (Number.isInteger(n) && n >= 1000) {
+      commandTtlMs = n;
+    } else {
+      console.warn(`Ignoring invalid COMMAND_TTL_MS=${JSON.stringify(cmdTtlRaw)}; using ${commandTtlMs}ms`);
+    }
+  }
+
   if (env.DB_PATH) {
     console.warn(
       'DB_PATH (SQLite) is no longer supported and was ignored — set DATABASE_URL to a ' +
@@ -159,6 +178,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AppConfig {
     trustProxy: boolFromEnv(env.TRUST_PROXY),
     rateLimit: true,
     maxWorkspaces,
+    commandTtlMs,
     version: pkgVersion(),
     apns: apnsFromEnv(env),
   };

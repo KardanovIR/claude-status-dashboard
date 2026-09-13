@@ -354,6 +354,50 @@ main {
 }
 .meta .ts { flex-shrink: 0; }
 
+/* focus row — the explicit "bring to front" control; only cards with a host get one */
+.focus {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  font-size: clamp(13px, 1.2vw, 15px);
+  color: var(--muted-2);
+}
+.focus [hidden] { display: none; }
+.focus-btn {
+  padding: 8px 14px;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: border-color .15s ease, background .15s ease, transform .15s ease;
+}
+.focus-btn:hover,
+.focus-btn:focus-visible {
+  border-color: var(--status-color);
+  background: rgba(255, 255, 255, 0.08);
+  outline: none;
+}
+.focus-btn:active { transform: scale(0.97); }
+/* aria-disabled, not disabled: keeps the tooltip and the focus stop that says why */
+.focus-btn[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  transform: none;
+}
+.focus-note,
+.focus-status { min-width: 0; line-height: 1.4; }
+.focus-status.pending { color: var(--muted); }
+.focus-status.ok      { color: var(--done); }
+.focus-status.fail    { color: var(--blocked); }
+
 /* empty state */
 .empty {
   grid-column: 1 / -1;
@@ -641,6 +685,8 @@ main {
   .dismiss   { width: 30px; height: 30px; font-size: 18px; }
   .message   { font-size: 14px; -webkit-line-clamp: 2; line-height: 1.4; }
   .meta      { font-size: 12px; gap: 8px; }
+  .focus     { font-size: 12px; gap: 6px 10px; }
+  .focus-btn { padding: 6px 10px; min-height: 30px; border-radius: 8px; }
   .footer    { padding: 10px 14px; padding-bottom: calc(10px + env(safe-area-inset-bottom)); font-size: 12px; }
   .footer code { font-size: 12px; padding: 4px 8px; }
   .copy      { padding: 6px 12px; min-height: 32px; font-size: 12px; }
@@ -658,6 +704,8 @@ main {
   .badge { font-size: 11px; padding: 4px 8px; }
   .message { font-size: 13.5px; -webkit-line-clamp: 2; }
   .meta { font-size: 12px; }
+  .focus { font-size: 12px; gap: 6px 10px; }
+  .focus-btn { padding: 5px 10px; min-height: 30px; border-radius: 8px; }
   .footer { padding: 8px 14px; font-size: 12px; }
   .footer code { font-size: 12px; padding: 4px 8px; }
   .copy { padding: 6px 12px; min-height: 36px; font-size: 12px; }

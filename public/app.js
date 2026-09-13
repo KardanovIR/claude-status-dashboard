@@ -24,6 +24,13 @@
 
   let webhookUrl = '';
   const state = new Map();
+  // Focus: listeners currently online (machine id → presence frame), and the
+  // latest command each card is showing (session id → status). Both live
+  // outside the DOM because the grid is re-rendered wholesale on every event.
+  const machines = new Map();
+  const focus = new Map();
+  // Legacy boards can require X-Webhook-Secret on writes; this page never sends it.
+  let requiresSecret = false;
 
   const escape = (s) =>
     String(s).replace(/[&<>"']/g, (c) => ({
@@ -139,7 +146,7 @@
         <div class="meta">
           <span class="project" title="${escape(s.project || '')}">${escape(s.project || '')}</span>
           <span class="ts" data-ts="${s.updatedAt}">${relTime(s.updatedAt)}</span>
-        </div>
+        </div>${renderFocus(s)}
       </article>
     `).join('');
   }
@@ -170,11 +177,208 @@
     }
   }
 
+  // ---- Focus: bring a session's terminal to the front on its machine -------
+  //
+  // An explicit control, never the card tap. Presence comes from the
+  // `machines`/`machine` SSE frames, a tap POSTs a command carrying ids only,
+  // and the outcome arrives as `command_ack` (docs/api.md "Focus commands",
+  // docs/design/focus-protocol.md §7).
+
+  const ACK_TIMEOUT_MS = 15000;   // no ack by then → "is it asleep?"
+  const STATUS_CLEAR_MS = 8000;   // successes fade; failures stay until the next tap
+
+  const uuid = () => {
+    if (crypto.randomUUID) return crypto.randomUUID();
+    // A plain-http LAN board has no crypto.randomUUID; build a v4 by hand.
+    const b = crypto.getRandomValues(new Uint8Array(16));
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  };
+
+  const machineOnline = (id) => {
+    const m = machines.get(id);
+    return Boolean(m && m.online);
+  };
+
+  // The hook's label, plus the id's last four hex when two online machines
+  // share it — the default names ("Mac", "PC") make that likely.
+  function machineLabel(host) {
+    const own = machines.get(host.machine.id);
+    const name = (own && own.name) || host.machine.name || 'Machine';
+    let same = 0;
+    for (const m of machines.values()) if (m.online && m.name === name) same += 1;
+    return same > 1 ? `${name} (${host.machine.id.slice(-4)})` : name;
+  }
+
+  function offlineText(host, name) {
+    const m = machines.get(host.machine.id);
+    return m && m.lastSeen ? `${name} is offline (${relTime(m.lastSeen)})` : `${name} is offline`;
+  }
+
+  // The visible note: the time keeps ticking with the other [data-ts] labels, and a
+  // machine the board has never seen gets the hint a tooltip can't give on touch.
+  function offlineNote(host, name) {
+    const m = machines.get(host.machine.id);
+    if (!m) {
+      return `${escape(name)} is offline — needs the <a href="/docs#hooks-focus-optional-opt-in">AgStatus listener</a> on that machine`;
+    }
+    return m.lastSeen
+      ? `${escape(name)} is offline (<span data-ts="${Number(m.lastSeen)}">${escape(relTime(m.lastSeen))}</span>)`
+      : `${escape(name)} is offline`;
+  }
+
+  // Every element is always present and toggled with `hidden`, so a status
+  // change is painted in place and the live region actually announces it.
+  function renderFocus(s) {
+    const host = s.host;
+    if (!host || !host.machine) return '';
+    const name = machineLabel(host);
+    const blocked = !BASE && requiresSecret;
+    const online = !blocked && machineOnline(host.machine.id);
+    const st = focus.get(s.id);
+    const offline = online ? '' : blocked ? 'Bring-to-front needs the webhook secret on this board' : offlineText(host, name);
+    const noteHtml = online ? '' : blocked ? escape(offline) : offlineNote(host, name);
+    let title = `Bring this session's window to the front on ${name}`;
+    if (!online) {
+      title = blocked || machines.has(host.machine.id)
+        ? offline
+        : `${offline} — bring-to-front needs the AgStatus listener on that machine`;
+    }
+    // aria-disabled rather than disabled: an offline machine's button keeps
+    // its tooltip and stays reachable for a screen reader to say why.
+    const button = (type, label, hidden) => `
+          <button class="focus-btn" type="button" data-focus="${escape(s.id)}" data-type="${type}"
+                  title="${escape(title)}"${online ? '' : ' aria-disabled="true"'}${hidden ? ' hidden' : ''}>${escape(label)}</button>`;
+    return `
+        <div class="focus">
+          ${button('focus', `Bring to front on ${name}`, false)}
+          ${button('resume', 'Resume', !(st && st.resume))}
+          <span class="focus-note"${offline && !st ? '' : ' hidden'}>${noteHtml}</span>
+          <span class="focus-status${st ? ` ${st.kind}` : ''}" aria-live="polite">${st ? escape(st.text) : ''}</span>
+        </div>`;
+  }
+
+  /** Repaints one card's focus row without re-rendering the grid. */
+  function paintFocus(id) {
+    let row = null;
+    for (const el of gridEl.querySelectorAll('.card')) {
+      if (el.dataset.id === id) row = el.querySelector('.focus');
+    }
+    if (!row) return;
+    const st = focus.get(id);
+    const status = row.querySelector('.focus-status');
+    status.className = `focus-status${st ? ` ${st.kind}` : ''}`;
+    status.textContent = st ? st.text : '';
+    const note = row.querySelector('.focus-note');
+    note.hidden = Boolean(st) || !note.textContent;
+    row.querySelector('[data-type="resume"]').hidden = !(st && st.resume);
+  }
+
+  function setFocus(id, st) {
+    const cur = focus.get(id);
+    if (cur) {
+      clearTimeout(cur.ackTimer);
+      clearTimeout(cur.clearTimer);
+    }
+    if (st) focus.set(id, st); else focus.delete(id);
+    paintFocus(id);
+  }
+
+  /** A final outcome: successes fade after a while, failures stay until the next tap. */
+  function showResult(id, st, kind, text, resume) {
+    st.done = true;
+    st.kind = kind;
+    st.text = text;
+    st.resume = Boolean(resume);
+    clearTimeout(st.ackTimer);
+    if (kind === 'ok') {
+      st.clearTimer = setTimeout(() => { if (focus.get(id) === st) setFocus(id, null); }, STATUS_CLEAR_MS);
+    }
+    paintFocus(id);
+  }
+
+  const SEND_ERRORS = {
+    401: 'Not allowed — this board needs the webhook secret',
+    404: 'Session gone',
+    409: 'No machine info for this session',
+    429: 'Too many taps — wait a moment',
+  };
+
+  async function sendCommand(id, type) {
+    const s = state.get(id);
+    if (!s || !s.host) return;
+    const name = machineLabel(s.host);
+    const st = {
+      cmdId: uuid(), type, name, kind: 'pending', text: 'Sending…', done: false, resume: false,
+      app: (s.host.app && s.host.app.name) || 'the app',
+    };
+    setFocus(id, st);
+    st.ackTimer = setTimeout(() => {
+      if (focus.get(id) === st && !st.done) showResult(id, st, 'fail', `No answer from ${name} — is it asleep?`);
+    }, ACK_TIMEOUT_MS);
+    let res;
+    try {
+      res = await fetch(`${BASE}/commands`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: st.cmdId, type, session_id: id }),
+      });
+    } catch {
+      if (focus.get(id) === st && !st.done) showResult(id, st, 'fail', "Couldn't reach the board");
+      return;
+    }
+    // A newer tap, or an ack that beat the response, already took over.
+    if (focus.get(id) !== st || st.done) return;
+    if (!res.ok) {
+      showResult(id, st, 'fail', SEND_ERRORS[res.status] || `Couldn't send (HTTP ${res.status})`);
+      return;
+    }
+    const data = await res.json().catch(() => ({}));
+    if (focus.get(id) !== st || st.done) return;
+    st.text = data.delivered === false ? `Sent — ${name} is not connected` : 'Sent…';
+    paintFocus(id);
+  }
+
+  function handleAck(ack) {
+    const id = ack.session_id;
+    const st = focus.get(id);
+    // Only the command this card is waiting on: an older one that a re-tap
+    // superseded, or a stray ack, has nothing to say to the viewer.
+    if (!st || st.cmdId !== ack.id || st.done) return;
+    const name = st.name;
+    switch (ack.result) {
+      case 'focused': showResult(id, st, 'ok', `Brought to front on ${name}`); return;
+      case 'activated': showResult(id, st, 'ok', `Opened ${st.app} on ${name} — couldn't find the exact window`); return;
+      case 'selected': showResult(id, st, 'ok', `Selected the pane on ${name}; the window stayed behind`); return;
+      case 'resumed': showResult(id, st, 'ok', `Resumed on ${name}`); return;
+      default: break;
+    }
+    switch (ack.reason) {
+      case 'superseded': showResult(id, st, 'ok', 'Replaced by a newer tap'); return;
+      case 'not-running': showResult(id, st, 'fail', `Not running on ${name}`, true); return;
+      case 'expired': showResult(id, st, 'fail', `No answer from ${name} — is it asleep?`); return;
+      case 'unsupported-type':
+        if (st.type === 'resume') { showResult(id, st, 'fail', "Resume isn't available yet"); return; }
+        break;
+      default: break;
+    }
+    showResult(id, st, 'fail', `Couldn't bring it to front (${ack.reason || ack.result || 'unknown'})`);
+  }
+
   gridEl.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-dismiss]');
-    if (!btn) return;
+    if (btn) {
+      e.preventDefault();
+      dismissSession(btn.dataset.dismiss);
+      return;
+    }
+    const focusBtn = e.target.closest('[data-focus]');
+    if (!focusBtn) return;
     e.preventDefault();
-    dismissSession(btn.dataset.dismiss);
+    if (focusBtn.getAttribute('aria-disabled') === 'true') return;
+    sendCommand(focusBtn.dataset.focus, focusBtn.dataset.type === 'resume' ? 'resume' : 'focus');
   });
 
   function setConnected(ok) {
@@ -185,6 +389,8 @@
   // Deleted/expired workspace: stop reconnecting and say so.
   function renderGone() {
     state.clear();
+    machines.clear();
+    for (const id of focus.keys()) setFocus(id, null);
     usage = [];
     renderUsage();
     webhookUrl = '';
@@ -223,6 +429,7 @@
       const list = JSON.parse(e.data);
       state.clear();
       for (const s of list) state.set(s.id, s);
+      for (const id of focus.keys()) if (!state.has(id)) setFocus(id, null);
       renderGrid();
     });
 
@@ -235,7 +442,27 @@
     es.addEventListener('remove', (e) => {
       const { id } = JSON.parse(e.data);
       state.delete(id);
+      setFocus(id, null);
       renderGrid();
+    });
+
+    // Presence: the full list follows every snapshot, so a reconnect re-seeds
+    // it; single frames then keep it current. An offline frame carries no
+    // name, so the one we had is kept for the "<name> is offline" copy.
+    es.addEventListener('machines', (e) => {
+      machines.clear();
+      for (const m of JSON.parse(e.data)) machines.set(m.id, m);
+      renderGrid();
+    });
+
+    es.addEventListener('machine', (e) => {
+      const m = JSON.parse(e.data);
+      machines.set(m.id, { ...(machines.get(m.id) || {}), ...m });
+      renderGrid();
+    });
+
+    es.addEventListener('command_ack', (e) => {
+      handleAck(JSON.parse(e.data));
     });
 
     es.addEventListener('usage', (e) => {
@@ -364,7 +591,8 @@
     if (footerEl) footerEl.hidden = false;
     webhookUrl = (cfg && cfg.webhookUrl) || `${location.origin}${BASE}/webhook`;
     urlEl.textContent = webhookUrl;
-    if (cfg && cfg.requiresSecret) authEl.textContent = '· requires X-Webhook-Secret';
+    requiresSecret = Boolean(cfg && cfg.requiresSecret);
+    if (requiresSecret) authEl.textContent = '· requires X-Webhook-Secret';
     connect();
   }
 

@@ -12,13 +12,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.UUID
 import kotlin.math.min
 
 /**
  * App state: the adopted board, the live session list (newest first when it
  * first fills; after that rows keep their position as events arrive and new
- * sessions join at the top), the SSE connection lifecycle with backoff, and
- * demo mode. Mirrors the iOS SessionStore.
+ * sessions join at the top), the SSE connection lifecycle with backoff,
+ * Focus presence and commands, and demo mode. Mirrors the iOS SessionStore.
  */
 class SessionStore(app: Application) : AndroidViewModel(app) {
 
@@ -54,6 +55,21 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
     val keepAwakeIdleMinutes: StateFlow<Int> = _keepAwakeIdleMinutes.asStateFlow()
 
     val isDemo: Boolean get() = _connection.value == Connection.DEMO
+
+    /**
+     * Focus listeners by machine id — the `machines` frame after every
+     * snapshot re-seeds it, single `machine` frames keep it current. An entry
+     * that went offline stays, so the card can say since when.
+     */
+    private val _machines = MutableStateFlow<Map<String, MachinePresence>>(emptyMap())
+    val machines: StateFlow<Map<String, MachinePresence>> = _machines.asStateFlow()
+
+    /** The latest Focus command each card is showing, by session id. */
+    private val _focus = MutableStateFlow<Map<String, FocusStatus>>(emptyMap())
+    val focus: StateFlow<Map<String, FocusStatus>> = _focus.asStateFlow()
+
+    /** Per session, the timer its status waits on: the ack watchdog, or a success's fade. */
+    private val focusTimers = HashMap<String, Job>()
 
     private val sse = SseClient()
     private var streamJob: Job? = null
@@ -93,6 +109,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         BoardStorage.save(getApplication<Application>(), board)
         _sessions.value = emptyList()
         _usage.value = emptyList()
+        clearFocus()
         cachedPairCode = null
         connect()
     }
@@ -105,6 +122,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         BoardStorage.clear(getApplication<Application>())
         _sessions.value = emptyList()
         _usage.value = emptyList()
+        clearFocus()
         cachedPairCode = null
         _connection.value = Connection.IDLE
     }
@@ -143,9 +161,19 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         streamJob = viewModelScope.launch { runStream(current) }
     }
 
-    /** Cancels the stream job. */
+    /**
+     * Cancels the stream job. A command still waiting for its ack loses its
+     * watchdog here: the activity is going to the background, and on return
+     * the snapshot asks the server how it ended — so a stale timer can't
+     * declare "asleep" over an answer already waiting there. The status
+     * itself stays pending. Should the reconnect fail instead, runStream
+     * puts the deadline back.
+     */
     fun disconnect() {
         cancelStream()
+        for ((sessionId, status) in _focus.value) {
+            if (!status.done) focusTimers.remove(sessionId)?.cancel()
+        }
         when (_connection.value) {
             Connection.CONNECTING, Connection.LIVE, Connection.RECONNECTING ->
                 _connection.value = Connection.IDLE
@@ -164,6 +192,16 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
                             _sessions.value = stableOrder(_sessions.value, event.sessions)
                             _connection.value = Connection.LIVE
                             backoffMillis = INITIAL_BACKOFF_MILLIS
+                            // A card that left while we were away takes its
+                            // command status with it; one still waiting asks
+                            // the server for the ack it may have missed.
+                            val present = event.sessions.mapTo(HashSet()) { it.id }
+                            for (id in _focus.value.keys.toList()) {
+                                if (id !in present) setFocus(id, null)
+                            }
+                            if (_focus.value.values.any { !it.done }) {
+                                launch { resolvePendingCommands(board) }
+                            }
                         }
                         is SseEvent.Upsert -> {
                             val current = _sessions.value
@@ -177,9 +215,18 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
                         }
                         is SseEvent.Remove -> {
                             _sessions.value = _sessions.value.filter { it.id != event.id }
+                            setFocus(event.id, null)
                             _lastActivityAt.value = System.currentTimeMillis()
                         }
                         is SseEvent.Usage -> _usage.value = event.usage
+                        is SseEvent.Machines ->
+                            _machines.value = event.machines.associateBy { it.id }
+                        is SseEvent.Machine -> {
+                            val incoming = event.machine
+                            _machines.value = _machines.value +
+                                (incoming.id to incoming.mergedOver(_machines.value[incoming.id]))
+                        }
+                        is SseEvent.CommandAck -> handleAck(event.ack)
                     }
                 }
                 // Stream ended cleanly (server closed) — fall through to retry.
@@ -195,6 +242,13 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
             }
 
             if (!isActive) return@coroutineScope
+            // disconnect() dropped the ack watchdogs, and only a snapshot's
+            // reconcile would bring them back — with the reconnect failing
+            // there is none, so keep each pending card on its own deadline.
+            // A snapshot's reconcile still wins if it arrives first.
+            for ((sessionId, status) in _focus.value) {
+                if (!status.done) keepAckWindow(sessionId, status)
+            }
             _connection.value = Connection.RECONNECTING
             delay(backoffMillis)
             backoffMillis = min(backoffMillis * 2, MAX_BACKOFF_MILLIS)
@@ -226,9 +280,15 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
             return // transient — keep what we have
         }
 
-        // Usage is a best-effort side fetch — a failure changes nothing.
+        // Usage and presence are best-effort side fetches — a failure changes nothing.
         try {
             _usage.value = AgStatusApi.usage(current)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+        }
+        try {
+            _machines.value = AgStatusApi.machines(current).associateBy { it.id }
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (_: Exception) {
@@ -356,14 +416,197 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // MARK: Focus
+
+    /**
+     * Sends a Focus command for [sessionId] — the explicit control on a card,
+     * never its tap. The status goes "Sending…" → "Sent…" → the ack's copy;
+     * a re-tap replaces the status, so only the newest command is honoured.
+     * No ack within [ACK_TIMEOUT_MILLIS] reads as "is it asleep?".
+     */
+    fun sendCommand(sessionId: String, type: CommandType) {
+        val session = _sessions.value.firstOrNull { it.id == sessionId } ?: return
+        val host = session.host ?: return
+        val name = FocusCopy.machineLabel(host, _machines.value)
+        val status = FocusStatus(
+            commandId = UUID.randomUUID().toString(),
+            type = type,
+            machineName = name,
+            appName = host.app.displayName,
+            startedAt = System.currentTimeMillis(),
+        )
+        setFocus(sessionId, status)
+        armWatchdog(sessionId, status, ACK_TIMEOUT_MILLIS)
+
+        if (isDemo) {
+            viewModelScope.launch { demoAck(sessionId, status, host) }
+            return
+        }
+        val current = _board.value
+        if (current == null) {
+            showResult(sessionId, status.commandId, FocusStatus.Phase.FAIL, FocusCopy.sendFailed(0))
+            return
+        }
+        viewModelScope.launch {
+            val receipt = try {
+                AgStatusApi.sendCommand(current, CommandRequest(status.commandId, type.wire, sessionId))
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                val httpStatus = (error as? ApiException)?.status ?: 0
+                showResult(sessionId, status.commandId, FocusStatus.Phase.FAIL, FocusCopy.sendFailed(httpStatus))
+                return@launch
+            }
+            markSent(sessionId, status.commandId, receipt.delivered)
+        }
+    }
+
+    /** The demo's listener: answers a beat later, always successfully. */
+    private suspend fun demoAck(sessionId: String, status: FocusStatus, host: SessionHost) {
+        delay(DEMO_SEND_MILLIS)
+        markSent(sessionId, status.commandId, delivered = true)
+        delay(DEMO_ACK_MILLIS)
+        val result = if (status.type == CommandType.RESUME) CommandResult.RESUMED else CommandResult.FOCUSED
+        handleAck(
+            CommandAck(
+                id = status.commandId,
+                sessionId = sessionId,
+                machineId = host.machine.id,
+                type = status.type.wire,
+                result = result.wire,
+                reach = CommandReach.TAB.wire,
+            ),
+        )
+    }
+
+    /** The POST was accepted; say whether anyone is there to receive it. */
+    private fun markSent(sessionId: String, commandId: String, delivered: Boolean) {
+        val current = _focus.value[sessionId] ?: return
+        // A newer tap, or an ack that beat the response, already took over.
+        if (current.commandId != commandId || current.done) return
+        _focus.value = _focus.value +
+            (sessionId to current.copy(text = FocusCopy.sent(current.machineName, delivered)))
+    }
+
+    private fun handleAck(ack: CommandAck) {
+        val current = _focus.value[ack.sessionId] ?: return
+        // Only the command this card is waiting on: an older one that a re-tap
+        // superseded, or a stray ack, has nothing to say to the viewer.
+        if (current.commandId != ack.id || current.done) return
+        val outcome = FocusCopy.outcome(current, ack)
+        showResult(ack.sessionId, ack.id, outcome.phase, outcome.text, outcome.offersResume)
+    }
+
+    /**
+     * A final outcome for [commandId], if the card is still waiting on it.
+     * Successes fade after [STATUS_CLEAR_MILLIS]; failures stay until the
+     * next tap.
+     */
+    private fun showResult(
+        sessionId: String,
+        commandId: String,
+        phase: FocusStatus.Phase,
+        text: String,
+        offersResume: Boolean = false,
+    ) {
+        val current = _focus.value[sessionId] ?: return
+        if (current.commandId != commandId || current.done) return
+        focusTimers.remove(sessionId)?.cancel()
+        val shown = current.copy(phase = phase, text = text, offersResume = offersResume)
+        _focus.value = _focus.value + (sessionId to shown)
+        if (phase == FocusStatus.Phase.OK) {
+            focusTimers[sessionId] = viewModelScope.launch {
+                delay(STATUS_CLEAR_MILLIS)
+                if (_focus.value[sessionId] == shown) setFocus(sessionId, null)
+            }
+        }
+    }
+
+    /**
+     * The activity drops the stream while backgrounded (MainActivity.onStop),
+     * so an ack can land while nobody is listening — and disconnect() took
+     * the watchdog with it. After the reconnect's snapshot, ask the server
+     * how each command still shown as pending ended: done or expired reads
+     * as its ack; one the server no longer knows (swept, or restarted) is
+     * asleep; anything else keeps what is left of the window since the tap.
+     */
+    private suspend fun resolvePendingCommands(board: Board) {
+        for ((sessionId, status) in _focus.value) {
+            if (status.done) continue
+            val state = try {
+                AgStatusApi.command(board, status.commandId)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                keepAckWindow(sessionId, status) // transient — the deadline has the last word
+                continue
+            }
+            when {
+                state == null -> showResult(
+                    sessionId,
+                    status.commandId,
+                    FocusStatus.Phase.FAIL,
+                    FocusCopy.noAnswer(status.machineName),
+                )
+                state.isFinished -> handleAck(state.asAck().copy(sessionId = sessionId))
+                else -> keepAckWindow(sessionId, status)
+            }
+        }
+    }
+
+    /** Whether [commandId] is still the command the card is waiting on. */
+    private fun isCurrent(sessionId: String, commandId: String): Boolean {
+        val current = _focus.value[sessionId] ?: return false
+        return current.commandId == commandId && !current.done
+    }
+
+    /** No ack within [afterMillis] → "is it asleep?". Replaces any watchdog already running. */
+    private fun armWatchdog(sessionId: String, status: FocusStatus, afterMillis: Long) {
+        focusTimers.remove(sessionId)?.cancel()
+        focusTimers[sessionId] = viewModelScope.launch {
+            delay(afterMillis)
+            showResult(sessionId, status.commandId, FocusStatus.Phase.FAIL, FocusCopy.noAnswer(status.machineName))
+        }
+    }
+
+    /**
+     * Re-arms the watchdog for what is left of the [ACK_TIMEOUT_MILLIS]
+     * window since the tap — or, with nothing left, declares the machine
+     * asleep. A card that has moved on (a re-tap, an ack) is left alone.
+     */
+    private fun keepAckWindow(sessionId: String, status: FocusStatus) {
+        if (!isCurrent(sessionId, status.commandId)) return
+        val remaining = status.ackWindowLeft(System.currentTimeMillis(), ACK_TIMEOUT_MILLIS)
+        if (remaining <= 0) {
+            showResult(sessionId, status.commandId, FocusStatus.Phase.FAIL, FocusCopy.noAnswer(status.machineName))
+        } else {
+            armWatchdog(sessionId, status, remaining)
+        }
+    }
+
+    private fun setFocus(sessionId: String, status: FocusStatus?) {
+        focusTimers.remove(sessionId)?.cancel()
+        _focus.value = if (status == null) _focus.value - sessionId else _focus.value + (sessionId to status)
+    }
+
+    /** Leaving a board (or demo) forgets its machines and every card's status. */
+    private fun clearFocus() {
+        focusTimers.values.forEach { it.cancel() }
+        focusTimers.clear()
+        _focus.value = emptyMap()
+        _machines.value = emptyMap()
+    }
+
     // MARK: Demo mode
 
     /** Board-less fake mode driven by DemoData on a ~4s tick. */
     fun startDemo() {
         cancelStream()
         stopDemoJob()
+        clearFocus()
         _sessions.value = sortedByUpdate(DemoData.initialSessions())
         _usage.value = DemoData.usage()
+        _machines.value = DemoData.machines().associateBy { it.id }
         _connection.value = Connection.DEMO
         demoJob = viewModelScope.launch {
             while (isActive) {
@@ -380,6 +623,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         if (_connection.value != Connection.DEMO) return
         _sessions.value = emptyList()
         _usage.value = emptyList()
+        clearFocus()
         _connection.value = Connection.IDLE
         if (_board.value != null) connect()
     }
@@ -400,6 +644,14 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         private const val INITIAL_BACKOFF_MILLIS = 1_000L
         private const val MAX_BACKOFF_MILLIS = 30_000L
         private const val DEMO_TICK_MILLIS = 4_000L
+        private const val DEMO_SEND_MILLIS = 350L
+        private const val DEMO_ACK_MILLIS = 900L
+
+        /** No ack by then → "is it asleep?" (the server's own TTL is 2 min). */
+        private const val ACK_TIMEOUT_MILLIS = 15_000L
+
+        /** How long a success stays on the card; failures stay until the next tap. */
+        private const val STATUS_CLEAR_MILLIS = 8_000L
         private const val DISPLAY_PREFS = "agstatus_display"
         private const val KEY_KEEP_AWAKE = "keep_awake"
         private const val KEY_IDLE_MINUTES = "keep_awake_idle_minutes"

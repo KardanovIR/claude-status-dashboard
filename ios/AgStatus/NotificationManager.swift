@@ -3,9 +3,10 @@
 //  AgStatus
 //
 //  Push notification lifecycle: the permission prompt, APNs device-token
-//  registration (with a timeout so simulators never hang the UI), and
-//  keeping the board's server in sync with this device. The AppDelegate
-//  forwards token callbacks through the shared instance.
+//  registration (with a timeout so simulators never hang the UI), keeping
+//  the board's server in sync with this device, and the notification
+//  category whose "Bring to front" action feeds the store. The AppDelegate
+//  forwards token and action callbacks through the shared instance.
 //
 
 import Foundation
@@ -37,6 +38,17 @@ final class NotificationManager {
     /// Single instance so the AppDelegate token callbacks can reach the
     /// same manager the UI observes.
     static let shared = NotificationManager()
+
+    /// The category the blocked/idle pushes should carry (`aps.category`) so
+    /// the banner offers a "Bring to front" action, and that action's id.
+    /// Categories are static, so the title names no machine — the card does,
+    /// once the app is open.
+    static let sessionCategoryIdentifier = "AGSTATUS_SESSION"
+    static let focusActionIdentifier = "AGSTATUS_FOCUS"
+
+    /// Set by the app: our notification action was tapped for this session
+    /// id (the push's `thread-id`). The store decides whether it can act.
+    @ObservationIgnored var onFocusAction: (@MainActor (String) -> Void)?
 
     @ObservationIgnored private var deviceToken: String?
     @ObservationIgnored private var tokenWaiter: (id: Int, continuation: CheckedContinuation<String, Error>)?
@@ -186,7 +198,29 @@ final class NotificationManager {
         serverPushAvailable = await AgStatusAPI.serverSupportsPush(board.baseURL)
     }
 
+    // MARK: Notification category
+
+    /// Registers the session category with its "Bring to front" action.
+    /// Idempotent; called at launch so it is in place before any push lands.
+    /// The action opens the app (the default tap's behaviour) and, on top of
+    /// that, asks the store to bring the session's window to the front.
+    func registerCategories() {
+        let focus = UNNotificationAction(identifier: Self.focusActionIdentifier,
+                                         title: "Bring to front",
+                                         options: [.foreground])
+        let category = UNNotificationCategory(identifier: Self.sessionCategoryIdentifier,
+                                              actions: [focus],
+                                              intentIdentifiers: [],
+                                              options: [])
+        UNUserNotificationCenter.current().setNotificationCategories([category])
+    }
+
     // MARK: AppDelegate callbacks
+
+    /// Called by the AppDelegate when our "Bring to front" action is tapped.
+    func handleFocusAction(sessionId: String) {
+        onFocusAction?(sessionId)
+    }
 
     /// Called by the AppDelegate when APNs hands over a device token.
     func handle(deviceToken: Data) {

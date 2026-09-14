@@ -30,6 +30,15 @@ sealed interface SseEvent {
     data class Upsert(val session: Session) : SseEvent
     data class Remove(val id: String) : SseEvent
     data class Usage(val usage: List<UsageInfo>) : SseEvent
+
+    /** Every Focus listener online, sent right after each snapshot. */
+    data class Machines(val machines: List<MachinePresence>) : SseEvent
+
+    /** One listener came online or went away. */
+    data class Machine(val machine: MachinePresence) : SseEvent
+
+    /** A Focus command finished — acked, superseded, or expired. */
+    data class CommandAck(val ack: com.kardanov.agstatus.CommandAck) : SseEvent
 }
 
 // MARK: - SseClient
@@ -89,6 +98,11 @@ class SseClient {
         "session" -> decodeOrNull<Session>(data)?.let { SseEvent.Upsert(it) }
         "remove" -> decodeOrNull<RemovePayload>(data)?.let { SseEvent.Remove(it.id) }
         "usage" -> decodeOrNull<List<UsageInfo>>(data)?.let { SseEvent.Usage(it) }
+        "machines" -> decodeOrNull<List<MachinePresence>>(data)?.let { SseEvent.Machines(it) }
+        "machine" -> decodeOrNull<MachinePresence>(data)?.let { SseEvent.Machine(it) }
+        "command_ack" -> decodeOrNull<CommandAck>(data)?.let { SseEvent.CommandAck(it) }
+        // `commands` and `command` go to listeners only; anything else is a
+        // newer server's business.
         else -> null
     }
 

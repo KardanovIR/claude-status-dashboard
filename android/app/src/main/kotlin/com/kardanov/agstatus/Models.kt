@@ -1,12 +1,15 @@
 package com.kardanov.agstatus
 
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.nullable
 import kotlinx.serialization.descriptors.PrimitiveKind
 import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.JsonDecoder
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
@@ -70,9 +73,237 @@ data class Session(
     val createdAt: Long = 0,
     /** Epoch milliseconds. */
     val updatedAt: Long = 0,
+    /**
+     * Where the session runs — only from hooks that opted in to Focus. Null
+     * (absent, `null`, or unreadable) means no control on the card, never an
+     * error state.
+     */
+    @Serializable(with = SessionHostSerializer::class)
+    val host: SessionHost? = null,
 ) {
     /** Falls back to the id so a card is never nameless. */
     val displayName: String get() = name.ifBlank { id }
+}
+
+// MARK: - Host (Focus)
+
+/** The machine a session runs on, as its hook labelled it (docs/api.md `host`). */
+@Serializable
+data class HostMachine(
+    /** A per-board hash, 32 lowercase hex — never a raw machine id. */
+    val id: String = "",
+    val name: String = "",
+) {
+    /** The hook's label, or the server's placeholder for a blank one. */
+    val displayName: String get() = name.ifBlank { "Machine" }
+
+    companion object {
+        /** What the server accepts as a machine id (docs/api.md `host`). */
+        val ID_REGEX = Regex("^[0-9a-f]{32}$")
+    }
+}
+
+/** The app the session runs in: a whitelisted slug, a short name, a kind. */
+@Serializable
+data class HostApp(
+    val slug: String = "other",
+    val name: String = "",
+    /** `terminal | multiplexer | ide | desktop-app | unknown`. */
+    val kind: String = "unknown",
+) {
+    /** How the ack copy names the app ("Opened agterm on Mac…"). */
+    val displayName: String get() = name.ifBlank { "the app" }
+}
+
+/**
+ * `session.host`: two short labels and a per-board machine id, nothing else.
+ * The card can say where a session runs, and the server can route a Focus
+ * command to that one machine.
+ */
+@Serializable
+data class SessionHost(
+    val machine: HostMachine = HostMachine(),
+    val app: HostApp = HostApp(),
+)
+
+/**
+ * Decodes `host` leniently. A missing or `null` host is null, and so is one
+ * this app can't make sense of — not an object, or without a machine id of
+ * the shape commands are routed by. A card without a control beats a board
+ * that fails to parse the whole session.
+ */
+object SessionHostSerializer : KSerializer<SessionHost?> {
+    private val delegate = SessionHost.serializer().nullable
+
+    override val descriptor: SerialDescriptor = delegate.descriptor
+
+    override fun deserialize(decoder: Decoder): SessionHost? {
+        val json = decoder as? JsonDecoder ?: return delegate.deserialize(decoder)
+        val element = json.decodeJsonElement()
+        val host = try {
+            json.json.decodeFromJsonElement(delegate, element)
+        } catch (malformed: IllegalArgumentException) {
+            null
+        }
+        return host?.takeIf { HostMachine.ID_REGEX.matches(it.machine.id) }
+    }
+
+    override fun serialize(encoder: Encoder, value: SessionHost?) =
+        delegate.serialize(encoder, value)
+}
+
+// MARK: - Focus presence and commands
+
+/**
+ * A Focus listener as the board sees it. The `machines` frame lists the ones
+ * online; a `machine` frame announces one arriving (`online`, `since`) or
+ * leaving (`online: false`, `lastSeen`). Nothing about platform or version.
+ */
+@Serializable
+data class MachinePresence(
+    val id: String,
+    val name: String = "",
+    val online: Boolean = false,
+    /** Epoch milliseconds the listener connected — online frames only. */
+    val since: Long? = null,
+    /** Epoch milliseconds the listener went away — offline frames only. */
+    val lastSeen: Long? = null,
+) {
+    /**
+     * Fills in what a terser frame left out: an offline frame carries no
+     * name, and the "<name> is offline" copy still needs one.
+     */
+    fun mergedOver(previous: MachinePresence?): MachinePresence =
+        if (previous == null) {
+            this
+        } else {
+            copy(
+                name = name.ifBlank { previous.name },
+                since = since ?: previous.since,
+                lastSeen = lastSeen ?: previous.lastSeen,
+            )
+        }
+}
+
+/** What a tap asks the listener to do. */
+enum class CommandType(val wire: String) {
+    FOCUS("focus"),
+    RESUME("resume"),
+}
+
+/** `POST <board>/commands` — ids only, never a path or an argument. */
+@Serializable
+data class CommandRequest(
+    /** A client-minted UUID v4, lowercase, so a retry can be told from a second tap. */
+    val id: String,
+    /** [CommandType.wire]. */
+    val type: String,
+    @SerialName("session_id") val sessionId: String,
+)
+
+/**
+ * The answer to `POST <board>/commands`. `delivered` says whether a listener
+ * for the session's machine is connected right now — not that it acted.
+ */
+@Serializable
+data class CommandReceipt(
+    val id: String = "",
+    val delivered: Boolean = true,
+    @SerialName("expires_in_ms") val expiresInMs: Long = 0,
+)
+
+/** How a command ended. Enums only: the server refuses free text on this channel. */
+enum class CommandResult(val wire: String) {
+    FOCUSED("focused"),
+    ACTIVATED("activated"),
+    SELECTED("selected"),
+    RESUMED("resumed"),
+    FAILED("failed");
+
+    companion object {
+        /** Null for a value this app predates — the copy then quotes the raw string. */
+        fun fromWire(value: String?): CommandResult? = entries.firstOrNull { it.wire == value }
+    }
+}
+
+/** How far the listener got before it answered. */
+enum class CommandReach(val wire: String) {
+    PANE("pane"),
+    TAB("tab"),
+    WINDOW("window"),
+    APP("app"),
+    THREAD("thread");
+
+    companion object {
+        fun fromWire(value: String?): CommandReach? = entries.firstOrNull { it.wire == value }
+    }
+}
+
+/** Why a command failed. */
+enum class CommandReason(val wire: String) {
+    NO_RECORD("no-record"),
+    REMOTE("remote"),
+    NOT_RUNNING("not-running"),
+    APP_NOT_RUNNING("app-not-running"),
+    CONSENT_NEEDED("consent-needed"),
+    MUX_DETACHED("mux-detached"),
+    AMBIGUOUS("ambiguous"),
+    UNSUPPORTED_HOST("unsupported-host"),
+    BAD_RECORD("bad-record"),
+    RESPAWN_FAILED("respawn-failed"),
+    UNSUPPORTED_TYPE("unsupported-type"),
+    SUPERSEDED("superseded"),
+    EXPIRED("expired");
+
+    companion object {
+        fun fromWire(value: String?): CommandReason? = entries.firstOrNull { it.wire == value }
+    }
+}
+
+/**
+ * The `command_ack` frame. `result`, `reach` and `reason` stay raw strings
+ * so an enum value this app predates still reads back in the failure copy
+ * instead of failing the frame.
+ */
+@Serializable
+data class CommandAck(
+    val id: String,
+    @SerialName("session_id") val sessionId: String = "",
+    @SerialName("machine_id") val machineId: String = "",
+    val type: String = "",
+    val result: String? = null,
+    val reach: String? = null,
+    val reason: String? = null,
+)
+
+/**
+ * `GET <board>/commands/:id`: the ack plus where the command is in its life,
+ * for a phone that dropped the stream while backgrounded and missed the frame.
+ */
+@Serializable
+data class CommandState(
+    val id: String,
+    @SerialName("session_id") val sessionId: String = "",
+    @SerialName("machine_id") val machineId: String = "",
+    val type: String = "",
+    /** `pending | claimed | done | expired`. */
+    val state: String = "",
+    val result: String? = null,
+    val reach: String? = null,
+    val reason: String? = null,
+) {
+    val isFinished: Boolean get() = state == "done" || state == "expired"
+
+    /** The ack this state amounts to; an expired command reads as `failed / expired`. */
+    fun asAck(): CommandAck = CommandAck(
+        id = id,
+        sessionId = sessionId,
+        machineId = machineId,
+        type = type,
+        result = result ?: if (state == "expired") CommandResult.FAILED.wire else null,
+        reach = reach,
+        reason = reason ?: if (state == "expired") CommandReason.EXPIRED.wire else null,
+    )
 }
 
 // MARK: - History

@@ -97,6 +97,8 @@ fun BoardScreen(
     val usage by store.usage.collectAsState()
     val connection by store.connection.collectAsState()
     val board by store.board.collectAsState()
+    val machines by store.machines.collectAsState()
+    val focus by store.focus.collectAsState()
 
     val isDemo = connection == SessionStore.Connection.DEMO
     val boardGone = connection == SessionStore.Connection.BOARD_GONE
@@ -245,6 +247,9 @@ fun BoardScreen(
                                     SessionCard(
                                         session = session,
                                         nowMillis = now,
+                                        machines = machines,
+                                        focus = focus[session.id],
+                                        onCommand = { type -> store.sendCommand(session.id, type) },
                                         modifier = Modifier.clickable {
                                             onOpenHistory(session.id)
                                         },

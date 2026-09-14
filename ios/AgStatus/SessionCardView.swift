@@ -1,8 +1,10 @@
 import SwiftUI
 
 /// One agent session, readable at arm's length: big name, colored status,
-/// last message, and how fresh it all is.
+/// last message, and how fresh it all is. A session that reports where it
+/// runs also gets a footer with the "Bring to front" control.
 struct SessionCardView: View {
+    @Environment(SessionStore.self) private var store
     let session: Session
 
     /// An active card gone quiet for this long is probably a dead agent
@@ -15,43 +17,65 @@ struct SessionCardView: View {
         // One shared clock: refreshes the relative timestamp and re-evaluates
         // staleness every 30 s.
         TimelineView(.periodic(from: .now, by: 30)) { context in
-            card(now: context.date)
+            if let host = session.host {
+                // The focus control is explicit — the card tap stays history —
+                // so it is also offered where a long press looks for it.
+                card(now: context.date)
+                    .contextMenu { focusMenuItem(host) }
+            } else {
+                card(now: context.date)
+            }
         }
     }
 
     private func card(now: Date) -> some View {
         let stale = session.status.isActive
             && now.timeIntervalSince(session.updatedDate) > Self.staleAfter
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(session.name)
-                    .font(.system(.title3, design: .rounded).weight(.semibold))
-                    .foregroundStyle(Theme.textPrimary)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                statusBadge(pulsing: session.status.isActive && !stale)
+        return VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(session.name)
+                        .font(.system(.title3, design: .rounded).weight(.semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    statusBadge(pulsing: session.status.isActive && !stale)
+                }
+
+                if !session.project.isEmpty && session.project != session.name {
+                    Text(session.project)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(Theme.textSecondary)
+                        .lineLimit(1)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Theme.cardBorder))
+                }
+
+                if !session.message.isEmpty {
+                    Text(session.message)
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.textSecondary)
+                        .lineLimit(2)
+                }
+
+                Text(Self.relativeTime(from: session.updatedDate, to: now))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(Theme.textSecondary.opacity(0.75))
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityActions {
+                if let host = session.host, store.isMachineOnline(host.machine.id) {
+                    Button("Bring to front on \(store.machineLabel(for: host))") {
+                        send(.focus)
+                    }
+                }
             }
 
-            if !session.project.isEmpty && session.project != session.name {
-                Text(session.project)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(Theme.textSecondary)
-                    .lineLimit(1)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Capsule().fill(Theme.cardBorder))
+            if let host = session.host {
+                FocusRow(session: session, host: host, now: now)
+                    .padding(.top, 12)
             }
-
-            if !session.message.isEmpty {
-                Text(session.message)
-                    .font(.subheadline)
-                    .foregroundStyle(Theme.textSecondary)
-                    .lineLimit(2)
-            }
-
-            Text(Self.relativeTime(from: session.updatedDate, to: now))
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(Theme.textSecondary.opacity(0.75))
         }
         .padding(.leading, 18)
         .padding([.top, .bottom, .trailing], 14)
@@ -81,7 +105,23 @@ struct SessionCardView: View {
             radius: 12
         )
         .opacity(session.status == .done || stale ? 0.55 : 1)
-        .accessibilityElement(children: .combine)
+    }
+
+    // MARK: - Focus
+
+    @ViewBuilder
+    private func focusMenuItem(_ host: Host) -> some View {
+        Button {
+            send(.focus)
+        } label: {
+            Label("Bring to front on \(store.machineLabel(for: host))",
+                  systemImage: "macwindow.on.rectangle")
+        }
+        .disabled(!store.isMachineOnline(host.machine.id))
+    }
+
+    private func send(_ type: CommandType) {
+        Task { await store.sendCommand(type, for: session) }
     }
 
     // MARK: - Status badge
@@ -124,6 +164,118 @@ struct SessionCardView: View {
         default:
             return "\(seconds / 86_400)d ago"
         }
+    }
+}
+
+// MARK: - FocusRow
+
+/// The footer of a card that reports where it runs: the explicit "Bring to
+/// front" control, why it is off (visible — a touch screen has no tooltip),
+/// and what the last tap came back with. Never the card's own tap, which
+/// stays history (docs/design/focus-protocol.md §7).
+private struct FocusRow: View {
+    @Environment(SessionStore.self) private var store
+    let session: Session
+    let host: Host
+    let now: Date
+
+    private var name: String { store.machineLabel(for: host) }
+    private var online: Bool { store.isMachineOnline(host.machine.id) }
+    private var state: SessionStore.FocusState? { store.focus[session.id] }
+
+    /// Why the control is disabled. A machine the board has never seen gets
+    /// the hint about the listener; one it has seen says when it left.
+    private var offlineNote: String? {
+        guard !online else { return nil }
+        guard let machine = store.machines[host.machine.id] else {
+            return "\(name) is offline — needs the AgStatus listener on that machine"
+        }
+        guard let lastSeen = machine.lastSeenDate else { return "\(name) is offline" }
+        return "\(name) is offline (\(SessionCardView.relativeTime(from: lastSeen, to: now)))"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Side by side when the labels fit, stacked when a long machine
+            // name plus "Resume" would overflow a phone-width card.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { buttons }
+                VStack(alignment: .leading, spacing: 8) { buttons }
+            }
+
+            if let state {
+                Text(state.text)
+                    .font(.caption)
+                    .foregroundStyle(color(for: state.kind))
+                    .accessibilityAddTraits(.updatesFrequently)
+            } else if let offlineNote {
+                Text(offlineNote)
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+        }
+        .animation(.snappy, value: state)
+        // What the web board's live region does: say each change out loud.
+        .onChange(of: state?.text) { _, text in
+            if let text, !text.isEmpty {
+                AccessibilityNotification.Announcement(text).post()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var buttons: some View {
+        Button {
+            send(.focus)
+        } label: {
+            Label("Bring to front on \(name)", systemImage: "macwindow.on.rectangle")
+        }
+        .buttonStyle(FocusButtonStyle())
+        .disabled(!online)
+        .accessibilityHint(offlineNote ?? "")
+
+        // Only after the listener answered "not running".
+        if state?.resumeOffered == true {
+            Button {
+                send(.resume)
+            } label: {
+                Label("Resume", systemImage: "play.fill")
+            }
+            .buttonStyle(FocusButtonStyle())
+            .disabled(!online)
+        }
+    }
+
+    private func send(_ type: CommandType) {
+        Task { await store.sendCommand(type, for: session) }
+    }
+
+    private func color(for kind: SessionStore.FocusState.Kind) -> Color {
+        switch kind {
+        case .pending: Theme.textSecondary
+        case .ok: Theme.color(for: .done)
+        case .fail: Theme.color(for: .blocked)
+        }
+    }
+}
+
+/// A small capsule in the card's own idiom; greyed, not hidden, when the
+/// machine is offline so the reason underneath still makes sense.
+private struct FocusButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        let color = isEnabled ? Theme.color(for: .planning) : Theme.textSecondary
+        configuration.label
+            .font(.system(.caption, design: .rounded).weight(.semibold))
+            .lineLimit(1)
+            .foregroundStyle(color)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(color.opacity(isEnabled ? 0.16 : 0.08)))
+            .overlay(Capsule().strokeBorder(color.opacity(isEnabled ? 0.35 : 0.2)))
+            .contentShape(Capsule())
+            .opacity(configuration.isPressed ? 0.6 : 1)
     }
 }
 

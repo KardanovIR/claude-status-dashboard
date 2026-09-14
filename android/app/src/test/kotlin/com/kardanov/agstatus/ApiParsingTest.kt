@@ -1,6 +1,7 @@
 package com.kardanov.agstatus
 
 import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -75,6 +76,187 @@ class ApiParsingTest {
         assertEquals(listOf("a", "b"), sessions.map { it.id })
         assertEquals(AgentStatus.DONE, sessions[0].status)
         assertEquals(AgentStatus.TESTING, sessions[1].status)
+    }
+
+    // MARK: - Host (Focus)
+
+    @Test
+    fun sessionDecodesHost() {
+        val json = """
+            {"id":"sess-abc","status":"blocked",
+             "host":{"machine":{"id":"$MACHINE_ID","name":"MacBook"},
+                     "app":{"slug":"agterm","name":"agterm","kind":"terminal"}}}
+        """.trimIndent()
+
+        val session = AgStatusJson.decodeFromString<Session>(json)
+
+        val host = session.host!!
+        assertEquals(MACHINE_ID, host.machine.id)
+        assertEquals("MacBook", host.machine.name)
+        assertEquals("MacBook", host.machine.displayName)
+        assertEquals("agterm", host.app.slug)
+        assertEquals("agterm", host.app.displayName)
+        assertEquals("terminal", host.app.kind)
+    }
+
+    @Test
+    fun sessionWithoutHostHasNone() {
+        assertNull(AgStatusJson.decodeFromString<Session>("""{"id":"s"}""").host)
+        assertNull(AgStatusJson.decodeFromString<Session>("""{"id":"s","host":null}""").host)
+    }
+
+    @Test
+    fun malformedHostReadsAsNullWithoutFailingTheSession() {
+        val malformed = listOf(
+            """{"id":"s","status":"coding","host":"MacBook"}""",                      // not an object
+            """{"id":"s","status":"coding","host":42}""",
+            """{"id":"s","status":"coding","host":{"machine":"MacBook"}}""",          // machine not an object
+            """{"id":"s","status":"coding","host":{"machine":{"name":"MacBook"}}}""", // no machine id
+            """{"id":"s","status":"coding","host":{"app":{"slug":"agterm"}}}""",       // no machine at all
+            """{"id":"s","status":"coding","host":{"machine":{"id":42,"name":"x"}}}""",
+            """{"id":"s","status":"coding","host":{"machine":{"id":"mac-1","name":"x"}}}""", // not a per-board hash
+        )
+
+        for (json in malformed) {
+            val session = AgStatusJson.decodeFromString<Session>(json)
+            assertNull("expected no host for $json", session.host)
+            assertEquals(AgentStatus.CODING, session.status)
+        }
+    }
+
+    @Test
+    fun hostToleratesMissingAppAndBlankLabels() {
+        val session = AgStatusJson.decodeFromString<Session>(
+            """{"id":"s","host":{"machine":{"id":"$MACHINE_ID","name":""}}}"""
+        )
+
+        val host = session.host!!
+        assertEquals("Machine", host.machine.displayName)
+        assertEquals("other", host.app.slug)
+        assertEquals("the app", host.app.displayName)
+        assertEquals("unknown", host.app.kind)
+    }
+
+    @Test
+    fun hostIgnoresUnknownKeys() {
+        val session = AgStatusJson.decodeFromString<Session>(
+            """{"id":"s","host":{"machine":{"id":"$MACHINE_ID","name":"Mac","platform":"darwin"},
+                "app":{"slug":"kitty","name":"kitty","kind":"terminal","bundle":"x"},"reach":"tab"}}"""
+        )
+
+        assertEquals("kitty", session.host?.app?.slug)
+    }
+
+    // MARK: - Machines
+
+    @Test
+    fun machinesFrameDecodes() {
+        val json = """
+            [{"id":"$MACHINE_ID","name":"MacBook","online":true,"since":1752096000000},
+             {"id":"$OTHER_ID","name":"PC","online":true,"since":1752096001000,"platform":"win32"}]
+        """.trimIndent()
+
+        val machines = AgStatusJson.decodeFromString<List<MachinePresence>>(json)
+
+        assertEquals(listOf(MACHINE_ID, OTHER_ID), machines.map { it.id })
+        assertEquals("MacBook", machines[0].name)
+        assertTrue(machines[0].online)
+        assertEquals(1752096000000L, machines[0].since)
+        assertNull(machines[0].lastSeen)
+    }
+
+    @Test
+    fun offlineMachineFrameKeepsTheNameItHad() {
+        val online = AgStatusJson.decodeFromString<MachinePresence>(
+            """{"id":"$MACHINE_ID","name":"MacBook","online":true,"since":1752096000000}"""
+        )
+        val offline = AgStatusJson.decodeFromString<MachinePresence>(
+            """{"id":"$MACHINE_ID","online":false,"lastSeen":1752096900000}"""
+        )
+
+        assertEquals("", offline.name)
+        assertFalse(offline.online)
+        assertEquals(1752096900000L, offline.lastSeen)
+
+        val merged = offline.mergedOver(online)
+        assertEquals("MacBook", merged.name)
+        assertFalse(merged.online)
+        assertEquals(1752096900000L, merged.lastSeen)
+        assertEquals(1752096000000L, merged.since)
+        assertEquals(offline, offline.mergedOver(null))
+    }
+
+    // MARK: - Commands
+
+    @Test
+    fun commandRequestEncodesTheWireKeys() {
+        val body = AgStatusJson.encodeToString(
+            CommandRequest(id = COMMAND_ID, type = CommandType.FOCUS.wire, sessionId = "sess-abc")
+        )
+
+        assertEquals("""{"id":"$COMMAND_ID","type":"focus","session_id":"sess-abc"}""", body)
+    }
+
+    @Test
+    fun commandReceiptDecodes() {
+        val receipt = AgStatusJson.decodeFromString<CommandReceipt>(
+            """{"id":"$COMMAND_ID","delivered":false,"expires_in_ms":120000}"""
+        )
+
+        assertEquals(COMMAND_ID, receipt.id)
+        assertFalse(receipt.delivered)
+        assertEquals(120000L, receipt.expiresInMs)
+    }
+
+    @Test
+    fun commandAckDecodes() {
+        val ack = AgStatusJson.decodeFromString<CommandAck>(
+            """{"id":"$COMMAND_ID","session_id":"sess-abc","machine_id":"$MACHINE_ID",
+                "type":"focus","result":"focused","reach":"tab","reason":null}"""
+        )
+
+        assertEquals(COMMAND_ID, ack.id)
+        assertEquals("sess-abc", ack.sessionId)
+        assertEquals(MACHINE_ID, ack.machineId)
+        assertEquals(CommandResult.FOCUSED, CommandResult.fromWire(ack.result))
+        assertEquals(CommandReach.TAB, CommandReach.fromWire(ack.reach))
+        assertNull(ack.reason)
+    }
+
+    @Test
+    fun commandAckWithUnknownReasonStillDecodes() {
+        val ack = AgStatusJson.decodeFromString<CommandAck>(
+            """{"id":"$COMMAND_ID","session_id":"sess-abc","machine_id":"$MACHINE_ID",
+                "type":"focus","result":"failed","reach":null,"reason":"gremlins"}"""
+        )
+
+        assertEquals("gremlins", ack.reason)
+        assertEquals(CommandResult.FAILED, CommandResult.fromWire(ack.result))
+        assertNull(CommandReason.fromWire(ack.reason))
+    }
+
+    @Test
+    fun commandStateDecodesAndReadsAsAnAck() {
+        val pending = AgStatusJson.decodeFromString<CommandState>(
+            """{"id":"$COMMAND_ID","type":"focus","session_id":"sess-abc","machine_id":"$MACHINE_ID",
+                "state":"pending","result":null,"reach":null,"reason":null,
+                "created_at":1752096000000,"expires_at":1752096120000,"claimed_at":null,"done_at":null}"""
+        )
+        assertFalse(pending.isFinished)
+
+        val done = AgStatusJson.decodeFromString<CommandState>(
+            """{"id":"$COMMAND_ID","session_id":"sess-abc","state":"done","result":"selected","reach":"pane"}"""
+        )
+        assertTrue(done.isFinished)
+        assertEquals("selected", done.asAck().result)
+        assertEquals("sess-abc", done.asAck().sessionId)
+
+        val expired = AgStatusJson.decodeFromString<CommandState>(
+            """{"id":"$COMMAND_ID","session_id":"sess-abc","state":"expired"}"""
+        )
+        assertTrue(expired.isFinished)
+        assertEquals("failed", expired.asAck().result)
+        assertEquals("expired", expired.asAck().reason)
     }
 
     // MARK: - Usage
@@ -213,5 +395,10 @@ class ApiParsingTest {
         // Built rather than written out, matching the server tests: a literal
         // 32-character token has enough entropy to trip secret scanners.
         val TOKEN = "ags_" + "a".repeat(32)
+
+        /** Per-board machine hashes: 32 lowercase hex, like the real ones. */
+        val MACHINE_ID = "9f2c".padEnd(32, '0')
+        val OTHER_ID = "7c2e".padEnd(32, '1')
+        const val COMMAND_ID = "6c1f0a2b-3d4e-4f50-8a6b-7c8d9e0f1a2b"
     }
 }

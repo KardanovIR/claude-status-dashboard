@@ -2,8 +2,9 @@
 //  Models.swift
 //  AgStatus
 //
-//  Core value types shared across the app: agent status, session,
-//  board (server + workspace token) and pairing codes.
+//  Core value types shared across the app: agent status, session (with its
+//  optional Focus host), listener presence and command acks, board (server +
+//  workspace token) and pairing codes.
 //
 
 import Foundation
@@ -39,6 +40,9 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
     var source: String
     var createdAt: Int64 // epoch milliseconds
     var updatedAt: Int64 // epoch milliseconds
+    /// Where the session runs, when its hook opted in to Focus; nil for the
+    /// many sessions that haven't (the server always sends the key).
+    var host: Host?
 
     var updatedDate: Date {
         Date(timeIntervalSince1970: Double(updatedAt) / 1000)
@@ -51,7 +55,8 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
          project: String,
          source: String = "claude",
          createdAt: Int64,
-         updatedAt: Int64) {
+         updatedAt: Int64,
+         host: Host? = nil) {
         self.id = id
         self.name = name
         self.status = status
@@ -60,10 +65,11 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
         self.source = source
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.host = host
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, status, message, project, source, createdAt, updatedAt
+        case id, name, status, message, project, source, createdAt, updatedAt, host
     }
 
     /// Tolerant decoding: unknown status strings become `.idle`, missing
@@ -80,6 +86,8 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
         source = rawSource.isEmpty ? "claude" : rawSource
         createdAt = Self.decodeMillis(container, .createdAt) ?? 0
         updatedAt = Self.decodeMillis(container, .updatedAt) ?? createdAt
+        // null, absent, or malformed all mean "no host" — never a dropped card.
+        host = try? container.decode(Host.self, forKey: .host)
     }
 
     /// Accepts integral or floating epoch-milliseconds values.
@@ -94,6 +102,361 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
             return millis
         }
         return nil
+    }
+}
+
+// MARK: - Focus
+
+/// Where a session runs, as the hook reports it once Focus is opted in
+/// (docs/design/focus-protocol.md §3.2): a label and per-board id for the
+/// machine, and the app hosting the session. Two short labels — nothing that
+/// names a path, a binary or a window.
+struct Host: Codable, Equatable, Sendable {
+
+    struct Machine: Codable, Equatable, Sendable {
+        /// Per-board id, 32 hex. The listener proves ownership with a key the
+        /// board never sees, so to a viewer the id is only a routing label.
+        let id: String
+        var name: String
+
+        init(id: String, name: String) {
+            self.id = id
+            self.name = name
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id, name
+        }
+
+        /// Only the id is required (and must not be blank); a missing name
+        /// falls back to "" so the board can substitute its own label.
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            let rawID = try container.decode(String.self, forKey: .id)
+            guard !rawID.isEmpty else {
+                throw DecodingError.dataCorruptedError(forKey: .id, in: container,
+                                                       debugDescription: "blank machine id")
+            }
+            id = rawID
+            name = (try? container.decode(String.self, forKey: .name)) ?? ""
+        }
+    }
+
+    struct App: Codable, Equatable, Sendable {
+        /// Server-whitelisted app slug ("agterm", "iterm2", "vscode", …, "other").
+        var slug: String
+        var name: String
+        /// "terminal", "multiplexer", "ide", "desktop-app" or "unknown".
+        var kind: String
+
+        init(slug: String, name: String, kind: String) {
+            self.slug = slug
+            self.name = name
+            self.kind = kind
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case slug, name, kind
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            slug = (try? container.decode(String.self, forKey: .slug)) ?? "other"
+            name = (try? container.decode(String.self, forKey: .name)) ?? ""
+            kind = (try? container.decode(String.self, forKey: .kind)) ?? "unknown"
+        }
+    }
+
+    var machine: Machine
+    var app: App
+
+    init(machine: Machine, app: App) {
+        self.machine = machine
+        self.app = app
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case machine, app
+    }
+
+    /// A host without a usable machine is no host at all (the session decodes
+    /// with `host == nil`); a missing app just gets the neutral defaults.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        machine = try container.decode(Machine.self, forKey: .machine)
+        app = (try? container.decode(App.self, forKey: .app))
+            ?? App(slug: "other", name: "", kind: "unknown")
+    }
+}
+
+/// A Focus listener's presence, from the `machines` and `machine` SSE frames
+/// (and `GET <base>/api/machines`). An offline frame carries no name; the
+/// store keeps the last one it saw for the "<name> is offline" copy.
+struct MachinePresence: Identifiable, Codable, Equatable, Sendable {
+    let id: String
+    var name: String?
+    var online: Bool
+    /// Epoch milliseconds since the listener connected (online frames).
+    var since: Int64?
+    /// Epoch milliseconds the listener was last seen (offline frames).
+    var lastSeen: Int64?
+
+    var lastSeenDate: Date? {
+        lastSeen.map { Date(timeIntervalSince1970: Double($0) / 1000) }
+    }
+
+    init(id: String, name: String?, online: Bool, since: Int64? = nil, lastSeen: Int64? = nil) {
+        self.id = id
+        self.name = name
+        self.online = online
+        self.since = since
+        self.lastSeen = lastSeen
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, online, since, lastSeen
+    }
+
+    /// Tolerant decoding, mirroring Session: only `id` is required, an
+    /// unreadable `online` counts as offline, and bad timestamps become nil.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try? container.decode(String.self, forKey: .name)
+        online = (try? container.decode(Bool.self, forKey: .online)) ?? false
+        since = decodeOptionalMillis(container, .since)
+        lastSeen = decodeOptionalMillis(container, .lastSeen)
+    }
+}
+
+/// The string enums of the command channel (docs/api.md "Focus commands").
+/// The server may grow them, and one unknown value must never drop a whole
+/// frame — so each keeps an `.other(raw)` case and always decodes. They are
+/// deliberately not RawRepresentable: the stdlib's `==` for raw-value types
+/// compares `rawValue`s, which here is derived from `==` — a loop.
+protocol CommandEnum: Codable, Hashable, Sendable {
+    /// Every known case with its wire spelling.
+    static var wireNames: [(Self, String)] { get }
+    static func other(_ raw: String) -> Self
+    /// The raw text of an `.other`; nil for a known case.
+    var otherRaw: String? { get }
+}
+
+extension CommandEnum {
+    /// The known case for a wire spelling, else `.other`.
+    static func fromWire(_ raw: String) -> Self {
+        wireNames.first { $0.1 == raw }?.0 ?? other(raw)
+    }
+
+    init(rawValue: String) {
+        self = Self.fromWire(rawValue)
+    }
+
+    var rawValue: String {
+        otherRaw ?? Self.wireNames.first { $0.0 == self }?.1 ?? ""
+    }
+
+    init(from decoder: Decoder) throws {
+        self = Self.fromWire(try decoder.singleValueContainer().decode(String.self))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
+/// What a tap asks for: bring the window to the front, or start the session
+/// again after "not running".
+enum CommandType: CommandEnum {
+    case focus, resume
+    case other(String)
+
+    static let wireNames: [(Self, String)] = [(.focus, "focus"), (.resume, "resume")]
+
+    var otherRaw: String? {
+        if case .other(let raw) = self { return raw }
+        return nil
+    }
+}
+
+/// How the listener's attempt ended.
+enum CommandResult: CommandEnum {
+    case focused, activated, selected, resumed, failed
+    case other(String)
+
+    static let wireNames: [(Self, String)] = [
+        (.focused, "focused"), (.activated, "activated"), (.selected, "selected"),
+        (.resumed, "resumed"), (.failed, "failed"),
+    ]
+
+    var otherRaw: String? {
+        if case .other(let raw) = self { return raw }
+        return nil
+    }
+}
+
+/// How far the listener got: the exact pane, a tab, a window, only the app,
+/// or a thread in a desktop app.
+enum CommandReach: CommandEnum {
+    case pane, tab, window, app, thread
+    case other(String)
+
+    static let wireNames: [(Self, String)] = [
+        (.pane, "pane"), (.tab, "tab"), (.window, "window"), (.app, "app"), (.thread, "thread"),
+    ]
+
+    var otherRaw: String? {
+        if case .other(let raw) = self { return raw }
+        return nil
+    }
+}
+
+/// Why a command failed. Enums only — no free text ever crosses this channel.
+enum CommandReason: CommandEnum {
+    case noRecord, remote, notRunning, appNotRunning, consentNeeded, muxDetached,
+         ambiguous, unsupportedHost, badRecord, respawnFailed, unsupportedType,
+         superseded, expired
+    case other(String)
+
+    static let wireNames: [(Self, String)] = [
+        (.noRecord, "no-record"), (.remote, "remote"), (.notRunning, "not-running"),
+        (.appNotRunning, "app-not-running"), (.consentNeeded, "consent-needed"),
+        (.muxDetached, "mux-detached"), (.ambiguous, "ambiguous"),
+        (.unsupportedHost, "unsupported-host"), (.badRecord, "bad-record"),
+        (.respawnFailed, "respawn-failed"), (.unsupportedType, "unsupported-type"),
+        (.superseded, "superseded"), (.expired, "expired"),
+    ]
+
+    var otherRaw: String? {
+        if case .other(let raw) = self { return raw }
+        return nil
+    }
+}
+
+/// A `command_ack` frame: a command finished — acked by the listener,
+/// superseded by a re-tap or the session's removal, or expired at the TTL.
+struct CommandAck: Codable, Equatable, Sendable {
+    let id: String
+    let sessionId: String
+    var machineId: String
+    var type: CommandType
+    var result: CommandResult
+    var reach: CommandReach?
+    var reason: CommandReason?
+
+    init(id: String, sessionId: String, machineId: String, type: CommandType,
+         result: CommandResult, reach: CommandReach?, reason: CommandReason?) {
+        self.id = id
+        self.sessionId = sessionId
+        self.machineId = machineId
+        self.type = type
+        self.result = result
+        self.reach = reach
+        self.reason = reason
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, type, result, reach, reason
+        case sessionId = "session_id"
+        case machineId = "machine_id"
+    }
+
+    /// Only the two ids are required — they say which card the ack is for.
+    /// `reach` and `reason` are `null` when unset.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        sessionId = try container.decode(String.self, forKey: .sessionId)
+        machineId = (try? container.decode(String.self, forKey: .machineId)) ?? ""
+        type = CommandType(rawValue: (try? container.decode(String.self, forKey: .type)) ?? "")
+        result = CommandResult(rawValue: (try? container.decode(String.self, forKey: .result)) ?? "")
+        reach = (try? container.decode(String.self, forKey: .reach)).map(CommandReach.init(rawValue:))
+        reason = (try? container.decode(String.self, forKey: .reason)).map(CommandReason.init(rawValue:))
+    }
+}
+
+/// `POST <base>/commands` — whether a listener for the session's machine was
+/// connected when the command went out.
+struct CommandReceipt: Codable, Equatable, Sendable {
+    let id: String
+    var delivered: Bool
+    var expiresInMs: Int64?
+
+    init(id: String, delivered: Bool, expiresInMs: Int64? = nil) {
+        self.id = id
+        self.delivered = delivered
+        self.expiresInMs = expiresInMs
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, delivered
+        case expiresInMs = "expires_in_ms"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        // Only an explicit `false` means "not connected" — the web board reads it the same way.
+        delivered = (try? container.decode(Bool.self, forKey: .delivered)) ?? true
+        expiresInMs = decodeOptionalMillis(container, .expiresInMs)
+    }
+}
+
+/// `GET <base>/commands/:id` — where a command got to, for a phone that
+/// backgrounded and missed the ack.
+struct CommandStatus: Codable, Equatable, Sendable {
+    enum State: CommandEnum {
+        case pending, claimed, done, expired
+        case other(String)
+
+        static let wireNames: [(Self, String)] = [
+            (.pending, "pending"), (.claimed, "claimed"), (.done, "done"), (.expired, "expired"),
+        ]
+
+        var otherRaw: String? {
+            if case .other(let raw) = self { return raw }
+            return nil
+        }
+    }
+
+    let id: String
+    var sessionId: String
+    var machineId: String
+    var type: CommandType
+    var state: State
+    var result: CommandResult?
+    var reach: CommandReach?
+    var reason: CommandReason?
+
+    init(id: String, sessionId: String, machineId: String, type: CommandType, state: State,
+         result: CommandResult? = nil, reach: CommandReach? = nil, reason: CommandReason? = nil) {
+        self.id = id
+        self.sessionId = sessionId
+        self.machineId = machineId
+        self.type = type
+        self.state = state
+        self.result = result
+        self.reach = reach
+        self.reason = reason
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, type, state, result, reach, reason
+        case sessionId = "session_id"
+        case machineId = "machine_id"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        sessionId = (try? container.decode(String.self, forKey: .sessionId)) ?? ""
+        machineId = (try? container.decode(String.self, forKey: .machineId)) ?? ""
+        type = CommandType(rawValue: (try? container.decode(String.self, forKey: .type)) ?? "")
+        state = State(rawValue: (try? container.decode(String.self, forKey: .state)) ?? "")
+        result = (try? container.decode(String.self, forKey: .result)).map(CommandResult.init(rawValue:))
+        reach = (try? container.decode(String.self, forKey: .reach)).map(CommandReach.init(rawValue:))
+        reason = (try? container.decode(String.self, forKey: .reason)).map(CommandReason.init(rawValue:))
     }
 }
 
@@ -233,6 +596,12 @@ private func decodeMillis<Key>(_ container: KeyedDecodingContainer<Key>, _ key: 
     guard let value = decodeNumber(container, key),
           let millis = Int64(exactly: value.rounded()) else { return 0 }
     return millis
+}
+
+/// Epoch milliseconds, or nil when the key is absent, null, or not a number.
+private func decodeOptionalMillis<Key>(_ container: KeyedDecodingContainer<Key>, _ key: Key) -> Int64? {
+    guard let value = decodeNumber(container, key) else { return nil }
+    return Int64(exactly: value.rounded())
 }
 
 /// One recorded reading of a plan-limit window. The server writes a point only

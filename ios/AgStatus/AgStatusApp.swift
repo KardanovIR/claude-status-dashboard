@@ -15,6 +15,11 @@ struct AgStatusApp: App {
         store.onBoardReleased = { board in
             Task { await NotificationManager.shared.boardWillChange(from: board) }
         }
+        // A "Bring to front" tapped on a push: the store sends the command
+        // once the board is in — the same explicit control the card offers.
+        NotificationManager.shared.onFocusAction = { [weak store] sessionId in
+            store?.focusFromNotification(sessionId: sessionId)
+        }
         _store = State(initialValue: store)
     }
 
@@ -39,6 +44,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        NotificationManager.shared.registerCategories()
         return true
     }
 
@@ -65,8 +71,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     }
 
     /// Tapping a notification just opens the app, which lands on the board.
+    /// Our "Bring to front" action opens it too, and additionally hands the
+    /// push's session id (its `thread-id`) to the store, which sends the
+    /// focus command once it has the board — if the session is still there
+    /// with its machine online; otherwise the app has simply opened.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
-    ) async {}
+    ) async {
+        guard response.actionIdentifier == NotificationManager.focusActionIdentifier else { return }
+        let sessionId = response.notification.request.content.threadIdentifier
+        guard !sessionId.isEmpty else { return }
+        NotificationManager.shared.handleFocusAction(sessionId: sessionId)
+    }
 }

@@ -4,8 +4,8 @@
 //
 //  REST client for the status server: config probing, workspace creation,
 //  session listing, dismissal, board deletion, pairing codes, push device
-//  registration, and board-URL parsing. One shared URLSession with a 10s
-//  request timeout.
+//  registration, Focus commands, and board-URL parsing. One shared URLSession
+//  with a 10s request timeout.
 //
 
 import Foundation
@@ -141,6 +141,38 @@ enum AgStatusAPI {
             .appendingPathComponent("history")
         let data = try await send("GET", url)
         return (try? decode([HistoryEvent].self, from: data)) ?? []
+    }
+
+    /// `GET <base>/api/machines` — the Focus listeners online right now, the
+    /// same array the `machines` SSE frame carries. Older servers 404.
+    static func machines(for board: Board) async throws -> [MachinePresence] {
+        let url = board.boardURL.appendingPathComponent("api").appendingPathComponent("machines")
+        let data = try await send("GET", url)
+        return (try? decode([MachinePresence].self, from: data)) ?? []
+    }
+
+    /// `POST <base>/commands` — a tap, carrying ids only (docs/api.md "Focus
+    /// commands"). The caller mints `id` (a lowercase UUID) so an ack that
+    /// beats the response still matches its card. Errors surface as the usual
+    /// APIError codes: 404 means an unknown *session* here, not a gone board;
+    /// 409 is a session without a host; a legacy server behind a webhook
+    /// secret answers 401 — this client never sends that secret.
+    static func postCommand(id: String, type: CommandType, sessionId: String,
+                            for board: Board) async throws -> CommandReceipt {
+        let url = board.boardURL.appendingPathComponent("commands")
+        let body = try JSONEncoder().encode(CommandRequest(id: id, type: type.rawValue, sessionId: sessionId))
+        let data = try await send("POST", url, body: body)
+        // An unreadable 200 still means the command went out; the ack says the rest.
+        return (try? decode(CommandReceipt.self, from: data)) ?? CommandReceipt(id: id, delivered: true)
+    }
+
+    /// `GET <base>/commands/:id` — where a command got to, for a phone that
+    /// missed the ack while backgrounded. 404 (`.boardNotFound`) means the
+    /// server no longer knows the command: swept, or restarted.
+    static func command(_ id: String, for board: Board) async throws -> CommandStatus {
+        let url = board.boardURL.appendingPathComponent("commands").appendingPathComponent(id)
+        let data = try await send("GET", url)
+        return try decode(CommandStatus.self, from: data)
     }
 
     static func deleteSession(_ id: String, from board: Board) async throws {
@@ -300,6 +332,18 @@ private struct ConfigResponse: Decodable {
 
 private struct WorkspaceResponse: Decodable {
     let token: String
+}
+
+/// Exactly `{id, type, session_id}` — the wire never names a path or a binary.
+private struct CommandRequest: Encodable {
+    let id: String
+    let type: String
+    let sessionId: String
+
+    private enum CodingKeys: String, CodingKey {
+        case id, type
+        case sessionId = "session_id"
+    }
 }
 
 private struct DeviceRegistration: Encodable {

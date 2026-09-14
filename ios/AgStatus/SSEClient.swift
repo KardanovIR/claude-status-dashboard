@@ -17,6 +17,12 @@ enum SSEEvent: Sendable {
     case upsert(Session)
     case remove(id: String)
     case usage([UsageInfo])
+    /// Every Focus listener online right now; follows each snapshot.
+    case machines([MachinePresence])
+    /// One listener came online or went away.
+    case machine(MachinePresence)
+    /// A Focus command finished (docs/api.md "Focus commands").
+    case commandAck(CommandAck)
 }
 
 // MARK: - SSEClient
@@ -169,7 +175,17 @@ private struct SSEParser {
         case "usage":
             guard let usage = try? decoder.decode([UsageInfo].self, from: payload) else { return nil }
             return .usage(usage)
+        case "machines":
+            guard let machines = try? decoder.decode([MachinePresence].self, from: payload) else { return nil }
+            return .machines(machines)
+        case "machine":
+            guard let machine = try? decoder.decode(MachinePresence.self, from: payload) else { return nil }
+            return .machine(machine)
+        case "command_ack":
+            guard let ack = try? decoder.decode(CommandAck.self, from: payload) else { return nil }
+            return .commandAck(ack)
         default:
+            // `commands`/`command` go to listeners only; anything newer is ignored.
             return nil
         }
     }

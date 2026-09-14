@@ -10,6 +10,14 @@ import kotlin.random.Random
  */
 object DemoData {
 
+    /**
+     * The demo's two Focus hosts, so the board shows both faces of the
+     * control: a listener that is online, and one that went quiet. Ids are
+     * 32 hex like the real per-board hashes.
+     */
+    private const val DEMO_MACBOOK_ID = "3f9a1c7e5b2d4086a9c1e3f5b7d90246"
+    private const val DEMO_MAC_MINI_ID = "7c2e9b4d1f8a6035c4e2a8b6d0f13579"
+
     /** Four sessions that look like a real evening of agent work. */
     fun initialSessions(): List<Session> {
         val now = System.currentTimeMillis()
@@ -22,6 +30,12 @@ object DemoData {
                 project = "acme-api",
                 createdAt = now - 42 * 60_000L,
                 updatedAt = now - 15_000L,
+                // An IDE session whose machine's listener has gone quiet: the
+                // control is there, disabled, with the reason under it.
+                host = SessionHost(
+                    machine = HostMachine(id = DEMO_MAC_MINI_ID, name = "Mac mini"),
+                    app = HostApp(slug = "vscode", name = "VS Code", kind = "ide"),
+                ),
             ),
             Session(
                 id = "demo-webapp",
@@ -40,6 +54,12 @@ object DemoData {
                 project = "etl-jobs",
                 createdAt = now - 18 * 60_000L,
                 updatedAt = now - 3 * 60_000L,
+                // The hero case: blocked in a terminal on a machine whose
+                // listener is online, so "Bring to front" is live.
+                host = SessionHost(
+                    machine = HostMachine(id = DEMO_MACBOOK_ID, name = "MacBook"),
+                    app = HostApp(slug = "agterm", name = "agterm", kind = "terminal"),
+                ),
             ),
             // A Codex session so the demo board shows both agents' limit
             // blocks, not just Claude's.
@@ -53,6 +73,15 @@ object DemoData {
                 createdAt = now - 3 * 3_600_000L,
                 updatedAt = now - 26 * 60_000L,
             ),
+        )
+    }
+
+    /** Listener presence for the demo hosts: the MacBook is on, the Mac mini went quiet. */
+    fun machines(): List<MachinePresence> {
+        val now = System.currentTimeMillis()
+        return listOf(
+            MachinePresence(id = DEMO_MACBOOK_ID, name = "MacBook", online = true, since = now - 55 * 60_000L),
+            MachinePresence(id = DEMO_MAC_MINI_ID, name = "Mac mini", online = false, lastSeen = now - 5 * 60_000L),
         )
     }
 

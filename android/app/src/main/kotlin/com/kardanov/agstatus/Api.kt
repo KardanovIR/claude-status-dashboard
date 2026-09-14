@@ -19,8 +19,8 @@ import java.util.concurrent.TimeUnit
 /**
  * REST client for the status server, mirroring the iOS app's API.swift:
  * config probing, workspace creation, session listing, dismissal, board
- * deletion and pairing codes. One shared OkHttp client with a 10s call
- * timeout; every call runs on the IO dispatcher.
+ * deletion, pairing codes and Focus commands. One shared OkHttp client with
+ * a 10s call timeout; every call runs on the IO dispatcher.
  */
 
 // MARK: - ApiException
@@ -158,6 +158,41 @@ object AgStatusApi {
         val body = AgStatusJson.encodeToString(ClaimRequest(code))
         val claimed = decode<WorkspaceResponse>(send("POST", serverOrigin.append("api", "pair", "claim"), body))
         return Board(serverOrigin.asBaseUrl(), claimed.token)
+    }
+
+    // MARK: Focus
+
+    /**
+     * The Focus listeners online right now — the same array the `machines`
+     * SSE frame carries. A server too old for Focus has none.
+     */
+    suspend fun machines(board: Board): List<MachinePresence> {
+        val body = sendAllowingMissingEndpoint("GET", boardUrl(board).append("api", "machines"))
+            ?: return emptyList()
+        return decodeOrNull<List<MachinePresence>>(body) ?: emptyList()
+    }
+
+    /**
+     * Sends a Focus command carrying ids only (docs/api.md "Focus commands").
+     * Throws an [ApiException] whose `status` the caller maps onto copy:
+     * 401 (a legacy board behind a webhook secret — this app never sends
+     * one), 404 unknown session, 409 no host, 429 too many taps.
+     */
+    suspend fun sendCommand(board: Board, request: CommandRequest): CommandReceipt {
+        val body = AgStatusJson.encodeToString(request)
+        val answer = send("POST", boardUrl(board).append("commands"), body)
+        return decodeOrNull<CommandReceipt>(answer) ?: CommandReceipt(id = request.id)
+    }
+
+    /**
+     * Where a command is in its life, for a phone that dropped the stream
+     * while backgrounded. Null once the server has swept it (or on a server
+     * without Focus) — the watchdog then has the last word.
+     */
+    suspend fun command(board: Board, id: String): CommandState? {
+        val body = sendAllowingMissingEndpoint("GET", boardUrl(board).append("commands", id))
+            ?: return null
+        return decodeOrNull(body)
     }
 
     // MARK: Requests

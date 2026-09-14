@@ -3,12 +3,19 @@
 //  AgStatus
 //
 //  Believable fake sessions for demo mode, plus a tick() that walks them
-//  through plausible status transitions so the board feels alive.
+//  through plausible status transitions so the board feels alive, and the
+//  Focus listeners those sessions would see.
 //
 
 import Foundation
 
 enum DemoData {
+
+    /// The two machines the demo's Focus-enabled sessions run on: a "Mac"
+    /// whose listener is connected, and a "MacBook" that went away five
+    /// minutes ago — so both faces of the "Bring to front" control show.
+    static let onlineMachine = Host.Machine(id: "9f2c1b7e4d3a8f0c5e6b2a1d9c8f7e6b", name: "Mac")
+    static let offlineMachine = Host.Machine(id: "0c4e7a19b3d25f68e1a7c9d04b6f2e83", name: "MacBook")
 
     /// Four sessions that look like a real evening of agent work.
     static func initialSessions() -> [Session] {
@@ -20,7 +27,9 @@ enum DemoData {
                     message: "Editing src/auth/token.ts",
                     project: "acme-api",
                     createdAt: now - 42 * 60_000,
-                    updatedAt: now - 15_000),
+                    updatedAt: now - 15_000,
+                    host: Host(machine: onlineMachine,
+                               app: Host.App(slug: "agterm", name: "agterm", kind: "terminal"))),
             Session(id: "demo-webapp",
                     name: "webapp",
                     status: .testing,
@@ -34,7 +43,9 @@ enum DemoData {
                     message: "Needs permission approval",
                     project: "etl-jobs",
                     createdAt: now - 18 * 60_000,
-                    updatedAt: now - 3 * 60_000),
+                    updatedAt: now - 3 * 60_000,
+                    host: Host(machine: offlineMachine,
+                               app: Host.App(slug: "iterm2", name: "iTerm2", kind: "terminal"))),
             // A Codex session so the demo board shows both agents' limit
             // blocks, not just Claude's.
             Session(id: "demo-docs-site",
@@ -46,6 +57,17 @@ enum DemoData {
                     createdAt: now - 3 * 3_600_000,
                     updatedAt: now - 26 * 60_000),
         ]
+    }
+
+    /// Listener presence as the store keeps it: what a `machines` frame would
+    /// seed, plus the offline `machine` frame the board saw five minutes ago.
+    static func machines() -> [String: MachinePresence] {
+        let now = nowMillis()
+        let online = MachinePresence(id: onlineMachine.id, name: onlineMachine.name,
+                                     online: true, since: now - 2 * 3_600_000)
+        let offline = MachinePresence(id: offlineMachine.id, name: offlineMachine.name,
+                                      online: false, lastSeen: now - 5 * 60_000)
+        return [online.id: online, offline.id: offline]
     }
 
     /// Plan-limit bars matching a busy-but-not-throttled evening: one block
@@ -254,6 +276,79 @@ enum DemoData {
                                    at: session.updatedAt))
         return events.reversed() // newest first, like the server
     }
+
+    // MARK: Decoding checks
+
+    #if DEBUG
+    /// The project has no unit-test target, so the Focus wire models are
+    /// checked here, when demo mode starts in a debug build: a null, absent
+    /// or malformed host leaves `host == nil` (never a dropped card), an
+    /// unknown enum value is kept as `.other` rather than failing the frame,
+    /// and a session survives an encode/decode round trip.
+    static func verifyFocusDecoding() {
+        let decoder = JSONDecoder()
+        func session(_ json: String) -> Session? {
+            try? decoder.decode(Session.self, from: Data(json.utf8))
+        }
+
+        // host: null / absent / not an object / no machine / blank id → nil.
+        assert(session(#"{"id":"s","host":null}"#)?.host == nil, "null host")
+        assert(session(#"{"id":"s"}"#)?.host == nil, "absent host")
+        assert(session(#"{"id":"s","host":"agterm"}"#)?.host == nil, "string host")
+        assert(session(#"{"id":"s","host":{"app":{"slug":"agterm"}}}"#)?.host == nil, "host without machine")
+        assert(session(#"{"id":"s","host":{"machine":{"id":""}}}"#)?.host == nil, "blank machine id")
+        assert(session(#"{"id":"s","host":null}"#) != nil, "the card itself still decodes")
+
+        // A full host, and one with only the machine id.
+        let full = session(#"{"id":"s","host":{"machine":{"id":"9f2c","name":"Mac"},"app":{"slug":"agterm","name":"agterm","kind":"terminal"}}}"#)
+        assert(full?.host == Host(machine: Host.Machine(id: "9f2c", name: "Mac"),
+                                  app: Host.App(slug: "agterm", name: "agterm", kind: "terminal")),
+               "full host")
+        let bare = session(#"{"id":"s","host":{"machine":{"id":"9f2c"}}}"#)?.host
+        assert(bare?.machine.name == "" && bare?.app.slug == "other" && bare?.app.kind == "unknown",
+               "bare host defaults")
+
+        // Round trip: what we encode decodes to the same session.
+        if let full, let data = try? JSONEncoder().encode(full) {
+            assert((try? decoder.decode(Session.self, from: data)) == full, "host round trip")
+        } else {
+            assertionFailure("session encode")
+        }
+
+        // Presence: an offline frame has no name; timestamps may be floats.
+        let frames = try? decoder.decode(
+            [MachinePresence].self,
+            from: Data(#"[{"id":"a","name":"Mac","online":true,"since":1},{"id":"b","online":false,"lastSeen":5.0}]"#.utf8))
+        assert(frames?.count == 2 && frames?[0].online == true && frames?[0].name == "Mac", "online frame")
+        assert(frames?[1].online == false && frames?[1].name == nil && frames?[1].lastSeen == 5, "offline frame")
+
+        // Acks: known enums map, unknown ones are kept, nulls are nil.
+        let known = try? decoder.decode(
+            CommandAck.self,
+            from: Data(#"{"id":"c","session_id":"s","machine_id":"m","type":"focus","result":"failed","reach":null,"reason":"not-running"}"#.utf8))
+        assert(known?.result == .failed && known?.reach == nil && known?.reason == .notRunning, "known ack")
+        let unknown = try? decoder.decode(
+            CommandAck.self,
+            from: Data(#"{"id":"c","session_id":"s","type":"warp","result":"levitated","reach":"orbit","reason":"gremlins"}"#.utf8))
+        assert(unknown?.type == .other("warp") && unknown?.result == .other("levitated"), "unknown ack values")
+        assert(unknown?.reach == .other("orbit") && unknown?.reason == .other("gremlins"), "unknown ack values")
+        assert(unknown?.reason?.rawValue == "gremlins" && CommandReason.appNotRunning.rawValue == "app-not-running",
+               "raw values")
+        assert(CommandReason(rawValue: "app-not-running") == .appNotRunning, "wire names")
+
+        // Command status: state enum with the same tolerance; the receipt defaults to delivered.
+        let status = try? decoder.decode(
+            CommandStatus.self,
+            from: Data(#"{"id":"c","state":"done","result":"focused","reach":"pane","reason":null}"#.utf8))
+        assert(status?.state == .done && status?.result == .focused && status?.reach == .pane, "status")
+        assert((try? decoder.decode(CommandStatus.self, from: Data(#"{"id":"c","state":"warped"}"#.utf8)))?.state
+               == .other("warped"), "unknown state")
+        let receipt = try? decoder.decode(CommandReceipt.self, from: Data(#"{"id":"c"}"#.utf8))
+        assert(receipt?.delivered == true, "receipt default")
+        assert((try? decoder.decode(CommandReceipt.self, from: Data(#"{"id":"c","delivered":false}"#.utf8)))?.delivered
+               == false, "receipt false")
+    }
+    #endif
 
     // MARK: Internals
 

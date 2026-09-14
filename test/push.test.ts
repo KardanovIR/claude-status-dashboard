@@ -333,12 +333,13 @@ describe('push dispatch', () => {
           alert: { title: 'Refactor auth needs input', body: 'Needs permission for rm -rf' },
           sound: 'default',
           'thread-id': 'sess-1',
+          category: 'AGSTATUS_SESSION',
         },
       });
     }
   });
 
-  it('the aps payload stays alert/sound/thread-id even when the session carries a host', async () => {
+  it('the aps payload stays alert/category/sound/thread-id even when the session carries a host', async () => {
     // The phone resolves the machine from its own snapshot by thread-id; the
     // host summary must never ride along in a push (it is opt-in board data).
     const mock = await mockApns();
@@ -358,11 +359,12 @@ describe('push dispatch', () => {
 
     const body = mock.requests[0].body as { aps: Record<string, unknown> };
     expect(Object.keys(body)).toEqual(['aps']);
-    expect(Object.keys(body.aps).sort()).toEqual(['alert', 'sound', 'thread-id']);
+    expect(Object.keys(body.aps).sort()).toEqual(['alert', 'category', 'sound', 'thread-id']);
     expect(body.aps).toEqual({
       alert: { title: 'Agent needs input', body: 'stuck' },
       sound: 'default',
       'thread-id': 'sess-host',
+      category: 'AGSTATUS_SESSION',
     });
     expect(JSON.stringify(body)).not.toContain(host.machine.id);
   });

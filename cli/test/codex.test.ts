@@ -104,7 +104,7 @@ describe('init/uninstall with a detected Codex install', () => {
   const created = createApp({
     multiTenant: true, webhookSecret: '', publicUrl: 'http://x.example',
     sessionTtlMs: 0, databaseUrl: '', trustProxy: false, rateLimit: false,
-    maxWorkspaces: 10_000, version: 'codex-e2e', apns: null,
+    maxWorkspaces: 10_000, commandTtlMs: 120_000, version: 'codex-e2e', apns: null,
   });
   let server: Server;
   let base: string;

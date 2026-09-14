@@ -18,6 +18,7 @@ const created = createApp({
   trustProxy: false,
   rateLimit: false,
   maxWorkspaces: 10_000,
+  commandTtlMs: 120_000,
   version: 'e2e',
 });
 

@@ -17,6 +17,16 @@ import {
   settingsPath,
   writeSettingsWithBackup,
 } from './settings';
+import { resolveListenerConfig } from './listener/config';
+import {
+  doctor as listenerDoctor,
+  install as listenerInstall,
+  listenerInstalled,
+  status as listenerStatus,
+  uninstall as listenerUninstall,
+  type ListenerCommandOptions,
+} from './listener/install';
+import type { ListenerConfig } from './listener/types';
 import {
   codexDetected,
   codexHasOurHooks,
@@ -153,7 +163,20 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
   log('Start a Claude Code session and watch it appear.');
 }
 
-export async function runUninstall(log: (line: string) => void = console.log): Promise<void> {
+export interface UninstallOptions {
+  /**
+   * Also take the Focus listener down (design §5.4: `agstatus uninstall`
+   * calls `listener uninstall`), with these options for it. Off unless the
+   * caller asks, so library callers and tests never reach launchd or a
+   * developer's real ~/.agstatus.json; `main()` turns it on.
+   */
+  listener?: ListenerCommandOptions;
+}
+
+export async function runUninstall(
+  log: (line: string) => void = console.log,
+  opts: UninstallOptions = {}
+): Promise<void> {
   const file = settingsPath();
   const settings = readSettings(file);
   const { settings: cleaned, removed } = removeAgstatus(settings);
@@ -197,6 +220,17 @@ export async function runUninstall(log: (line: string) => void = console.log): P
   }
 
   log('AgStatus hooks are uninstalled. Backups kept alongside the edited files.');
+
+  // Focus: with the hooks gone nothing posts a host object any more, but
+  // `"focus": true` would still make a reinstalled hook send one and write
+  // local records, and the LaunchAgent would keep a stream open to the board.
+  if (opts.listener && listenerInstalled()) {
+    log('');
+    const code = await listenerUninstall({ ...opts.listener, log });
+    if (code !== 0) {
+      throw new Error('The Focus listener is still installed — fix the problem above, then run `npx agstatus listener uninstall`.');
+    }
+  }
 }
 
 export async function runStatus(log: (line: string) => void = console.log): Promise<void> {
@@ -240,12 +274,75 @@ function safeReadCodexHooks(): Record<string, unknown> {
   }
 }
 
+/**
+ * The runtime half of the listener (SSE stream, planner, runner) lives in
+ * ./listener/run and is loaded only when `plan` or `run` is invoked: the
+ * install/status/doctor paths never need it, and a broken runtime must not
+ * take `agstatus init` down with it.
+ */
+interface ListenerRuntime {
+  runPlanCommand(sessionId: string, log: (line: string) => void): Promise<number | void>;
+  /** Resolves only once `signal` aborts; throws before subscribing when another listener holds the lock. */
+  runListener(cfg: ListenerConfig, deps?: { signal?: AbortSignal }): Promise<void>;
+}
+const LISTENER_RUNTIME = './listener/run';
+
+async function runListenerCommand(
+  sub: string | undefined,
+  arg: string | undefined,
+  flags: Map<string, string | boolean>
+): Promise<number> {
+  const str = (k: string): string | undefined => (typeof flags.get(k) === 'string' ? (flags.get(k) as string) : undefined);
+  switch (sub) {
+    case 'install':
+      return listenerInstall({ name: str('name'), url: str('url') });
+    case 'uninstall':
+      return listenerUninstall({ purge: flags.get('purge') === true });
+    case 'status':
+      return listenerStatus();
+    case 'doctor':
+      return listenerDoctor();
+    case 'plan': {
+      if (!arg) {
+        console.error('✖ Usage: agstatus listener plan <session_id>\n');
+        console.log(USAGE);
+        return 1;
+      }
+      const runtime = (await import(LISTENER_RUNTIME)) as ListenerRuntime;
+      const code = await runtime.runPlanCommand(arg, console.log);
+      return typeof code === 'number' ? code : 0;
+    }
+    case 'run': {
+      const cfg = resolveListenerConfig({ name: str('name'), url: str('url') });
+      if ('error' in cfg) {
+        console.error(`✖ ${cfg.error}`);
+        return 1;
+      }
+      // launchd stops the agent with SIGTERM (Ctrl-C in the foreground is
+      // SIGINT): end the stream, release the lock and log the stop instead
+      // of dying mid-write.
+      const ctrl = new AbortController();
+      const stop = (): void => ctrl.abort();
+      process.once('SIGTERM', stop);
+      process.once('SIGINT', stop);
+      const runtime = (await import(LISTENER_RUNTIME)) as ListenerRuntime;
+      await runtime.runListener(cfg, { signal: ctrl.signal }); // resolves only on a signal
+      return 0;
+    }
+    default:
+      console.error(`✖ ${sub ? `Unknown listener command: ${sub}` : 'Missing listener command'}\n`);
+      console.log(USAGE);
+      return 1;
+  }
+}
+
 const USAGE = `agstatus — live status board for your coding agents (Claude Code & Codex)
 
 Usage:
   npx agstatus init [options]   Set up hooks + a status board
   npx agstatus status           Show current setup and server reachability
-  npx agstatus uninstall        Remove hooks and env entries
+  npx agstatus uninstall        Remove hooks and env entries (and the Focus listener, if installed)
+  npx agstatus listener <cmd>   Focus listener (bring a session's terminal to the front from the board)
   npx agstatus help             This help
 
 init options:
@@ -256,17 +353,30 @@ init options:
   --codex           Also set up OpenAI Codex even if ~/.codex isn't detected
   --no-codex        Skip Codex setup (default: auto-configure when detected)
   --no-qr           Skip the QR code
+
+listener commands (macOS; see docs/hooks.md "Focus"):
+  install [--name <label>] [--url <board>]   Create machine.json, set "focus": true, start the LaunchAgent
+  uninstall [--purge]                        Stop it, set "focus": false; --purge also drops records and log
+  status                                     Agent state, machine id, board, last log lines
+  doctor                                     Which tools and strategies are available, config sanity
+  plan <session_id>                          Print what a focus command would run, without running it
+  run                                        Run the listener in the foreground (what the LaunchAgent runs)
 `;
 
-const VALUE_FLAGS = new Set(['url', 'code', 'secret']);
-const BOOL_FLAGS = new Set(['minimal', 'no-qr', 'help', 'codex', 'no-codex']);
+const VALUE_FLAGS = new Set(['url', 'code', 'secret', 'name']);
+const BOOL_FLAGS = new Set(['minimal', 'no-qr', 'help', 'codex', 'no-codex', 'purge']);
 
 export async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
   const flags = new Map<string, string | boolean>();
+  const positional: string[] = []; // `listener <sub> [session_id]` only
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (!a.startsWith('--')) {
+      if (cmd === 'listener' && positional.length < 2) {
+        positional.push(a);
+        continue;
+      }
       console.error(`✖ Unexpected argument: ${a}\n`);
       console.log(USAGE);
       return 1;
@@ -316,11 +426,13 @@ export async function main(argv: string[]): Promise<number> {
         });
         return 0;
       case 'uninstall':
-        await runUninstall();
+        await runUninstall(console.log, { listener: {} });
         return 0;
       case 'status':
         await runStatus();
         return 0;
+      case 'listener':
+        return await runListenerCommand(positional[0], positional[1], flags);
       case undefined:
       case 'help':
       case '--help':

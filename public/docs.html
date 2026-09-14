@@ -277,12 +277,16 @@ via <code>POST /api/pair/claim</code> for the board&#39;s URLs. Claims are rate 
 10/min/IP. Details in <a href="#api-pairing-endpoints">docs/api.md</a>.</p>
 <h4 id="hooks-other-commands"><a class="anchor" href="#hooks-other-commands">Other commands</a></h4>
 <pre><code class="language-bash">npx agstatus status      # show configured URL, hook file, server reachability + session count
-npx agstatus uninstall   # remove the hook file and AgStatus settings entries (backup kept)
+npx agstatus uninstall   # remove the hook file and AgStatus settings entries (backup kept), and the Focus listener if installed
+npx agstatus listener …  # the Focus listener, see below (install | uninstall | status | doctor | plan | run)
 npx agstatus help        # usage
 </code></pre>
 <p><code>uninstall</code> removes only AgStatus&#39;s hook registrations and the
 <code>CLAUDE_STATUS_URL</code> / <code>CLAUDE_STATUS_SECRET</code> / <code>AGSTATUS_DETAIL</code> env keys —
-everything else in <code>settings.json</code> is left untouched.</p>
+everything else in <code>settings.json</code> is left untouched. When the
+<a href="#hooks-installing-the-listener-macos">Focus listener</a> is installed it runs
+<code>listener uninstall</code> too, so the LaunchAgent stops and <code>&quot;focus&quot;</code> is set to
+<code>false</code>.</p>
 <h3 id="hooks-claude-code-plugin"><a class="anchor" href="#hooks-claude-code-plugin">Claude Code plugin</a></h3>
 <p>The same hook, packaged as a Claude Code plugin — nothing touches
 <code>~/.claude/settings.json</code>. Inside Claude Code:</p>
@@ -298,10 +302,10 @@ session you run it in appears on the board.</p>
 <p><code>~/.agstatus.json</code> is also the home of the optional <code>&quot;focus&quot;: true</code> key that
 turns on <a href="#hooks-focus-optional-opt-in">Focus</a> for this machine — every install
 channel shares the file, and the hook checks that key whichever way the
-board URL arrived. The listener installer (a later step of that feature) is
-the sanctioned writer of the key; setting it by hand does nothing on its
-own — without the machine id file that installer creates, the hook adds no
-<code>host</code> object and writes no record.</p>
+board URL arrived. <code>npx agstatus listener install</code> is the sanctioned writer
+of the key; setting it by hand does nothing on its own — without the machine
+id file that installer creates, the hook adds no <code>host</code> object and writes no
+record.</p>
 <p>Don&#39;t combine the plugin with an <code>agstatus init</code> install on the same
 machine: both hooks would fire and every status would post twice. Pick one
 (<code>npx agstatus uninstall</code> removes the other). The plugin covers Claude Code
@@ -502,6 +506,74 @@ validates a command, which terminals get pane-level focus — is in
 updated hook script may need approving again — if Codex sessions stop
 reporting after an upgrade, run <code>/hooks</code> inside Codex and re-approve the
 AgStatus entries.</p>
+<h4 id="hooks-installing-the-listener-macos"><a class="anchor" href="#hooks-installing-the-listener-macos">Installing the listener (macOS)</a></h4>
+<p>The listener is the process on your Mac that receives a tap from the board
+and brings the right terminal to the front. It runs as a LaunchAgent under
+your user, starts at login and is restarted if it dies. Install it after
+<code>agstatus init</code> (or the plugin&#39;s <code>/agstatus:setup</code>) has configured a board:</p>
+<pre><code class="language-bash">npx agstatus listener install --name &quot;Studio&quot;   # --name is the label shown on the board; default &quot;Mac&quot;
+</code></pre>
+<p><code>install</code> is the only thing that turns Focus on. It</p>
+<ul>
+<li>creates <code>machine.json</code> in the state directory (see the table above) with
+a random machine id — the raw id never leaves the file; the board sees
+only a hash of it and the board URL, so it links nothing across boards;</li>
+<li>sets <code>&quot;focus&quot;: true</code> in <code>~/.agstatus.json</code>, keeping every other key (and
+writes <code>url</code> there only if the file had none);</li>
+<li>writes and loads <code>~/Library/LaunchAgents/com.agstatus.listener.plist</code>,
+which runs <code>agstatus listener run</code> with the <code>PATH</code> of the shell you
+installed from, so the terminal tools it may call resolve the same way
+under launchd;</li>
+<li>prints the exact <code>host</code> object every status post now carries.</li>
+</ul>
+<p>The board URL comes from the same places the hook reads it, in this order:
+<code>CLAUDE_STATUS_URL</code> in the environment, <code>~/.claude/settings.json</code>, the
+Codex <code>hooks.json</code> command, <code>~/.agstatus.json</code> (<code>--url</code> overrides them
+all, and is kept in the LaunchAgent&#39;s arguments so <code>listener run</code> follows
+the same board; the hook still follows the files, so the installer warns
+when a <code>--url</code> names a different board than <code>settings.json</code> or
+<code>hooks.json</code>). If Claude Code and Codex are configured for different boards
+the installer refuses rather than guess — re-run <code>agstatus init</code>, or pass
+<code>--url</code>. Install the CLI itself (<code>npm i -g agstatus</code>) rather than relying
+on <code>npx</code> alone: the LaunchAgent points at the CLI&#39;s files, and npm may
+clear the <code>npx</code> cache.</p>
+<pre><code class="language-bash">npx agstatus listener status               # loaded? pid, machine label + public id, board, last log lines
+npx agstatus listener doctor               # which tools resolved and which strategies that enables, config sanity
+npx agstatus listener plan &lt;session_id&gt;    # dry run: print what a tap on that session would execute, run nothing
+npx agstatus listener uninstall [--purge]  # stop and remove the agent, set &quot;focus&quot;: false (cards clear)
+</code></pre>
+<p><code>uninstall</code> keeps the session records and the log (and <code>machine.json</code>, so a
+reinstall keeps the same id); <code>--purge</code> removes the records and the log.
+<code>npx agstatus uninstall</code> — the hook uninstall — runs <code>listener uninstall</code>
+as well whenever the LaunchAgent is present or <code>&quot;focus&quot;: true</code> is still
+set, so switching AgStatus off on a machine switches Focus off with it.
+<code>plan</code> and <code>doctor</code> are the way to find out what a host can do before you
+tap anything: the listener never runs a shell and only ever launches tools
+by absolute path with argument arrays, so <code>plan</code> shows you the literal
+argument lists. Before anything runs, the record is treated as data: every
+field must match its expected shape, a socket path must be a live socket
+you own and a project root a directory you own (anything else is ignored
+or fails the tap as <code>bad-record</code>), and the bundle id handed to <code>open -b</code>
+must be one from the listener&#39;s own table — an app it does not know is
+never activated, and the tap answers <code>unsupported-host</code>.</p>
+<p>What v1 can reach on macOS: the exact pane in <strong>agterm</strong>, <strong>Herdr</strong>, and
+<strong>tmux</strong> (through the multiplexer, then the outer terminal); the exact
+window in <strong>kitty</strong> when <code>allow_remote_control</code> and a <code>listen_on unix:</code>
+socket are configured; the session in <strong>iTerm2</strong> (its <code>iterm2:reveal</code> URL)
+and <strong>WezTerm</strong> (its CLI) — both marked experimental until verified on real
+setups; the thread in <strong>Codex Desktop</strong> (its <code>codex://threads/</code> link); the
+project window in <strong>JetBrains IDEs</strong> and <strong>Zed</strong>; and plain app activation
+(<code>open -b</code>) for the other apps in the listener&#39;s table — Terminal.app,
+Ghostty, Alacritty, Warp, Hyper, Tabby, Rio, Xcode, VS Code, Cursor,
+Windsurf, Claude Desktop (inside a multiplexer whose outer terminal is not
+in the table, the pane is selected and the window stays where it is).
+Tab-exact focus in Terminal.app and
+Ghostty needs Apple Events, which a plain Node process cannot send without
+prompting for every app; that arrives with the signed listener app in a
+later release. Resuming a session that is no longer running is also later:
+in v1 a tap on a stopped session answers &quot;not running&quot;. Linux and Windows
+have no LaunchAgent equivalent yet; <code>agstatus listener run</code> works there in
+the foreground, without the terminal-specific strategies.</p>
 <h3 id="hooks-openai-codex-specifics"><a class="anchor" href="#hooks-openai-codex-specifics">OpenAI Codex specifics</a></h3>
 <p><code>agstatus init</code> configures Codex automatically when <code>~/.codex</code> exists
 (<code>CODEX_HOME</code> is respected; <code>--no-codex</code> opts out, <code>--codex</code> forces it):</p>

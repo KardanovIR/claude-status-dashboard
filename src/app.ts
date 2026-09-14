@@ -175,6 +175,10 @@ export function createApp(cfg: AppConfig): CreatedApp {
   // replaces the old stream), counted apart from the viewer slots above.
   const listeners = new Map<string, Map<string, Listener>>();
   const timers: NodeJS.Timeout[] = [];
+  // A caller that omits or misconfigures the TTL gets the default, never NaN — a NaN
+  // sweep interval is a 1 ms hot loop and a NaN expiry is a command that never ends.
+  const commandTtlMs =
+    Number.isFinite(cfg.commandTtlMs) && cfg.commandTtlMs > 0 ? cfg.commandTtlMs : 120_000;
 
   // A reader that stops draining its socket never fires 'close', so writes pile
   // up in per-connection heap buffers. Evict once the buffer exceeds this cap.
@@ -567,7 +571,7 @@ export function createApp(cfg: AppConfig): CreatedApp {
     // The phone sees the replaced command fail as superseded.
     const superseded = store.supersedePending(wsId, sessionId, type, machineId);
     if (superseded) broadcast(wsId, 'command_ack', ackPayload(superseded));
-    const cmd = store.createCommand({ wsId, id, type, sessionId, machineId }, cfg.commandTtlMs)!;
+    const cmd = store.createCommand({ wsId, id, type, sessionId, machineId }, commandTtlMs)!;
     const payload = commandFrame(cmd);
     // Only that machine's listener hears the command; viewers learn the
     // outcome from the ack.
@@ -1009,7 +1013,7 @@ export function createApp(cfg: AppConfig): CreatedApp {
   // The floor keeps a tiny TTL from turning this into a hot timer.
   const commandSweep = setInterval(() => {
     announceAcks(store.sweepCommands());
-  }, Math.max(1_000, Math.min(cfg.commandTtlMs, COMMAND_SWEEP_MS)));
+  }, Math.max(1_000, Math.min(commandTtlMs, COMMAND_SWEEP_MS)));
   commandSweep.unref();
   timers.push(commandSweep);
 

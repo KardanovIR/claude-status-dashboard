@@ -1,0 +1,595 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import crypto from 'crypto';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import {
+  boardBase,
+  machineKey,
+  mergeAgstatusJson,
+  publicId,
+  readMachine,
+  resolveBins,
+  resolveBoardUrl,
+  resolveListenerConfig,
+  resolveSecret,
+  writeMachine,
+} from '../src/listener/config';
+import {
+  LAUNCH_AGENT_LABEL,
+  doctor,
+  install,
+  listenerInstalled,
+  plistPath,
+  plistProgramArguments,
+  plistUrlFlag,
+  renderPlist,
+  status,
+  uninstall,
+  type Exec,
+} from '../src/listener/install';
+import { runUninstall } from '../src/index';
+
+/**
+ * The installer is exercised against a throwaway HOME and state dir with
+ * launchctl replaced by a recorder, so nothing here touches launchd or the
+ * developer's own config. Every env var the config resolution reads is
+ * pinned per test.
+ */
+
+const BOARD = 'https://s.example/w/ags_x';
+// The hook's fixture (cli/test/host.test.ts): this id + board must hash to
+// the same public id there and here, or the server routes to nobody.
+const MACHINE_ID = '6f1c2b3a-4d5e-4f60-8a9b-0c1d2e3f4a5b';
+const EXPECTED_KEY = '3699df22d970fdbde721730bb9def92f026202bf211f8fe081e1f46b8a4e4828';
+const EXPECTED_PUBLIC_ID = 'fa1ac1e7c51a98ad6856f1299ad52080';
+
+const ENV_KEYS = [
+  'HOME', 'AGSTATUS_STATE_DIR', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME',
+  'CLAUDE_STATUS_URL', 'CLAUDE_STATUS_SECRET', 'AGSTATUS_FOCUS',
+];
+
+interface Workspace {
+  home: string;
+  state: string;
+}
+
+const CODEX_CMD = (url: string, secret?: string): string =>
+  `CLAUDE_STATUS_URL="${url}" AGSTATUS_SOURCE=codex${secret ? ` CLAUDE_STATUS_SECRET='${secret}'` : ''} node "$HOME/.codex/hooks/agstatus-hook.js"`;
+
+function writeJson(file: string, value: unknown): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n');
+}
+
+const readJson = (file: string): Record<string, unknown> => JSON.parse(fs.readFileSync(file, 'utf8'));
+
+function withSettingsUrl(home: string, url: string): void {
+  writeJson(path.join(home, '.claude', 'settings.json'), { env: { CLAUDE_STATUS_URL: url }, model: 'opus' });
+}
+
+function withCodexUrl(home: string, url: string, secret?: string): void {
+  writeJson(path.join(home, '.codex', 'hooks.json'), {
+    hooks: { Stop: [{ hooks: [{ type: 'command', command: CODEX_CMD(url, secret) }] }] },
+  });
+}
+
+/** launchctl stand-in: records every call, answers success (or a canned print). */
+function recorder(print?: string): { exec: Exec; calls: string[][] } {
+  const calls: string[][] = [];
+  const exec: Exec = async (file, args) => {
+    calls.push([path.basename(file), ...args]);
+    if (args[0] === 'print') return print ? { code: 0, stdout: print } : { code: 113, stdout: '' };
+    return { code: 0, stdout: '' };
+  };
+  return { exec, calls };
+}
+
+let saved: Record<string, string | undefined>;
+let ws: Workspace;
+
+beforeEach(() => {
+  saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+  for (const k of ENV_KEYS) delete process.env[k];
+  ws = {
+    home: fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-lhome-')),
+    state: fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-lstate-')),
+  };
+  process.env.HOME = ws.home;
+  process.env.AGSTATUS_STATE_DIR = ws.state;
+});
+
+afterEach(() => {
+  for (const k of ENV_KEYS) {
+    if (saved[k] === undefined) delete process.env[k];
+    else process.env[k] = saved[k];
+  }
+  fs.rmSync(ws.home, { recursive: true, force: true });
+  fs.rmSync(ws.state, { recursive: true, force: true });
+});
+
+const quiet = (): { log: (l: string) => void; out: () => string } => {
+  const lines: string[] = [];
+  return { log: (l) => lines.push(l), out: () => lines.join('\n') };
+};
+
+const darwin = (extra: Record<string, unknown> = {}) => ({
+  platform: 'darwin' as const,
+  uid: 501,
+  cliPath: '/opt/agstatus/dist/cli.js',
+  nodePath: '/usr/local/bin/node',
+  ...extra,
+});
+
+describe('boardBase', () => {
+  it('strips one trailing slash and one trailing /webhook, like the hook', () => {
+    expect(boardBase('https://s.example/w/ags_x')).toBe('https://s.example/w/ags_x');
+    expect(boardBase('https://s.example/w/ags_x/')).toBe('https://s.example/w/ags_x');
+    expect(boardBase('https://s.example/w/ags_x/webhook')).toBe('https://s.example/w/ags_x');
+    expect(boardBase('https://s.example/w/ags_x/webhook/')).toBe('https://s.example/w/ags_x');
+    expect(boardBase('http://localhost:3000')).toBe('http://localhost:3000');
+    // Only one of each: a second slash is the caller's typo, not ours to fix.
+    expect(boardBase('https://s.example//')).toBe('https://s.example/');
+  });
+});
+
+describe('machine key and public id', () => {
+  it('match the derivation the hook uses for the same machine and board', () => {
+    const key = machineKey(MACHINE_ID, BOARD);
+    expect(key).toBe(EXPECTED_KEY);
+    expect(publicId(key)).toBe(EXPECTED_PUBLIC_ID);
+    // Two rounds, exactly as host.test.ts's expectedMachineId() computes it.
+    const hookKey = crypto.createHash('sha256').update(`${MACHINE_ID}\n${BOARD}`).digest('hex');
+    const hookId = crypto.createHash('sha256').update(hookKey).digest('hex').slice(0, 32);
+    expect(publicId(machineKey(MACHINE_ID, BOARD))).toBe(hookId);
+  });
+
+  it('give the same id however the board URL was pasted', () => {
+    const id = (url: string) => publicId(machineKey(MACHINE_ID, boardBase(url)));
+    expect(id(`${BOARD}/`)).toBe(EXPECTED_PUBLIC_ID);
+    expect(id(`${BOARD}/webhook`)).toBe(EXPECTED_PUBLIC_ID);
+    expect(id('https://other.example/w/ags_x')).not.toBe(EXPECTED_PUBLIC_ID);
+  });
+});
+
+describe('machine.json', () => {
+  it('round-trips with a 0600 file, and rejects anything without a uuid', () => {
+    writeMachine(ws.state, { machineId: MACHINE_ID, name: 'Studio', machineHost: 'host.local' });
+    const file = path.join(ws.state, 'machine.json');
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(readMachine(ws.state)).toEqual({ machineId: MACHINE_ID, name: 'Studio', machineHost: 'host.local' });
+
+    fs.writeFileSync(file, JSON.stringify({ machineId: 'not-a-uuid', name: 'x' }));
+    expect(readMachine(ws.state)).toBeNull();
+    fs.writeFileSync(file, '{oops');
+    expect(readMachine(ws.state)).toBeNull();
+    expect(() => writeMachine(ws.state, { machineId: 'nope' })).toThrow(/uuid/);
+  });
+});
+
+describe('renderPlist', () => {
+  it('escapes XML and carries the label, PATH, program arguments and both log paths', () => {
+    const xml = renderPlist({
+      label: LAUNCH_AGENT_LABEL,
+      nodePath: '/usr/local/bin/node',
+      cliPath: '/Users/a&b/<cli>/cli.js',
+      args: ['listener', 'run'],
+      path: '/opt/homebrew/bin:/usr/bin:"q"',
+      logFile: '/Users/a&b/Library/listener.log',
+    });
+    expect(xml).toContain(`<key>Label</key><string>${LAUNCH_AGENT_LABEL}</string>`);
+    expect(xml).toContain('<string>/Users/a&amp;b/&lt;cli&gt;/cli.js</string>');
+    expect(xml).not.toContain('<cli>');
+    expect(xml).toContain('<key>PATH</key><string>/opt/homebrew/bin:/usr/bin:&quot;q&quot;</string>');
+    expect(xml).toContain('<key>StandardOutPath</key><string>/Users/a&amp;b/Library/listener.log</string>');
+    expect(xml).toContain('<key>StandardErrorPath</key><string>/Users/a&amp;b/Library/listener.log</string>');
+    expect(xml).toContain('<key>RunAtLoad</key><true/>');
+    expect(xml).toContain('<key>KeepAlive</key><true/>');
+    expect(xml).toContain('<key>ThrottleInterval</key><integer>10</integer>');
+    expect(plistProgramArguments(xml)).toEqual(['/usr/local/bin/node', '/Users/a&b/<cli>/cli.js', 'listener', 'run']);
+  });
+});
+
+describe('install', () => {
+  it('creates machine.json, turns focus on without dropping keys, writes the plist and bootstraps it', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    const agstatusJson = path.join(ws.home, '.agstatus.json');
+    writeJson(agstatusJson, { url: 'https://old.example/w/ags_old', secret: 's3cr3t', extra: 1 });
+    const { exec, calls } = recorder();
+    const { log, out } = quiet();
+
+    expect(await install(darwin({ name: 'Studio', exec, log }))).toBe(0);
+
+    const machineFile = path.join(ws.state, 'machine.json');
+    expect(fs.statSync(machineFile).mode & 0o777).toBe(0o600);
+    const machine = readJson(machineFile);
+    expect(machine.machineId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(machine.name).toBe('Studio');
+    expect(machine.machineHost).toBe(os.hostname());
+
+    // url/secret untouched, focus added, mode tightened.
+    expect(readJson(agstatusJson)).toEqual({
+      url: 'https://old.example/w/ags_old',
+      secret: 's3cr3t',
+      extra: 1,
+      focus: true,
+    });
+    expect(fs.statSync(agstatusJson).mode & 0o777).toBe(0o600);
+
+    const plist = plistPath(ws.home);
+    expect(plist).toBe(path.join(ws.home, 'Library', 'LaunchAgents', 'com.agstatus.listener.plist'));
+    const xml = fs.readFileSync(plist, 'utf8');
+    expect(xml).toContain('<string>/opt/agstatus/dist/cli.js</string>');
+    expect(xml).toContain('<string>listener</string>');
+    expect(xml).toContain('<string>run</string>');
+    expect(xml).toContain(`<key>AGSTATUS_STATE_DIR</key><string>${ws.state}</string>`);
+    expect(xml).toContain(`<string>${path.join(ws.state, 'listener.log')}</string>`);
+
+    expect(calls).toEqual([
+      ['launchctl', 'bootout', 'gui/501/com.agstatus.listener'],
+      ['launchctl', 'bootstrap', 'gui/501', plist],
+    ]);
+
+    const expectedId = publicId(machineKey(machine.machineId as string, BOARD));
+    expect(out()).toContain('This machine will appear on your board as "Studio"');
+    expect(out()).toContain(`"id": "${expectedId}"`);
+    expect(out()).toContain(path.join(ws.state, 'sessions'));
+    expect(out()).not.toContain(machine.machineId as string); // the raw id never leaves machine.json
+  });
+
+  it('writes the url into a fresh ~/.agstatus.json and keeps the machine id on a re-run', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    const { exec } = recorder();
+    const { log } = quiet();
+    expect(await install(darwin({ exec, log }))).toBe(0);
+    const first = readJson(path.join(ws.state, 'machine.json'));
+    expect(first.name).toBe('Mac');
+    expect(readJson(path.join(ws.home, '.agstatus.json'))).toEqual({ focus: true, url: BOARD });
+
+    expect(await install(darwin({ exec, log, name: 'Renamed' }))).toBe(0);
+    const second = readJson(path.join(ws.state, 'machine.json'));
+    expect(second.machineId).toBe(first.machineId);
+    expect(second.name).toBe('Renamed');
+  });
+
+  it('refuses when no board URL is configured, writing nothing', async () => {
+    const { exec, calls } = recorder();
+    const { log, out } = quiet();
+    expect(await install(darwin({ exec, log }))).toBe(1);
+    expect(out()).toMatch(/No board URL configured/);
+    expect(fs.existsSync(path.join(ws.state, 'machine.json'))).toBe(false);
+    expect(fs.existsSync(path.join(ws.home, '.agstatus.json'))).toBe(false);
+    expect(fs.existsSync(plistPath(ws.home))).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  it('refuses when Claude Code and Codex name different boards', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    withCodexUrl(ws.home, 'https://s.example/w/ags_other');
+    const { exec, calls } = recorder();
+    const { log, out } = quiet();
+    expect(await install(darwin({ exec, log }))).toBe(1);
+    expect(out()).toMatch(/different boards/);
+    expect(calls).toEqual([]);
+    // An explicit --url settles it.
+    expect(await install(darwin({ exec, log, url: BOARD }))).toBe(0);
+  });
+
+  it('refuses off macOS without touching anything', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    const { exec, calls } = recorder();
+    const { log, out } = quiet();
+    expect(await install({ platform: 'linux', exec, log })).toBe(1);
+    expect(out()).toMatch(/macOS/);
+    expect(out()).toMatch(/listener run/);
+    expect(calls).toEqual([]);
+    expect(fs.existsSync(path.join(ws.state, 'machine.json'))).toBe(false);
+  });
+
+  it('keeps --url in the agent arguments, so run, status and doctor follow the board the id was printed for', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    const other = 'https://s.example/w/ags_other';
+    const { exec } = recorder('com.agstatus.listener = {\n\tpid = 4242\n}\n');
+    const { log, out } = quiet();
+    expect(await install(darwin({ exec, log, url: other }))).toBe(0);
+
+    const xml = fs.readFileSync(plistPath(ws.home), 'utf8');
+    expect(plistProgramArguments(xml)).toEqual(['/usr/local/bin/node', '/opt/agstatus/dist/cli.js', 'listener', 'run', '--url', other]);
+    expect(plistUrlFlag(xml)).toBe(other);
+    const machine = readJson(path.join(ws.state, 'machine.json'));
+    const idFor = (url: string): string => publicId(machineKey(machine.machineId as string, url));
+    expect(out()).toContain(`"id": "${idFor(other)}"`);
+    // The hook follows settings.json, so the installer says the two ids will not match.
+    expect(out()).toContain('⚠ --url names a different board than');
+    expect(out()).toContain(path.join(ws.home, '.claude', 'settings.json'));
+    expect(out()).toContain(`    ${BOARD}`);
+
+    // `listener run --url` derives the same key install printed.
+    const cfg = resolveListenerConfig({ url: other });
+    if ('error' in cfg) throw new Error(cfg.error);
+    expect(cfg.machinePublicId).toBe(idFor(other));
+
+    const s = quiet();
+    expect(await status(darwin({ exec, log: s.log }))).toBe(0);
+    expect(s.out()).toContain(`Board:     ${other} (--url kept in the agent)`);
+    expect(s.out()).toContain(idFor(other));
+    expect(s.out()).not.toContain(idFor(BOARD));
+
+    const d = quiet();
+    expect(await doctor(darwin({ log: d.log }))).toBe(1);
+    expect(d.out()).toContain(`✖ the agent runs with --url ${other}, but the hook reads ${BOARD}`);
+  });
+
+  it('writes plain `listener run` without --url, and no warning when --url agrees with the files', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    const { exec } = recorder();
+    const { log, out } = quiet();
+    expect(await install(darwin({ exec, log, url: `${BOARD}/` }))).toBe(0);
+    expect(plistProgramArguments(fs.readFileSync(plistPath(ws.home), 'utf8')).slice(2)).toEqual(['listener', 'run', '--url', `${BOARD}/`]);
+    expect(out()).not.toContain('⚠ --url');
+    expect(await install(darwin({ exec, log }))).toBe(0);
+    const xml = fs.readFileSync(plistPath(ws.home), 'utf8');
+    expect(plistProgramArguments(xml).slice(2)).toEqual(['listener', 'run']);
+    expect(plistUrlFlag(xml)).toBeUndefined();
+    // A plist edited by hand into something that is not a board URL is not followed either.
+    expect(plistUrlFlag(renderPlist({
+      label: LAUNCH_AGENT_LABEL, nodePath: '/n', cliPath: '/c', args: ['listener', 'run', '--url', 'not a url'], path: '', logFile: '/l',
+    }))).toBeUndefined();
+  });
+});
+
+describe('uninstall', () => {
+  it('boots the agent out, removes the plist, sets focus:false, and purges only on request', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    const { exec, calls } = recorder();
+    const { log } = quiet();
+    expect(await install(darwin({ exec, log }))).toBe(0);
+    fs.mkdirSync(path.join(ws.state, 'sessions', 'abc'), { recursive: true });
+    fs.writeFileSync(path.join(ws.state, 'sessions', 'abc', '1.json'), '{}');
+    fs.writeFileSync(path.join(ws.state, 'listener.log'), 'hello\n');
+    calls.length = 0;
+
+    expect(await uninstall(darwin({ exec, log }))).toBe(0);
+    expect(calls).toEqual([['launchctl', 'bootout', 'gui/501/com.agstatus.listener']]);
+    expect(fs.existsSync(plistPath(ws.home))).toBe(false);
+    expect(readJson(path.join(ws.home, '.agstatus.json'))).toEqual({ focus: false, url: BOARD });
+    expect(fs.existsSync(path.join(ws.state, 'sessions', 'abc', '1.json'))).toBe(true);
+    expect(fs.existsSync(path.join(ws.state, 'machine.json'))).toBe(true);
+
+    expect(await uninstall(darwin({ exec, log, purge: true }))).toBe(0);
+    expect(fs.existsSync(path.join(ws.state, 'sessions'))).toBe(false);
+    expect(fs.existsSync(path.join(ws.state, 'listener.log'))).toBe(false);
+    expect(fs.existsSync(path.join(ws.state, 'machine.json'))).toBe(true);
+  });
+
+  it('refuses a malformed ~/.agstatus.json before the agent comes down, and `agstatus uninstall` says so', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    process.env.CLAUDE_CONFIG_DIR = path.join(ws.home, '.claude');
+    process.env.CODEX_HOME = path.join(ws.home, '.codex');
+    const { exec, calls } = recorder();
+    const { log, out } = quiet();
+    expect(await install(darwin({ exec, log }))).toBe(0);
+    calls.length = 0;
+    const file = path.join(ws.home, '.agstatus.json');
+    fs.writeFileSync(file, '{oops');
+
+    expect(await uninstall(darwin({ exec, log }))).toBe(1);
+    expect(out()).toContain('not valid JSON');
+    expect(out()).not.toContain('Focus listener uninstalled');
+    expect(calls).toEqual([]);
+    expect(fs.existsSync(plistPath(ws.home))).toBe(true);
+    expect(fs.readFileSync(file, 'utf8')).toBe('{oops');
+
+    await expect(runUninstall(log, { listener: darwin({ exec }) })).rejects.toThrow(/still installed/);
+    expect(calls).toEqual([]);
+    expect(fs.existsSync(plistPath(ws.home))).toBe(true);
+
+    // Once the file is fixed the same command takes everything down.
+    fs.writeFileSync(file, JSON.stringify({ url: BOARD, focus: true }));
+    expect(await uninstall(darwin({ exec, log }))).toBe(0);
+    expect(calls).toEqual([['launchctl', 'bootout', 'gui/501/com.agstatus.listener']]);
+    expect(readJson(file)).toEqual({ url: BOARD, focus: false });
+  });
+});
+
+describe('listenerInstalled', () => {
+  it('sees the plist, or a "focus": true left behind, and nothing else', () => {
+    expect(listenerInstalled(ws.home)).toBe(false);
+    writeJson(path.join(ws.home, '.agstatus.json'), { url: BOARD, focus: true });
+    expect(listenerInstalled(ws.home)).toBe(true);
+    writeJson(path.join(ws.home, '.agstatus.json'), { url: BOARD, focus: false });
+    expect(listenerInstalled(ws.home)).toBe(false);
+    fs.mkdirSync(path.dirname(plistPath(ws.home)), { recursive: true });
+    fs.writeFileSync(plistPath(ws.home), '<plist/>');
+    expect(listenerInstalled(ws.home)).toBe(true);
+    fs.unlinkSync(plistPath(ws.home));
+    fs.writeFileSync(path.join(ws.home, '.agstatus.json'), '{ not json');
+    expect(listenerInstalled(ws.home)).toBe(false);
+  });
+});
+
+describe('agstatus uninstall', () => {
+  it('takes the listener down only when asked to and only when one is installed', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    process.env.CLAUDE_CONFIG_DIR = path.join(ws.home, '.claude');
+    process.env.CODEX_HOME = path.join(ws.home, '.codex');
+    const { exec, calls } = recorder();
+    const { log, out } = quiet();
+    expect(await install(darwin({ exec, log }))).toBe(0);
+    calls.length = 0;
+
+    // The library default leaves the listener alone (what the e2e suites rely on).
+    await runUninstall(log);
+    expect(calls).toEqual([]);
+    expect(fs.existsSync(plistPath(ws.home))).toBe(true);
+    expect(readJson(path.join(ws.home, '.agstatus.json')).focus).toBe(true);
+    expect(out()).not.toContain('Focus listener uninstalled');
+
+    await runUninstall(log, { listener: darwin({ exec }) });
+    expect(calls).toEqual([['launchctl', 'bootout', 'gui/501/com.agstatus.listener']]);
+    expect(fs.existsSync(plistPath(ws.home))).toBe(false);
+    expect(readJson(path.join(ws.home, '.agstatus.json'))).toEqual({ focus: false, url: BOARD });
+    expect(out().match(/Focus listener uninstalled/g)).toHaveLength(1);
+
+    // Nothing left to take down: the listener step is silent and launchctl is not run again.
+    await runUninstall(log, { listener: darwin({ exec }) });
+    expect(calls).toHaveLength(1);
+    expect(out().match(/Focus listener uninstalled/g)).toHaveLength(1);
+  });
+});
+
+describe('status', () => {
+  it('reports the agent pid, the machine, the board and the log tail', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    const { exec } = recorder('com.agstatus.listener = {\n\tstate = running\n\tpid = 4242\n}\n');
+    const { log, out } = quiet();
+    expect(await install(darwin({ exec, log }))).toBe(0);
+    fs.writeFileSync(path.join(ws.state, 'listener.log'), Array.from({ length: 12 }, (_, i) => `line ${i}`).join('\n') + '\n');
+    const s = quiet();
+    expect(await status(darwin({ exec, log: s.log }))).toBe(0);
+    const text = s.out();
+    expect(text).toContain('pid 4242');
+    expect(text).toContain(`${BOARD} (${path.join(ws.home, '.claude', 'settings.json')})`);
+    const machine = readJson(path.join(ws.state, 'machine.json'));
+    expect(text).toContain(publicId(machineKey(machine.machineId as string, BOARD)));
+    expect(text).toContain('line 11');
+    expect(text).toContain('line 2');
+    expect(text).not.toContain('line 1\n');
+  });
+
+  it('strips control characters out of the log tail before it reaches the terminal', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    const { exec } = recorder();
+    const { log } = quiet();
+    expect(await install(darwin({ exec, log }))).toBe(0);
+    fs.writeFileSync(
+      path.join(ws.state, 'listener.log'),
+      'plain line\nsse: \u001b[2J\u001b]0;pwned\u0007 handler threw\rforged \u007f line\n'
+    );
+    const s = quiet();
+    expect(await status(darwin({ exec, log: s.log }))).toBe(0);
+    const text = s.out();
+    expect(text).toContain('  plain line');
+    expect(text).toContain('  sse: [2J]0;pwned handler threwforged  line');
+    expect(text).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f]/);
+  });
+});
+
+describe('resolveBins', () => {
+  let savedPath: string | undefined;
+  beforeEach(() => {
+    savedPath = process.env.PATH;
+  });
+  afterEach(() => {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+  });
+
+  it('takes from PATH only a binary root or we own that nobody else can write, in a directory nobody else can write', () => {
+    const bin = path.join(ws.state, 'bin');
+    fs.mkdirSync(bin, { mode: 0o755 });
+    const tmux = path.join(bin, 'tmux');
+    fs.writeFileSync(tmux, '');
+    fs.chmodSync(tmux, 0o755);
+    process.env.PATH = `relative/bin:${bin}`;
+    expect(resolveBins().tmux).toBe(tmux);
+
+    fs.chmodSync(tmux, 0o775); // group-writable
+    expect(resolveBins().tmux).not.toBe(tmux);
+    fs.chmodSync(tmux, 0o757); // other-writable
+    expect(resolveBins().tmux).not.toBe(tmux);
+    fs.chmodSync(tmux, 0o644); // no execute bit
+    expect(resolveBins().tmux).not.toBe(tmux);
+
+    fs.chmodSync(tmux, 0o755);
+    expect(resolveBins().tmux).toBe(tmux);
+    fs.chmodSync(bin, 0o1777); // a /tmp-like directory: anyone could drop a tmux there first
+    expect(resolveBins().tmux).not.toBe(tmux);
+    fs.chmodSync(bin, 0o755);
+    expect(resolveBins().tmux).toBe(tmux);
+
+    fs.rmSync(tmux);
+    fs.mkdirSync(tmux); // a directory of that name
+    expect(resolveBins().tmux).not.toBe(tmux);
+  });
+});
+
+describe('resolveBoardUrl', () => {
+  it('prefers env, then settings.json, then the Codex hook prefix, then ~/.agstatus.json', () => {
+    expect(resolveBoardUrl()).toBeNull();
+
+    writeJson(path.join(ws.home, '.agstatus.json'), { url: 'https://s.example/w/file', secret: 'from-file' });
+    expect(resolveBoardUrl()).toEqual({ url: 'https://s.example/w/file', source: 'file' });
+    expect(resolveSecret()).toEqual({ secret: 'from-file', source: 'file' });
+
+    withCodexUrl(ws.home, 'https://s.example/w/codex', `it'\\''s`);
+    expect(resolveBoardUrl()).toEqual({ url: 'https://s.example/w/codex', source: 'codex' });
+    expect(resolveSecret()).toEqual({ secret: "it's", source: 'codex' });
+
+    withSettingsUrl(ws.home, 'https://s.example/w/settings');
+    expect(resolveBoardUrl()).toEqual({ url: 'https://s.example/w/settings', source: 'settings' });
+    expect(resolveSecret()).toEqual({ secret: "it's", source: 'codex' }); // settings has no secret
+
+    process.env.CLAUDE_STATUS_URL = 'https://s.example/w/env';
+    process.env.CLAUDE_STATUS_SECRET = 'from-env';
+    expect(resolveBoardUrl()).toEqual({ url: 'https://s.example/w/env', source: 'env' });
+    expect(resolveSecret()).toEqual({ secret: 'from-env', source: 'env' });
+  });
+
+  it('ignores hook commands that are not ours', () => {
+    writeJson(path.join(ws.home, '.codex', 'hooks.json'), {
+      hooks: { Stop: [{ hooks: [{ type: 'command', command: 'CLAUDE_STATUS_URL="https://x.example" other-tool.sh' }] }] },
+    });
+    expect(resolveBoardUrl()).toBeNull();
+  });
+
+  it('refuses to guess over a malformed settings.json', () => {
+    fs.mkdirSync(path.join(ws.home, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(ws.home, '.claude', 'settings.json'), '{nope');
+    expect(() => resolveBoardUrl()).toThrow(/not valid JSON/);
+  });
+});
+
+describe('mergeAgstatusJson', () => {
+  it('never overwrites an existing url or secret, never drops keys, never clobbers a malformed file', () => {
+    const file = path.join(ws.home, '.agstatus.json');
+    mergeAgstatusJson({ focus: true, url: 'https://a.example' });
+    expect(readJson(file)).toEqual({ focus: true, url: 'https://a.example' });
+    mergeAgstatusJson({ focus: false, url: 'https://b.example', secret: 's', other: [1] });
+    expect(readJson(file)).toEqual({ focus: false, url: 'https://a.example', secret: 's', other: [1] });
+    fs.writeFileSync(file, '{oops');
+    expect(() => mergeAgstatusJson({ focus: true })).toThrow(/not valid JSON/);
+    expect(fs.readFileSync(file, 'utf8')).toBe('{oops');
+  });
+});
+
+describe('resolveListenerConfig', () => {
+  it('assembles the credential, the public id, the paths and the tools', () => {
+    withSettingsUrl(ws.home, `${BOARD}/`);
+    writeMachine(ws.state, { machineId: MACHINE_ID, name: 'Studio' });
+    const cfg = resolveListenerConfig();
+    if ('error' in cfg) throw new Error(cfg.error);
+    expect(cfg.url).toBe(`${BOARD}/`);
+    expect(cfg.base).toBe(BOARD);
+    expect(cfg.machineId).toBe(MACHINE_ID);
+    expect(cfg.machineKey).toBe(EXPECTED_KEY);
+    expect(cfg.machinePublicId).toBe(EXPECTED_PUBLIC_ID);
+    expect(cfg.name).toBe('Studio');
+    expect(cfg.secret).toBeUndefined();
+    expect(cfg.stateDir).toBe(ws.state);
+    expect(cfg.logFile).toBe(path.join(ws.state, 'listener.log'));
+    expect(cfg.lockFile).toBe(path.join(ws.state, 'listener.lock'));
+    for (const p of Object.values(cfg.bins)) expect(path.isAbsolute(p)).toBe(true);
+  });
+
+  it('names what is missing instead of guessing', () => {
+    expect(resolveListenerConfig()).toEqual({ error: expect.stringMatching(/No board URL/) });
+    withSettingsUrl(ws.home, BOARD);
+    expect(resolveListenerConfig()).toEqual({ error: expect.stringMatching(/machine\.json/) });
+    writeMachine(ws.state, { machineId: MACHINE_ID });
+    expect(resolveListenerConfig({ url: 'not a url' })).toEqual({ error: expect.stringMatching(/http\(s\)/) });
+    expect(resolveListenerConfig({ url: 'https://s.example/w/x"; rm -rf /' })).toEqual({
+      error: expect.stringMatching(/http\(s\)/),
+    });
+  });
+});

@@ -1,17 +1,20 @@
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { resolveListenerConfig } from './config';
+import { resolveListenerConfig, resumeEnabled } from './config';
 import {
-  PS, STEP_PATH, SYSTEM_BINS, defaultExecFile, defaultFrontmost, runPlan, type ExecFile, type ExecOptions,
+  PS, STEP_PATH, SYSTEM_BINS, defaultExecFile, defaultFrontmost, isAgentAlive, runPlan,
+  type ExecFile, type ExecOptions,
 } from './exec';
 import { describe as describePlan, plan } from './plan';
 import {
   BUNDLE_RE, INT_RE, SOCKET_RE, TTY_LINUX_RE, TTY_RE, UUID_RE, isAbsPath, loadRecords, pickRecord, validSessionId,
 } from './records';
+import { launcherResolves, resolveResumeCwd, usableLauncher } from './resume';
 import { subscribe, type SubscribeTiming } from './sse';
 import {
   COMMAND_TYPES, type CommandFrame, type CommandType, type ListenerConfig, type LocalRecord, type MachineFacts,
-  type Outcome, type Reason,
+  type Outcome, type Plan, type Reason,
 } from './types';
 
 /**
@@ -24,9 +27,18 @@ import {
  * every way and the loop keeps going: nothing short of the signal ends it.
  *
  * Guards (design §5.1): one instance per state dir, one focus per session
- * per 2 s, and a circuit breaker that ignores the board for 5 min after 20
- * commands in a minute. Log lines name step labels, exit codes, enums and
- * ids — never a cwd, a tty, an env value or a program's output.
+ * per 2 s, one respawn per session per 60 s, at most 5 respawns per 10 min
+ * machine-wide, and a circuit breaker that ignores the board for 5 min
+ * after 20 commands in a minute. Log lines name step labels, exit codes,
+ * enums and ids — never a cwd, a tty, an env value or a program's output.
+ *
+ * A `resume` of a session whose agent is gone is the one command that
+ * starts a process (§5.2 step 4). It still runs nothing of its own: the
+ * plan hands the host the launcher `agstatus listener install` wrote, and
+ * this file only decides whether the machine is in a state to allow it —
+ * the launcher exists and is ours (`facts.launcher`), resume is not
+ * switched off, the working directory resolved, and neither respawn guard
+ * has been spent.
  *
  * The record is data (§5.1): validateRecord() checked every shape without
  * touching the disk; verifyOnDisk() here adds what only this machine can
@@ -39,6 +51,33 @@ import {
  */
 
 const COOLDOWN_MS = 2000;
+/** §5.1: one respawn per session per minute, five per machine per ten minutes. */
+const RESPAWN_COOLDOWN_MS = 60_000;
+const RESPAWN_LIMIT = 5;
+const RESPAWN_WINDOW_MS = 10 * 60_000;
+/** The ledger those two guards are counted in, next to the other state (0600). */
+const RESPAWN_LEDGER = 'respawns.json';
+/**
+ * How long a respawn is given to prove that something started: the hook
+ * writes a fresh record at SessionStart, and until one appears the board is
+ * told nothing. Generous on purpose — a cold `open -n -b` plus an agent
+ * start can take seconds, and a window that is too short would report a
+ * failure over a session that did come up. `open -n -b` exits the moment LaunchServices takes the
+ * request, so without this every failure inside the new window — a cold
+ * start that never came up, a wrong flag, a launcher that found no record —
+ * would still ack `resumed` (§5.2 step 4).
+ */
+// Long enough for a terminal to cold-start and the agent to appear in the
+// process table, short enough to answer before the phone's 15 s timeout.
+const RESPAWN_CONFIRM_MS = 8_000;
+const RESPAWN_CONFIRM_POLL_MS = 250;
+/**
+ * What a respawn step gets instead of the runner's 5 s: `open -n -b` on a
+ * terminal that is not running yet has to cold start the app before it can
+ * take the launcher, and `wezterm cli spawn` waits for its own mux server.
+ * Steps the planner timed itself keep their own value.
+ */
+const RESPAWN_STEP_TIMEOUT_MS = 15_000;
 const BREAKER_LIMIT = 20;
 const BREAKER_WINDOW_MS = 60_000;
 const BREAKER_HOLD_MS = 5 * 60_000;
@@ -71,6 +110,8 @@ export interface ListenerDeps {
   signal?: AbortSignal;
   /** Shorter SSE waits for tests. */
   timing?: Partial<SubscribeTiming>;
+  /** Tests only: how long a respawn has to produce a record before it is called failed. */
+  respawnConfirmMs?: number;
 }
 
 type Log = (line: string) => void;
@@ -201,29 +242,12 @@ function releaseLock(file: string): void {
 const ttyRe = (platform: NodeJS.Platform): RegExp => (platform === 'linux' ? TTY_LINUX_RE : TTY_RE);
 
 /**
- * `agent_pid` is live and its comm is the recorded one (basenames compared:
- * macOS prints the executable's full path, the hook may have kept either).
- * A record without a comm — the hook could not read the process table —
- * is not trusted on the pid alone: the live comm must then be the agent's
- * own name or `node`, the two shapes a Claude/Codex process takes. Windows
- * has no ps; the pid is probed instead.
+ * The liveness check lives in ./exec, next to the process-table primitives,
+ * because `listener resume-exec` needs it too and must not import this
+ * module (this one imports the launcher). Re-exported here: it has been
+ * part of the runtime's surface since step 4.
  */
-export async function isAgentAlive(
-  record: LocalRecord,
-  exec: ExecFile,
-  platform: NodeJS.Platform = process.platform
-): Promise<boolean> {
-  if (platform === 'win32') return pidAlive(record.agent_pid);
-  const pid = String(record.agent_pid);
-  if (!INT_RE.test(pid)) return false;
-  const { code, stdout } = await exec(PS, ['-o', 'comm=', '-p', pid], { env: PS_ENV, timeout: PS_TIMEOUT_MS });
-  if (code !== 0) return false;
-  const comm = stdout.split('\n')[0]?.trim() ?? '';
-  if (!comm) return false;
-  const name = path.basename(comm);
-  if (record.agent_comm) return name === path.basename(record.agent_comm);
-  return name === record.agent || name === 'node';
-}
+export { isAgentAlive };
 
 // ---- On-disk checks -------------------------------------------------------
 
@@ -453,12 +477,38 @@ async function herdrOuter(
   return outerOfTty(newest.pid, newest.tty, exec, platform, uid);
 }
 
+export interface FactsOptions {
+  /**
+   * The state directory to look for `agstatus-resume` in. Only a command
+   * that may respawn asks for it — a focus never runs the launcher, and a
+   * fact nothing reads is two stat()s per tap.
+   */
+  stateDir?: string;
+  /**
+   * True for a `resume` whose agent is gone: it needs the launcher, and it
+   * needs the outer terminal (the multiplexer rows raise it after starting
+   * the new pane) even though nothing of that session is running.
+   */
+  respawn?: boolean;
+}
+
 /**
  * Everything the planner asks about the machine, for one record: the
- * tools, whether the agent lives, and for tmux/herdr the terminal their
- * attached client sits in. Any failure on the way to `outer` leaves it
- * unset and the planner stops at the pane; so does a platform without a
- * uid, since the process table cannot be filtered to ours there.
+ * tools, whether the agent lives, for tmux/herdr the terminal their
+ * attached client sits in, and — for a respawn — the resume launcher. Any
+ * failure on the way to `outer` leaves it unset and the planner stops at
+ * the pane; so does a platform without a uid, since the process table
+ * cannot be filtered to ours there.
+ *
+ * `launcher` is filled only while resume is switched on (`"resume": false`
+ * in ~/.agstatus.json, or AGSTATUS_RESUME=off in the listener's own
+ * environment, turns it off) **and** the state dir is the one the launcher
+ * will find again once a host starts it — the script carries two absolute
+ * paths and nothing else, so an install that moved the state dir with
+ * AGSTATUS_STATE_DIR cannot be resumed (launcherResolves()). The absent
+ * fact is precisely what makes every resume plan `unsupported-host`, so
+ * both are enforced once, here, and no row has to know about either
+ * (§5.2 step 4, §11).
  */
 export async function resolveFacts(
   record: LocalRecord,
@@ -466,10 +516,16 @@ export async function resolveFacts(
   exec: ExecFile,
   agentAlive: boolean,
   platform: NodeJS.Platform = process.platform,
-  uid: number | undefined = currentUid()
+  uid: number | undefined = currentUid(),
+  opts: FactsOptions = {}
 ): Promise<MachineFacts> {
   const facts: MachineFacts = { platform, bins, agentAlive };
-  if (!record.mux || !agentAlive || uid === undefined) return facts;
+  if (opts.respawn && isAbsPath(opts.stateDir) && resumeEnabled() && launcherResolves(opts.stateDir, platform)) {
+    const launcher = usableLauncher(opts.stateDir, uid);
+    if (launcher) facts.launcher = launcher;
+  }
+  if (!record.mux || uid === undefined) return facts;
+  if (!agentAlive && !opts.respawn) return facts;
   try {
     let outer: MachineFacts['outer'];
     if (record.mux.kind === 'tmux') outer = await tmuxOuter(record.mux, bins, exec, platform, uid);
@@ -516,6 +572,141 @@ function parseCommand(raw: unknown): CommandFrame | null {
 
 const short = (id: string): string => id.slice(0, 8);
 
+const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The respawn guards' ledger, on disk (§5.1). It lives in the state dir
+ * next to the lock file, 0600, because the LaunchAgent is `KeepAlive` with
+ * a 10 s throttle: an in-process counter is re-armed by every crash,
+ * log-out, `launchctl kickstart` or stream error, and "five per ten
+ * minutes machine-wide" would then bound nothing. Unreadable or corrupt
+ * reads as empty — the guards may never keep a machine from working.
+ */
+interface RespawnLedger {
+  /** When each respawn this machine allowed happened, inside the 10 min window. */
+  machine: number[];
+  /** Per session, when it last respawned, inside the 60 s cooldown. */
+  sessions: Record<string, number>;
+}
+
+const emptyLedger = (): RespawnLedger => ({ machine: [], sessions: {} });
+
+/** At most this many sessions are remembered; the ledger is a guard, not a history. */
+const LEDGER_MAX_SESSIONS = 500;
+
+const ledgerPath = (dir: string): string => path.join(dir, RESPAWN_LEDGER);
+
+/** Numbers that are timestamps, nothing else: the file is data, like every other input. */
+function parseLedger(raw: unknown, now: number): RespawnLedger {
+  const ledger = emptyLedger();
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return ledger;
+  const { machine, sessions } = raw as Record<string, unknown>;
+  const fresh = (value: unknown, window: number): number | null =>
+    typeof value === 'number' && Number.isFinite(value) && value <= now && now - value < window ? value : null;
+  if (Array.isArray(machine)) {
+    for (const at of machine) {
+      const kept = fresh(at, RESPAWN_WINDOW_MS);
+      if (kept !== null) ledger.machine.push(kept);
+    }
+    ledger.machine.sort((a, b) => a - b);
+  }
+  if (typeof sessions === 'object' && sessions !== null && !Array.isArray(sessions)) {
+    for (const [id, at] of Object.entries(sessions as Record<string, unknown>)) {
+      const kept = fresh(at, RESPAWN_COOLDOWN_MS);
+      if (kept !== null && validSessionId(id)) ledger.sessions[id] = kept;
+    }
+  }
+  return ledger;
+}
+
+function readLedger(dir: string, now: number): RespawnLedger {
+  try {
+    return parseLedger(JSON.parse(fs.readFileSync(ledgerPath(dir), 'utf8')), now);
+  } catch {
+    return emptyLedger();
+  }
+}
+
+/**
+ * Temp + rename, 0600, with an exclusive create on an unguessable name so
+ * the write can never follow a symlink somebody planted at the temp path.
+ */
+function writeLedger(dir: string, ledger: RespawnLedger): void {
+  const file = ledgerPath(dir);
+  const tmp = path.join(dir, `.${RESPAWN_LEDGER}.agstatus-tmp-${crypto.randomBytes(8).toString('hex')}`);
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(tmp, JSON.stringify(ledger), { mode: 0o600, flag: 'wx' });
+    fs.renameSync(tmp, file);
+  } catch {
+    /* a guard that cannot be written must not stop the listener */
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
+}
+
+/** What a session's records look like right now: one key per record, pid and stamp. */
+function recordKeys(dir: string, sessionId: string): Set<string> {
+  const { records } = loadRecords(dir, sessionId);
+  return new Set(records.map((r) => `${r.agent_pid}:${r.written_at}`));
+}
+
+/**
+ * Whether a respawn actually produced a session: the hook writes a record at
+ * SessionStart, so a key that was not there when the plan was built is the
+ * evidence. Polls until `windowMs` is up, then gives up — and the caller
+ * acks `failed`/`respawn-failed`, because a window that opened and closed
+ * with an error in it is not a resumed session.
+ */
+/**
+ * Is an agent for this session running right now? The launcher's own failures
+ * — no record, the directory gone, no binary — all exit within milliseconds
+ * and leave nothing behind, so a live process carrying the session id is
+ * direct evidence that the resume took. The id has passed UUID_RE, so it is
+ * a safe needle for a substring match (no shell, no regex).
+ */
+async function agentRunningFor(sessionId: string, exec: ExecFile): Promise<boolean> {
+  try {
+    // The full argv table runs to hundreds of kilobytes on a busy Mac, well
+    // past the default buffer — the other process-table reads size it the same way.
+    const { code, stdout } = await exec(PS, ['-axo', 'args='], {
+      env: PS_ENV, timeout: PS_TIMEOUT_MS, maxBuffer: TABLE_MAX_BUFFER,
+    });
+    if (code !== 0) return false;
+    for (const line of stdout.split('\n')) {
+      if (line.includes(sessionId) && /(^|\/)(claude|codex)\b/.test(line)) return true;
+    }
+  } catch {
+    /* a process table we cannot read is not evidence either way */
+  }
+  return false;
+}
+
+/**
+ * Evidence that a respawn actually came up, polled until the window closes.
+ * Two independent signals, because each is missing in a case the other covers:
+ * the hook's SessionStart record is definitive but can take longer than the
+ * phone waits when a transcript is large, and a live agent process appears in
+ * a second but is invisible for a host that resumes inside its own GUI.
+ */
+async function respawnStarted(
+  dir: string,
+  sessionId: string,
+  before: Set<string>,
+  windowMs: number,
+  sleep: (ms: number) => Promise<void>,
+  exec?: ExecFile
+): Promise<boolean> {
+  const deadline = Date.now() + windowMs;
+  for (;;) {
+    for (const key of recordKeys(dir, sessionId)) if (!before.has(key)) return true;
+    if (exec && (await agentRunningFor(sessionId, exec))) return true;
+    const left = deadline - Date.now();
+    if (left <= 0) return false;
+    await sleep(Math.min(RESPAWN_CONFIRM_POLL_MS, left));
+  }
+}
+
 interface RunnerDeps {
   cfg: ListenerConfig;
   log: Log;
@@ -525,21 +716,57 @@ interface RunnerDeps {
   now: () => number;
   /** Every argv[0] a plan may name: the config's tools plus the fixed system table. */
   allowed: ReadonlySet<string>;
+  /** How long a respawn has to write a record before it counts as failed. */
+  respawnConfirmMs: number;
 }
 
-/** The only argv[0]s the runner will launch, whatever a plan says. */
+/**
+ * The only argv[0]s the runner will launch, whatever a plan says. The
+ * resume launcher is deliberately **not** in it: a respawn row hands the
+ * launcher to the host's own tool (as an argument, or inside the one
+ * quoted command string), so it is never argv[0] and the allowlist stays
+ * "the tools the installer resolved, and nothing else".
+ */
 export function allowedArgv0(cfg: ListenerConfig): ReadonlySet<string> {
   return new Set<string>([...Object.values(cfg.bins), ...Object.values(SYSTEM_BINS)]);
+}
+
+/** A respawn's steps get the longer timeout; a row that set its own keeps it. */
+function withRespawnTimeouts(made: Plan): Plan {
+  if (!made.respawns) return made;
+  return {
+    ...made,
+    steps: made.steps.map((step) => (step.timeoutMs === undefined ? { ...step, timeoutMs: RESPAWN_STEP_TIMEOUT_MS } : step)),
+  };
+}
+
+/**
+ * A respawn that reached a launch and failed is `respawn-failed`, not
+ * "this host cannot do it": the row was right, the start was not (§5.2
+ * step 4). `bad-record` is the runner's refusal *before* any launch — an
+ * argv[0] outside the tool table — and keeps its own name.
+ */
+function respawnOutcome(outcome: Outcome): Outcome {
+  if (outcome.result !== 'failed' || outcome.reason === 'bad-record') return outcome;
+  return { result: 'failed', reason: 'respawn-failed' };
 }
 
 /** Commands, one at a time, in the order the board sent them. */
 class CommandRunner {
   private queue: Promise<void> = Promise.resolve();
+  /** Keyed `<session>:<type>`: a resume must never be swallowed by the focus that offered it. */
   private readonly lastActed = new Map<string, number>();
   private recent: number[] = [];
   private breakerUntil = 0;
 
-  constructor(private readonly deps: RunnerDeps) {}
+  constructor(private readonly deps: RunnerDeps) {
+    // The respawn guards live on disk (allowRespawn below); this only says
+    // at start what the LaunchAgent's last life already spent of them.
+    const spent = readLedger(deps.cfg.stateDir, deps.now()).machine.length;
+    if (spent > 0) {
+      deps.log(`respawn ledger: ${spent}/${RESPAWN_LIMIT} spent in the last ${RESPAWN_WINDOW_MS / 60_000} min`);
+    }
+  }
 
   onFrame(event: string, data: unknown): void {
     if (event === 'commands' && Array.isArray(data)) data.forEach((item) => this.enqueue(item));
@@ -575,6 +802,41 @@ class CommandRunner {
     return true;
   }
 
+  /**
+   * The respawn guards of §5.1, enforced here rather than in the planner:
+   * the planner is pure and has no clock, and these are about this machine
+   * over time, not about this host. One respawn per session per 60 s bounds
+   * a double tap (the 2 s focus cooldown is far too short for something
+   * that opens a window); 5 per 10 min machine-wide bounds a board that has
+   * gone mad, or a leaked token, to a handful of terminal windows holding
+   * the user's own sessions. A refusal spends nothing and launches nothing.
+   */
+  private allowRespawn(sessionId: string, at: number, tag: string): boolean {
+    const { log, cfg } = this.deps;
+    // Re-read: another listener process (a `listener run` next to the
+    // LaunchAgent, or this agent's own predecessor 10 s ago) may have spent
+    // part of the quota since the constructor.
+    const ledger = readLedger(cfg.stateDir, at);
+    const last = ledger.sessions[sessionId];
+    if (last !== undefined && at - last < RESPAWN_COOLDOWN_MS) {
+      log(`${tag}: one respawn per session per ${RESPAWN_COOLDOWN_MS / 1000}s — refused`);
+      return false;
+    }
+    ledger.machine = ledger.machine.filter((t) => at - t < RESPAWN_WINDOW_MS);
+    if (ledger.machine.length >= RESPAWN_LIMIT) {
+      log(`${tag}: ${RESPAWN_LIMIT} respawns within ${RESPAWN_WINDOW_MS / 60_000} min — refused`);
+      return false;
+    }
+    ledger.machine.push(at);
+    ledger.sessions[sessionId] = at;
+    const ids = Object.keys(ledger.sessions);
+    if (ids.length > LEDGER_MAX_SESSIONS) {
+      for (const id of ids) if (at - ledger.sessions[id] >= RESPAWN_COOLDOWN_MS) delete ledger.sessions[id];
+    }
+    writeLedger(cfg.stateDir, ledger);
+    return true;
+  }
+
   private async handle(cmd: CommandFrame): Promise<void> {
     const { log, now } = this.deps;
     const at = now();
@@ -584,15 +846,22 @@ class CommandRunner {
       log(`${tag}: already expired, skipped`);
       return;
     }
-    const last = this.lastActed.get(cmd.session_id);
+    // Per session AND per type: the board offers Resume only after a focus
+    // came back `not-running`, so a cooldown keyed on the session alone
+    // would swallow the one tap it is there to make possible — silently,
+    // before the claim, leaving the phone with no answer at all and the
+    // command to be re-delivered on the next SSE connect. Resume-to-resume
+    // taps stay bounded by the respawn guards, which are far stricter.
+    const key = `${cmd.session_id}:${cmd.type}`;
+    const last = this.lastActed.get(key);
     if (last !== undefined && at - last < COOLDOWN_MS) {
-      log(`${tag}: within the ${COOLDOWN_MS}ms cooldown for its session, skipped`);
+      log(`${tag}: within the ${COOLDOWN_MS}ms cooldown for its session and type, skipped`);
       return;
     }
     if (this.lastActed.size > 1000) {
       for (const [id, t] of this.lastActed) if (at - t >= COOLDOWN_MS) this.lastActed.delete(id);
     }
-    this.lastActed.set(cmd.session_id, at);
+    this.lastActed.set(key, at);
 
     const claim = await this.post(`/commands/${cmd.id}/claim`, { machine_key: this.deps.cfg.machineKey });
     if (claim !== 200) {
@@ -603,7 +872,7 @@ class CommandRunner {
     let outcome: Outcome;
     let experimental = false;
     try {
-      ({ outcome, experimental } = await this.execute(cmd, tag));
+      ({ outcome, experimental } = await this.execute(cmd, tag, at));
     } catch (err) {
       log(`${tag}: ${(err as Error).name} while acting — acking bad-record`);
       outcome = { result: 'failed', reason: 'bad-record' };
@@ -616,7 +885,7 @@ class CommandRunner {
       (ack === 200 ? '' : `; ack ${ack === 0 ? 'unreachable' : `HTTP ${ack}`}`));
   }
 
-  private async execute(cmd: CommandFrame, tag: string): Promise<{ outcome: Outcome; experimental: boolean }> {
+  private async execute(cmd: CommandFrame, tag: string, at: number): Promise<{ outcome: Outcome; experimental: boolean }> {
     const { cfg, log, execFile, frontmost, allowed } = this.deps;
     const { records, rejected } = loadRecords(cfg.stateDir, cmd.session_id);
     if (rejected > 0) log(`${tag}: ${rejected} record(s) refused (mode, owner or shape)`);
@@ -624,12 +893,49 @@ class CommandRunner {
     if (!chosen) return { outcome: { result: 'failed', reason: 'no-record' }, experimental: false };
     const { record, dropped } = verifyOnDisk(chosen.record);
     if (dropped.length > 0) log(`${tag}: dropped ${dropped.join(', ')} (not a directory/socket of ours)`);
-    const facts = await resolveFacts(record, cfg.bins, execFile, chosen.alive);
-    const planned = plan(record, cmd.type, facts);
+    // A resume of a session that is still alive is a focus (the planner's
+    // ladder); only a dead one respawns, and only that needs the launcher
+    // and a directory to start in. Both are resolved here, on this
+    // machine — the planner reads no disk. The log names the fields, never
+    // the paths.
+    const respawn = cmd.type === 'resume' && !chosen.alive;
+    const facts = await resolveFacts(record, cfg.bins, execFile, chosen.alive, process.platform, currentUid(), {
+      stateDir: cfg.stateDir,
+      respawn,
+    });
+    let resumeCwd: string | undefined;
+    if (respawn) {
+      resumeCwd = resolveResumeCwd(record);
+      log(`${tag}: resume — launcher ${facts.launcher ? 'ready' : 'absent'}, cwd ${resumeCwd ? 'resolved' : 'unresolved'}`);
+    }
+    const planned = plan(record, cmd.type, facts, resumeCwd);
     if (!planned.ok) return { outcome: { result: 'failed', reason: planned.reason }, experimental: false };
-    log(`${tag}: pid ${record.agent_pid}, ${planned.plan.description}`);
-    const outcome = await runPlan(planned.plan, { execFile, frontmost, log, allowed });
-    return { outcome, experimental: planned.plan.experimental };
+    const made = planned.plan;
+    log(`${tag}: pid ${record.agent_pid}, ${made.description}`);
+    // A guard refusal launches nothing, so it is not an experimental row
+    // having been tried — the log says so, like any other refusal.
+    if (made.respawns === true && !this.allowRespawn(cmd.session_id, at, tag)) {
+      return { outcome: { result: 'failed', reason: 'respawn-failed' }, experimental: false };
+    }
+    // What the session's records look like before anything starts: the
+    // evidence a respawn is checked against below.
+    const before = made.respawns === true ? recordKeys(cfg.stateDir, cmd.session_id) : undefined;
+    const outcome = await runPlan(withRespawnTimeouts(made), { execFile, frontmost, log, allowed });
+    if (made.respawns !== true) return { outcome, experimental: made.experimental };
+    const spawned = respawnOutcome(outcome);
+    if (spawned.result !== 'resumed') return { outcome: spawned, experimental: made.experimental };
+    // Every respawn step exited 0 — which on `open -n -b` only means
+    // LaunchServices took the request. Wait for the hook to write a record
+    // for this session before telling the phone it is back (§5.2 step 4).
+    const started = await respawnStarted(
+      cfg.stateDir, cmd.session_id, before ?? new Set(), this.deps.respawnConfirmMs, pause, execFile
+    );
+    if (!started) {
+      log(`${tag}: no record and no agent for the session within ${this.deps.respawnConfirmMs}ms — nothing came up`);
+      return { outcome: { result: 'failed', reason: 'respawn-failed' }, experimental: made.experimental };
+    }
+    log(`${tag}: confirmed started`);
+    return { outcome: spawned, experimental: made.experimental };
   }
 
   /** `{machine_key, result, reach?, reason?}` and not one key more; a failure always names a reason. */
@@ -694,6 +1000,7 @@ export async function runListener(cfg: ListenerConfig, deps: ListenerDeps = {}):
     frontmost: deps.frontmost ?? defaultFrontmost,
     now: deps.now ?? Date.now,
     allowed: allowedArgv0(cfg),
+    respawnConfirmMs: deps.respawnConfirmMs ?? RESPAWN_CONFIRM_MS,
   });
   const tools = Object.keys(cfg.bins).sort().join(',') || 'none';
   log(`listener start: pid ${process.pid}, machine ${cfg.machinePublicId} "${cfg.name}", tools ${tools}`);
@@ -720,12 +1027,16 @@ export async function runListener(cfg: ListenerConfig, deps: ListenerDeps = {}):
 export interface PlanCommandDeps {
   execFile?: ExecFile;
   platform?: NodeJS.Platform;
+  /** `--resume`: plan the Resume tap (a respawn when the agent is gone) instead of the focus. */
+  resume?: boolean;
 }
 
 /**
- * `agstatus listener plan <session_id>`: what a focus tap on that session
- * would run on this machine, without running it. Exit 0 with the steps,
- * 1 with the reason there are none.
+ * `agstatus listener plan <session_id> [--resume]`: what a tap on that
+ * session would run on this machine, without running it. Exit 0 with the
+ * steps, 1 with the reason there are none. The dry run resolves exactly
+ * what the runtime would — the launcher, and for a dead session the
+ * working directory — but prints neither path, only whether they resolved.
  */
 export async function runPlanCommand(sessionId: string, log: Log, deps: PlanCommandDeps = {}): Promise<number> {
   if (!validSessionId(sessionId)) {
@@ -753,9 +1064,25 @@ export async function runPlanCommand(sessionId: string, log: Log, deps: PlanComm
       `app ${record.app?.bundle ?? '-'}; mux ${record.mux?.kind ?? '-'})`
   );
   if (dropped.length > 0) log(`  Ignored ${dropped.join(', ')}: not a directory/socket owned by this user`);
-  const facts = await resolveFacts(record, cfg.bins, exec, alive, platform);
+  const type: CommandType = deps.resume === true ? 'resume' : 'focus';
+  const respawn = type === 'resume' && !alive;
+  const facts = await resolveFacts(record, cfg.bins, exec, alive, platform, undefined, {
+    stateDir: cfg.stateDir,
+    respawn,
+  });
   if (record.mux) log(`  Outer app: ${facts.outer?.bundle ?? 'not resolved'}`);
-  const planned = plan(record, 'focus', facts);
+  let resumeCwd: string | undefined;
+  if (respawn) {
+    resumeCwd = resolveResumeCwd(record);
+    const why = launcherResolves(cfg.stateDir, platform)
+      ? 'not installed (or "resume": false)'
+      : 'unusable: this install\'s state directory is not the one the launcher would read';
+    log(
+      `  Resume: launcher ${facts.launcher ? 'ready' : why}` +
+        `, working directory ${resumeCwd ? 'resolved' : 'not resolved'}`
+    );
+  }
+  const planned = plan(record, type, facts, resumeCwd);
   if (!planned.ok) {
     log(`  No plan: ${planned.reason}`);
     return 1;

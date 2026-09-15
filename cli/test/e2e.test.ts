@@ -138,7 +138,13 @@ describe('agstatus init against a real multi-tenant server', () => {
         input: payload,
         // AGSTATUS_USAGE=off: the usage path would read the developer's real
         // Claude credentials and call Anthropic — never from a test.
-        env: { ...process.env, CLAUDE_STATUS_URL: env.CLAUDE_STATUS_URL, AGSTATUS_USAGE: 'off' },
+        env: {
+          ...process.env,
+          CLAUDE_STATUS_URL: env.CLAUDE_STATUS_URL,
+          AGSTATUS_USAGE: 'off',
+          // Keep the Focus record out of the developer's own state directory.
+          AGSTATUS_STATE_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-e2e-state-')),
+        },
         timeout: 8000,
       });
 

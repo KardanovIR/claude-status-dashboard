@@ -261,7 +261,7 @@ const currentUid = (): number | undefined => (typeof process.getuid === 'functio
  * still comes from, so what it names must not be something another local
  * user could have planted or can replace.
  */
-const isExecutableFile = (p: string): boolean => {
+export const isExecutableFile = (p: string): boolean => {
   const uid = currentUid();
   try {
     const st = fs.statSync(p);
@@ -295,6 +295,23 @@ export function resolveBins(): Record<string, string> {
     if (found) bins[name] = found;
   }
   return bins;
+}
+
+/**
+ * Whether a tap may resume a session on this machine (design §11: resume
+ * ships on, with a switch). `ListenerConfig` is the shape the runtime,
+ * planner and installer agree on and does not carry it, so the switch is
+ * read where it is needed: `"resume": false` in ~/.agstatus.json, or
+ * AGSTATUS_RESUME=off in the environment for one run. A file that cannot be
+ * parsed is not a "no" — doctor reports it, and the default stands.
+ */
+export function resumeEnabled(file: string = agstatusJsonPath()): boolean {
+  if (process.env.AGSTATUS_RESUME === 'off') return false;
+  try {
+    return readAgstatusJson(file).resume !== false;
+  } catch {
+    return true;
+  }
 }
 
 export interface ResolveOptions {

@@ -20,10 +20,12 @@ import {
   readAgstatusJson,
   readMachine,
   resolveBins,
+  resumeEnabled,
   writeMachine,
   type ConfigSource,
   type ResolvedValue,
 } from './config';
+import { launcherPath, launcherResolves, launcherStateDir, removeLauncher, usableLauncher, writeLauncher } from './resume';
 import type { MachineState } from './types';
 
 /**
@@ -146,8 +148,10 @@ export interface ListenerCommandOptions {
   name?: string;
   /** Board URL override (install only). */
   url?: string;
-  /** Also remove the session records and the log (uninstall only). */
+  /** Also remove the session records, the log and the resume launcher (uninstall only). */
   purge?: boolean;
+  /** `--no-resume` at install time: false writes `"resume": false`; undefined leaves the default (on). */
+  resume?: boolean;
   log?: (line: string) => void;
   exec?: Exec;
   platform?: NodeJS.Platform;
@@ -250,6 +254,90 @@ function urlDisagreement(picked: PickedUrl): ResolvedValue | undefined {
   return candidates.find((c) => (c.source === 'settings' || c.source === 'codex') && boardBase(c.url) !== base);
 }
 
+/** Why resume is off, for the one line that says so — the env override outranks the file. */
+const resumeOffReason = (): string =>
+  process.env.AGSTATUS_RESUME === 'off'
+    ? 'AGSTATUS_RESUME=off in this environment'
+    : `"resume": false in ${agstatusJsonPath()}`;
+
+/** The `EnvironmentVariables` dict of a rendered plist, unescaped. */
+export function plistEnv(xmlText: string): Record<string, string> {
+  const block = /<key>EnvironmentVariables<\/key>\s*<dict>([\s\S]*?)<\/dict>/.exec(xmlText)?.[1] ?? '';
+  const env: Record<string, string> = {};
+  for (const m of block.matchAll(/<key>([^<]*)<\/key>\s*<string>([^<]*)<\/string>/g)) {
+    env[unxml(m[1])] = unxml(m[2]);
+  }
+  return env;
+}
+
+const unxml = (s: string): string =>
+  s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+
+/**
+ * What resume looks like **to the listener that would act on a tap**, which
+ * is not what this shell sees: the LaunchAgent's environment is the one the
+ * installer baked into the plist, so `export AGSTATUS_RESUME=off` in a shell
+ * rc does not reach it (design §11). The verdict is therefore the file, plus
+ * the agent's own environment when there is an agent; `shellOnly` is the
+ * case worth saying out loud — off here, on there.
+ */
+interface ResumeState {
+  on: boolean;
+  /** Why it is off, in the listener's terms. Empty when it is on. */
+  reason: string;
+  /** AGSTATUS_RESUME=off in this shell, while the installed agent does not carry it. */
+  shellOnly: boolean;
+  /** The state dir this install uses is one the launcher could never find again. */
+  stateDirLost: boolean;
+}
+
+function resumeState(stateDir: string, platform: NodeJS.Platform): ResumeState {
+  const plistText = readPlist(plistPath());
+  const agentEnv = plistText ? plistEnv(plistText) : undefined;
+  const envOff = process.env.AGSTATUS_RESUME === 'off';
+  // With an agent installed its environment decides; without one, whatever
+  // runs `listener run` inherits this shell's.
+  const runtimeEnvOff = agentEnv ? agentEnv.AGSTATUS_RESUME === 'off' : envOff;
+  let fileOff = false;
+  try {
+    fileOff = readAgstatusJson().resume === false;
+  } catch {
+    /* an unparseable file is not a "no"; doctor reports it separately */
+  }
+  const stateDirLost = !launcherResolves(stateDir, platform);
+  const reason = fileOff
+    ? `"resume": false in ${agstatusJsonPath()}`
+    : runtimeEnvOff
+      ? `AGSTATUS_RESUME=off in ${agentEnv ? "the LaunchAgent's environment" : 'this environment'}`
+      : '';
+  return { on: !fileOff && !runtimeEnvOff, reason, shellOnly: envOff && !runtimeEnvOff, stateDirLost };
+}
+
+/** Why AGSTATUS_RESUME in this shell says nothing about the running listener. Callers pad. */
+const shellOnlyNote = (): string[] => [
+  `AGSTATUS_RESUME=off is set in this shell, but the LaunchAgent's environment is the one`,
+  `in ${plistPath()} — it does not apply to the running listener.`,
+];
+
+/**
+ * Why a state directory of its own costs an install the Resume button: the
+ * launcher carries two baked-in paths and is handed no environment, so it
+ * reads the platform default whatever AGSTATUS_STATE_DIR said at install.
+ */
+const stateDirNote = (stateDir: string): string[] => [
+  'the resume launcher is handed no environment, so it would read',
+  `${launcherStateDir()}, not ${stateDir} — Resume taps answer unsupported-host`,
+];
+
+/** The launcher as a directory entry, symlink and all — `existsSync` would call a dangling one missing. */
+const launcherPresent = (dir: string): boolean =>
+  fs.lstatSync(launcherPath(dir), { throwIfNoEntry: false }) !== undefined;
+
 const isNpxCache = (p: string): boolean => p.split(path.sep).includes('_npx');
 
 const defaultCliPath = (): string => path.resolve(__dirname, '..', 'cli.js');
@@ -285,13 +373,41 @@ export async function install(opts: ListenerCommandOptions = {}): Promise<number
   writeMachine(stateDir, machine);
   const id = publicId(machineKey(machine.machineId, base));
 
-  mergeAgstatusJson({ focus: true, url: picked.url });
+  // `--no-resume` is the only thing that writes the key: leaving it absent is
+  // what keeps resume on by default (design §11).
+  const patch: Record<string, unknown> = { focus: true, url: picked.url };
+  if (opts.resume === false) patch.resume = false;
+  mergeAgstatusJson(patch);
+  const resumeOn = resumeEnabled();
 
   const cliPath = opts.cliPath ?? defaultCliPath();
   const nodePath = opts.nodePath ?? process.execPath;
   const logFile = path.join(stateDir, 'listener.log');
+
+  // The resume launcher, before the agent that will use it: a plan that
+  // respawns a session runs this file and nothing else, and both paths in it
+  // are baked in here (design §5.1). A machine whose launcher could not be
+  // written still focuses; only resume goes dark. Off — by `--no-resume`,
+  // by the file, or by AGSTATUS_RESUME — means the file is gone, not merely
+  // unused: the mechanism that starts processes is not left installed and
+  // runnable behind a switch (§11). So does a state directory the launcher
+  // could never find its way back to.
+  const stateDirLost = !launcherResolves(stateDir, platform);
+  let launcher: string | undefined;
+  try {
+    if (resumeOn && !stateDirLost) launcher = writeLauncher(stateDir, nodePath, cliPath);
+    else removeLauncher(stateDir);
+  } catch (err) {
+    log(`⚠ Could not ${resumeOn && !stateDirLost ? 'write' : 'remove'} the resume launcher: ${(err as Error).message}`);
+    log(`  ${launcherPath(stateDir)}`);
+    log('  Focus still works; the board\'s Resume button will report unsupported-host.');
+  }
   const env: Record<string, string> = {};
   if (opts.stateDir || process.env.AGSTATUS_STATE_DIR) env.AGSTATUS_STATE_DIR = stateDir;
+  // The switch travels with the agent, or `status` and `doctor` would report
+  // a shell variable the listener never sees (§11). The file is the durable
+  // form; this only keeps an install that ran with the variable honest.
+  if (process.env.AGSTATUS_RESUME === 'off') env.AGSTATUS_RESUME = 'off';
   // A --url is kept in the agent's arguments: `listener run --url` resolves
   // the board exactly as this install did, so the id printed below is the
   // id the agent answers to, whatever settings.json says later.
@@ -329,6 +445,14 @@ export async function install(opts: ListenerCommandOptions = {}): Promise<number
   log(`  Agent:     ${plist}`);
   log(`  Records:   ${path.join(stateDir, 'sessions')} (never leave this machine)`);
   log(`  Log:       ${logFile}`);
+  if (launcher) {
+    log(`  Resume:    ${launcher} — the only thing a tap can start, with --resume <id> and nothing else`);
+  } else if (stateDirLost && resumeOn) {
+    log('  Resume:    off — a state directory of its own cannot be resumed:');
+    for (const line of stateDirNote(stateDir)) log(`             ${line}`);
+  } else {
+    log(`  Resume:    off (${resumeOffReason()}) — a tap on Resume stays refused, and no launcher is installed`);
+  }
   log('');
   log('Every status post from this machine now carries this host object:');
   log(`  { "machine": { "id": "${id}", "name": "${name}" },`);
@@ -404,8 +528,19 @@ export async function uninstall(opts: ListenerCommandOptions = {}): Promise<numb
     log(`No ${file} — Focus was already off.`);
   }
 
+  // The launcher goes with the agent, purge or no purge: nothing may be left
+  // that starts a session on a machine whose listener has been taken down
+  // (§5.1). A reinstall writes it again, byte for byte.
+  if (removeLauncher(stateDir)) log(`✔ Removed ${launcherPath(stateDir)}`);
+
   if (opts.purge) {
-    for (const target of [path.join(stateDir, 'sessions'), path.join(stateDir, 'listener.log'), path.join(stateDir, 'listener.lock')]) {
+    const targets = [
+      path.join(stateDir, 'sessions'),
+      path.join(stateDir, 'listener.log'),
+      path.join(stateDir, 'listener.lock'),
+      path.join(stateDir, 'respawns.json'),
+    ];
+    for (const target of targets) {
       if (!fs.existsSync(target)) continue;
       fs.rmSync(target, { recursive: true, force: true });
       log(`✔ Removed ${target}`);
@@ -484,6 +619,25 @@ export async function status(opts: ListenerCommandOptions = {}): Promise<number>
     log(`Machine:   no usable machine.json in ${stateDir} — run \`npx agstatus listener install\``);
   }
   log(`State:     ${stateDir}`);
+  // What the *listener* would do with a Resume tap, not what this shell
+  // thinks: the agent carries its own environment (§11).
+  const resume = resumeState(stateDir, platform);
+  const launcher = usableLauncher(stateDir);
+  const extra: string[] = [];
+  let resumeLine: string;
+  if (!resume.on) {
+    resumeLine = `off (${resume.reason})`;
+  } else if (resume.stateDirLost) {
+    resumeLine = 'off — a state directory of its own cannot be resumed:';
+    extra.push(...stateDirNote(stateDir).map((line) => `           ${line}`));
+  } else if (launcher) {
+    resumeLine = `on — ${launcher}`;
+  } else {
+    resumeLine = `on, but ${launcherPath(stateDir)} is missing or not 0700 — re-run \`npx agstatus listener install\``;
+  }
+  log(`Resume:    ${resumeLine}`);
+  for (const line of extra) log(line);
+  if (resume.shellOnly) for (const line of shellOnlyNote()) log(`           ${line}`);
 
   const logFile = path.join(stateDir, 'listener.log');
   const lines = tail(logFile, 10);
@@ -586,6 +740,31 @@ export async function doctor(opts: ListenerCommandOptions = {}): Promise<number>
   }
   if (settings && codex && boardBase(settings.url) !== boardBase(codex.url)) {
     bad(`  ✖ ${settingsPath()} and ${codexHooksPath()} name different boards`);
+  }
+
+  log('Resume:');
+  const resume = resumeState(stateDir, platform);
+  if (!resume.on) {
+    log(`  · resume is off (${resume.reason}) — a tap on Resume comes back unsupported-host`);
+    log('    — remove the switch and re-run install to turn it back on; focus is unaffected');
+  } else if (resume.stateDirLost) {
+    bad('  ✖ this install keeps its state somewhere of its own, which resume cannot use:');
+    for (const line of stateDirNote(stateDir)) log(`    ${line}`);
+    log('    — reinstall without AGSTATUS_STATE_DIR to use Resume; focus is unaffected');
+  } else {
+    const launcher = usableLauncher(stateDir);
+    if (launcher) {
+      log(`  ✔ ${launcher} (0700, yours) — runs \`--resume <id>\` in the recorded directory, nothing else`);
+    } else if (launcherPresent(stateDir)) {
+      bad(`  ✖ ${launcherPath(stateDir)} is not a 0700 regular file owned by you — re-run \`npx agstatus listener install\``);
+    } else {
+      bad(`  ✖ ${launcherPath(stateDir)} missing — run \`npx agstatus listener install\` (resume plans need it)`);
+    }
+  }
+  if (resume.shellOnly) {
+    const [first, second] = shellOnlyNote();
+    log(`  ⚠ ${first}`);
+    log(`    ${second}`);
   }
 
   log('Agent:');

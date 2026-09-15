@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { execFileSync } from 'child_process';
 import http from 'http';
 import fs from 'fs';
@@ -7,8 +7,10 @@ import os from 'os';
 import path from 'path';
 import type { AddressInfo } from 'net';
 import { machineKey, publicId, writeMachine } from '../src/listener/config';
-import { SYSTEM_BINS, runPlan } from '../src/listener/exec';
+import { PS, SYSTEM_BINS, runPlan } from '../src/listener/exec';
 import type { ExecFile, ExecOptions } from '../src/listener/exec';
+import { launcherResolves, writeLauncher } from '../src/listener/resume';
+import { stateDir as platformStateDir } from '../src/listener/records';
 import {
   allowedArgv0, isAgentAlive, resolveFacts, runListener, runPlanCommand, verifyOnDisk, type ListenerDeps,
 } from '../src/listener/run';
@@ -39,8 +41,11 @@ const AGTERM_ENV = {
 
 const ENV_KEYS = [
   'HOME', 'PATH', 'AGSTATUS_STATE_DIR', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CLAUDE_STATUS_URL',
-  'CLAUDE_STATUS_SECRET', 'AGSTATUS_FOCUS', 'AGSTATUS_DEBUG', 'AWS_SECRET_ACCESS_KEY',
+  'CLAUDE_STATUS_SECRET', 'AGSTATUS_FOCUS', 'AGSTATUS_DEBUG', 'AGSTATUS_RESUME', 'AWS_SECRET_ACCESS_KEY',
 ];
+
+/** The one command string a respawn may carry: a quoted absolute path and a session uuid. */
+const COMMAND_STRING_RE = /^'[^']+' [0-9a-f-]{36}$/;
 
 let uuidCounter = 0;
 const commandId = (): string => `c0ffee00-0000-4000-8000-${String(++uuidCounter).padStart(12, '0')}`;
@@ -174,7 +179,11 @@ interface Fixture {
 async function makeFixture(): Promise<Fixture> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-run-'));
   const home = path.join(root, 'home');
-  const stateDir = path.join(root, 'state');
+  // The state dir a resume needs: the platform default under this HOME. The
+  // launcher is handed no environment, so it reads exactly this path — an
+  // install that moved the state dir elsewhere withholds facts.launcher
+  // (launcherResolves), which the resolveFacts tests below assert.
+  const stateDir = platformStateDir({}, process.platform, home);
   const bin = path.join(root, 'bin');
   fs.mkdirSync(home, { recursive: true });
   fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -215,6 +224,48 @@ function writeRecord(fx: Fixture, session: string, over: Record<string, unknown>
   const file = path.join(folder, `${record.agent_pid}.json`);
   fs.writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
   fs.chmodSync(file, 0o600);
+}
+
+/**
+ * The resume launcher exactly as `agstatus listener install` writes it —
+ * the installer's own function, so these tests break if its bytes, its mode
+ * or the name ever drift.
+ */
+function installLauncher(fx: Fixture): string {
+  return writeLauncher(fx.stateDir, process.execPath, path.join(fx.root, 'cli.js'));
+}
+
+/**
+ * The hook's half of a respawn: the record `SessionStart` writes once the
+ * new agent is up. The runtime waits for it before it acks `resumed`, so a
+ * test that expects a respawn to succeed has to play the hook.
+ */
+let respawnedPid = 90_000;
+function sessionStarted(fx: Fixture, session: string = SESSION): void {
+  writeRecord(fx, session, {
+    agent_pid: (respawnedPid += 1),
+    written_at: Math.floor(Date.now() / 1000) + 1,
+    cwd: workDir(fx), // the resumed session runs where the old one did
+  });
+}
+
+/** A launch recorder whose respawn step also brings the session up, as the real one would. */
+function respawnRecorder(fx: Fixture, psComm = '/usr/bin/vim'): { execFile: ExecFile; launches: Launch[] } {
+  const launches: Launch[] = [];
+  const execFile: ExecFile = async (file, args, opts) => {
+    launches.push({ file, args, opts });
+    if (file === '/bin/ps' && args[0] === '-o') return { code: 0, stdout: `${psComm}\n` };
+    if (file === fx.stub && args[0] === 'session' && args[1] === 'new') sessionStarted(fx);
+    return { code: 0, stdout: '' };
+  };
+  return { execFile, launches };
+}
+
+/** A directory of ours for a respawn to start in: what resolveResumeCwd must find in the record. */
+function workDir(fx: Fixture): string {
+  const dir = path.join(fx.root, 'work');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 function config(fx: Fixture, base: string): ListenerConfig {
@@ -395,8 +446,9 @@ describe('runListener', () => {
     // The plan's steps see PATH alone; the liveness check sees no more.
     expect(launches[1].opts.env).toEqual({ PATH: '/usr/bin:/bin' });
 
+    // The summary line is written after the ack the poll above waited for.
+    await until(() => running!.log().includes('focused, reach pane'), 5000, running.log);
     expectCleanLog(running.log());
-    expect(running.log()).toContain('focused, reach pane');
   });
 
   it('sends the secret on the stream and the posts when configured', async () => {
@@ -435,16 +487,286 @@ describe('runListener', () => {
     expect(launches).toEqual([]);
   });
 
-  it('acks failed/unsupported-type for resume — v1 starts nothing', async () => {
-    writeRecord(fx, SESSION);
+  it('resumes a session that is gone: the host is handed the launcher, and the ack is resumed/pane', async () => {
+    process.env.HOME = fx.home; // resumeEnabled() reads ~/.agstatus.json
+    const launcher = installLauncher(fx);
+    const work = workDir(fx);
+    writeRecord(fx, SESSION, { cwd: work });
+    const cmd = command({ type: 'resume' });
+    board = await startBoard({ onOpen: (_n, b) => b.send('command', { ...cmd, machine_id: cfg.machinePublicId }) });
+    const cfg = config(fx, board.base);
+    // The recorded pid answers with someone else's comm: the session is gone.
+    // The stub also writes the record the hook would write once the new
+    // session is up — the evidence the ack waits for.
+    const { execFile, launches } = respawnRecorder(fx);
+    running = start(cfg, { execFile, frontmost: async () => AGTERM, respawnConfirmMs: 2000 });
+    await until(() => board.acks.length === 1, 5000, running.log);
+
+    expect(board.acks[0].body).toEqual({ machine_key: cfg.machineKey, result: 'resumed', reach: 'pane' });
+    expect(launches.map((l) => [l.file, ...l.args])).toEqual([
+      ['/bin/ps', '-o', 'comm=', '-p', '7449'],
+      [fx.stub, 'session', 'new', '--cwd', work, '--command', `'${launcher}' ${SESSION}`, '--socket', fx.sock],
+      ['/usr/bin/open', '-b', AGTERM],
+    ]);
+    // The launcher is an argument of the host's own tool — never argv[0], so the
+    // runner's allowlist is still "the installer's tools and nothing else".
+    expect(launches.map((l) => l.file)).not.toContain(launcher);
+    // The only command string in the whole launch, and the only variable parts
+    // of it are that fixed path and a uuid: nothing from the record is in it.
+    const strings = launches.flatMap((l) => l.args).filter((arg) => arg.includes("'"));
+    expect(strings).toEqual([`'${launcher}' ${SESSION}`]);
+    expect(strings[0]).toMatch(COMMAND_STRING_RE);
+    // A terminal that has to cold start gets more than a focus step's 5 s.
+    expect(launches.slice(1).map((l) => l.opts.timeout)).toEqual([15_000, 15_000]);
+    // …and the raise that follows the launch is optional: a session sitting
+    // in a new pane is not "nothing started" because `open -b` failed.
+    expect(running.log()).toContain('open: activate app: exit 0 (0ms), optional');
+    for (const launch of launches) {
+      expect(launch.opts.env).not.toHaveProperty('AWS_SECRET_ACCESS_KEY');
+      expect(launch.opts.env?.PATH).toBe('/usr/bin:/bin');
+    }
+
+    await until(() => running!.log().includes('resumed, reach pane'), 5000, running.log);
+    expectCleanLog(running.log());
+    expect(running.log()).toContain('resume — launcher ready, cwd resolved');
+    expect(running.log()).toContain('confirmed started');
+    expect(running.log()).toContain('starts a new session');
+    expect(running.log()).not.toContain(work);
+    expect(running.log()).not.toContain(launcher);
+  });
+
+  it('treats a resume of a session that is still running as a focus', async () => {
+    process.env.HOME = fx.home;
+    const launcher = installLauncher(fx);
+    writeRecord(fx, SESSION, { cwd: workDir(fx) });
     const cmd = command({ type: 'resume' });
     board = await startBoard({ onOpen: (_n, b) => b.send('command', { ...cmd, machine_id: cfg.machinePublicId }) });
     const cfg = config(fx, board.base);
     const { execFile, launches } = recorder();
     running = start(cfg, { execFile, frontmost: async () => AGTERM });
     await until(() => board.acks.length === 1, 5000, running.log);
+    expect(board.acks[0].body).toEqual({ machine_key: cfg.machineKey, result: 'focused', reach: 'pane' });
+    expect(launches.map((l) => [l.file, ...l.args])).toEqual([
+      ['/bin/ps', '-o', 'comm=', '-p', '7449'],
+      ['/usr/bin/open', '-b', AGTERM],
+      [fx.stub, 'window', 'select', AGTERM_ENV.AGTERM_WINDOW_ID, '--socket', fx.sock],
+      [fx.stub, 'session', 'select', '--target', AGTERM_ENV.AGTERM_SESSION_ID,
+        '--window', AGTERM_ENV.AGTERM_WINDOW_ID, '--socket', fx.sock],
+    ]);
+    expect(JSON.stringify(launches)).not.toContain(launcher);
+    expect(running.log()).not.toContain('starts a new session');
+  });
+
+  it('allows one respawn per session per 60 s and refuses the next without launching anything', async () => {
+    process.env.HOME = fx.home;
+    installLauncher(fx);
+    writeRecord(fx, SESSION, { cwd: workDir(fx) });
+    let clock = 1_000_000;
+    const now = (): number => (clock += 5000); // past the 2 s focus cooldown, well inside the respawn minute
+    const first = command({ type: 'resume' });
+    const second = command({ type: 'resume' });
+    board = await startBoard({
+      onOpen: (_n, b) => b.send('commands', [first, second].map((c) => ({ ...c, machine_id: cfg.machinePublicId }))),
+    });
+    const cfg = config(fx, board.base);
+    const { execFile, launches } = respawnRecorder(fx);
+    running = start(cfg, { execFile, frontmost: async () => AGTERM, now, respawnConfirmMs: 2000 });
+    await until(() => board.acks.length === 2, 5000, running.log);
+
+    expect(board.acks[0].body).toEqual({ machine_key: cfg.machineKey, result: 'resumed', reach: 'pane' });
+    expect(board.acks[1].body).toEqual({ machine_key: cfg.machineKey, result: 'failed', reason: 'respawn-failed' });
+    // Exactly one session was started: the refused tap got as far as its liveness probe.
+    expect(launches.filter((l) => l.file === fx.stub)).toHaveLength(1);
+    expect(launches.filter((l) => l.file === SYSTEM_BINS.open)).toHaveLength(1);
+    expect(running.log()).toContain('one respawn per session per 60s — refused');
+    expectCleanLog(running.log());
+  });
+
+  it('allows five respawns per 10 minutes machine-wide and refuses the sixth', async () => {
+    process.env.HOME = fx.home;
+    installLauncher(fx);
+    writeRecord(fx, SESSION, { cwd: workDir(fx) });
+    let clock = 1_000_000;
+    // Each tap lands past its own session's minute, and all six inside the ten.
+    const now = (): number => (clock += 61_000);
+    const taps = Array.from({ length: 6 }, () => command({ type: 'resume' }));
+    board = await startBoard({
+      onOpen: (_n, b) => b.send('commands', taps.map((c) => ({ ...c, machine_id: cfg.machinePublicId }))),
+    });
+    const cfg = config(fx, board.base);
+    const { execFile, launches } = respawnRecorder(fx);
+    running = start(cfg, { execFile, frontmost: async () => AGTERM, now, respawnConfirmMs: 2000 });
+    await until(() => board.acks.length === 6, 8000, running.log);
+
+    expect(board.acks.map((a) => a.body.result)).toEqual(['resumed', 'resumed', 'resumed', 'resumed', 'resumed', 'failed']);
+    expect(board.acks[5].body).toEqual({ machine_key: cfg.machineKey, result: 'failed', reason: 'respawn-failed' });
+    expect(launches.filter((l) => l.file === fx.stub)).toHaveLength(5);
+    expect(running.log()).toContain('5 respawns within 10 min — refused');
+  });
+
+  it('acks respawn-failed, not unsupported-host, when a respawn step exits non-zero', async () => {
+    process.env.HOME = fx.home;
+    installLauncher(fx);
+    writeRecord(fx, SESSION, { cwd: workDir(fx) });
+    const cmd = command({ type: 'resume' });
+    board = await startBoard({ onOpen: (_n, b) => b.send('command', { ...cmd, machine_id: cfg.machinePublicId }) });
+    const cfg = config(fx, board.base);
+    const launches: Launch[] = [];
+    const execFile: ExecFile = async (file, args, opts) => {
+      launches.push({ file, args, opts });
+      if (file === '/bin/ps') return { code: 0, stdout: '/usr/bin/vim\n' };
+      // agterm is running, but it would not take the new session.
+      return { code: file === fx.stub ? 3 : 0, stdout: '' };
+    };
+    running = start(cfg, { execFile, frontmost: async () => AGTERM });
+    await until(() => board.acks.length === 1, 5000, running.log);
+    expect(board.acks[0].body).toEqual({ machine_key: cfg.machineKey, result: 'failed', reason: 'respawn-failed' });
+    // The step after the one that failed never ran.
+    expect(launches.map((l) => l.file)).toEqual(['/bin/ps', fx.stub]);
+    expect(running.log()).toContain('exit 3');
+    expectCleanLog(running.log());
+  });
+
+  it('refuses every resume with AGSTATUS_RESUME=off, and the launcher is never named', async () => {
+    process.env.HOME = fx.home;
+    process.env.AGSTATUS_RESUME = 'off';
+    const launcher = installLauncher(fx);
+    writeRecord(fx, SESSION, { cwd: workDir(fx) });
+    const cmd = command({ type: 'resume' });
+    board = await startBoard({ onOpen: (_n, b) => b.send('command', { ...cmd, machine_id: cfg.machinePublicId }) });
+    const cfg = config(fx, board.base);
+    const { execFile, launches } = recorder('/usr/bin/vim');
+    running = start(cfg, { execFile, frontmost: async () => AGTERM });
+    await until(() => board.acks.length === 1, 5000, running.log);
+    // The missing launcher fact, not a special case in the planner (§5.2 step 4).
+    expect(board.acks[0].body).toEqual({ machine_key: cfg.machineKey, result: 'failed', reason: 'unsupported-host' });
+    expect(launches.map((l) => l.file)).toEqual(['/bin/ps']);
+    expect(JSON.stringify(launches)).not.toContain(launcher);
+    expect(running.log()).toContain('resume — launcher absent');
+  });
+
+  it('acks failed/unsupported-type for a resume of a headless run', async () => {
+    process.env.HOME = fx.home;
+    installLauncher(fx);
+    writeRecord(fx, SESSION, { cwd: workDir(fx), entrypoint: 'sdk-cli' });
+    const cmd = command({ type: 'resume' });
+    board = await startBoard({ onOpen: (_n, b) => b.send('command', { ...cmd, machine_id: cfg.machinePublicId }) });
+    const cfg = config(fx, board.base);
+    const { execFile, launches } = recorder('/usr/bin/vim');
+    running = start(cfg, { execFile, frontmost: async () => AGTERM });
+    await until(() => board.acks.length === 1, 5000, running.log);
     expect(board.acks[0].body).toEqual({ machine_key: cfg.machineKey, result: 'failed', reason: 'unsupported-type' });
     expect(launches.map((l) => l.file)).toEqual(['/bin/ps']);
+  });
+
+  it('does not let the 2 s focus cooldown swallow the Resume tap that focus produced', async () => {
+    process.env.HOME = fx.home;
+    installLauncher(fx);
+    writeRecord(fx, SESSION, { cwd: workDir(fx) });
+    // Both taps inside one cooldown window, because that is how it happens:
+    // the board offers Resume only after a focus came back not-running, and
+    // the user taps it straight away. Keyed on the session alone, the second
+    // would be dropped before the claim — no ack at all, and the server
+    // re-offering it on the next reconnect.
+    let clock = 2_000_000;
+    const now = (): number => (clock += 100);
+    const focusTap = command({ type: 'focus' });
+    const resumeTap = command({ type: 'resume' });
+    board = await startBoard({
+      onOpen: (_n, b) =>
+        b.send('commands', [focusTap, resumeTap].map((c) => ({ ...c, machine_id: cfg.machinePublicId }))),
+    });
+    const cfg = config(fx, board.base);
+    const { execFile } = respawnRecorder(fx);
+    running = start(cfg, { execFile, frontmost: async () => AGTERM, now, respawnConfirmMs: 2000 });
+    await until(() => board.acks.length === 2, 5000, running.log);
+
+    expect(board.acks[0].body).toEqual({ machine_key: cfg.machineKey, result: 'failed', reason: 'not-running' });
+    expect(board.acks[1].body).toEqual({ machine_key: cfg.machineKey, result: 'resumed', reach: 'pane' });
+    expect(running.log()).not.toContain('cooldown');
+  });
+
+  it('acks respawn-failed when every step exits 0 and no session ever comes up', async () => {
+    process.env.HOME = fx.home;
+    installLauncher(fx);
+    writeRecord(fx, SESSION, { cwd: workDir(fx) });
+    const cmd = command({ type: 'resume' });
+    board = await startBoard({ onOpen: (_n, b) => b.send('command', { ...cmd, machine_id: cfg.machinePublicId }) });
+    const cfg = config(fx, board.base);
+    // `open -n -b` exits 0 as soon as LaunchServices takes the request, and
+    // agtermctl can succeed on a session that then dies with an error in it.
+    // Without a record from the hook there is no evidence, so no `resumed`.
+    const { execFile, launches } = recorder('/usr/bin/vim');
+    running = start(cfg, { execFile, frontmost: async () => AGTERM, respawnConfirmMs: 600 });
+    await until(() => board.acks.length === 1, 5000, running.log);
+
+    expect(board.acks[0].body).toEqual({ machine_key: cfg.machineKey, result: 'failed', reason: 'respawn-failed' });
+    expect(launches.filter((l) => l.file === fx.stub)).toHaveLength(1); // it did try
+    expect(running.log()).toContain('no record and no agent for the session within 600ms');
+    expectCleanLog(running.log());
+  });
+
+  it('confirms a respawn from the process table when the record has not landed yet', async () => {
+    // A large transcript can take longer to reach SessionStart than the phone
+    // waits, so a live agent carrying the session id counts as evidence too.
+    process.env.HOME = fx.home;
+    installLauncher(fx);
+    writeRecord(fx, SESSION, { cwd: workDir(fx) });
+    const cmd = command({ type: 'resume' });
+    board = await startBoard({ onOpen: (_n, b) => b.send('command', { ...cmd, machine_id: cfg.machinePublicId }) });
+    const cfg = config(fx, board.base);
+    // '/usr/bin/vim' as the comm answer makes isAgentAlive see a dead session.
+    const { execFile } = recorder('/usr/bin/vim');
+    const withPs: typeof execFile = async (file, args, opts) => {
+      if (file === PS && args[0] === '-axo' && args[1] === 'args=') {
+        return { code: 0, stdout: `/Users/x/.local/bin/claude --resume ${SESSION}\n` };
+      }
+      return execFile(file, args, opts);
+    };
+    running = start(cfg, { execFile: withPs, frontmost: async () => AGTERM, respawnConfirmMs: 3000 });
+    await until(() => board.acks.length === 1, 6000, running.log);
+
+    expect(board.acks[0].body).toMatchObject({ result: 'resumed', reach: 'pane' });
+    expect(running.log()).toContain('confirmed started');
+    expectCleanLog(running.log());
+  });
+
+  it('keeps the respawn guards across a restart: the ledger is a file, not a field', async () => {
+    process.env.HOME = fx.home;
+    installLauncher(fx);
+    writeRecord(fx, SESSION, { cwd: workDir(fx) });
+    let clock = 3_000_000;
+    const now = (): number => (clock += 5000); // past the focus cooldown, inside the respawn minute
+    const first = command({ type: 'resume' });
+    board = await startBoard({ onOpen: (_n, b) => b.send('command', { ...first, machine_id: cfg.machinePublicId }) });
+    const cfg = config(fx, board.base);
+    const { execFile } = respawnRecorder(fx);
+    running = start(cfg, { execFile, frontmost: async () => AGTERM, now, respawnConfirmMs: 2000 });
+    await until(() => board.acks.length === 1, 5000, running.log);
+    expect(board.acks[0].body.result).toBe('resumed');
+
+    const ledger = JSON.parse(fs.readFileSync(path.join(fx.stateDir, 'respawns.json'), 'utf8')) as {
+      machine: number[];
+      sessions: Record<string, number>;
+    };
+    expect(ledger.machine).toHaveLength(1);
+    expect(ledger.sessions[SESSION]).toBe(clock);
+    expect(fs.statSync(path.join(fx.stateDir, 'respawns.json')).mode & 0o777).toBe(0o600);
+
+    // The LaunchAgent is KeepAlive with a 10 s throttle, so "the listener
+    // restarted" is the ordinary case, not the exception: the second tap
+    // meets the same guard the first one spent.
+    await running.stop();
+    running = undefined;
+    await board.close();
+    const second = command({ type: 'resume' });
+    board = await startBoard({ onOpen: (_n, b) => b.send('command', { ...second, machine_id: restarted.machinePublicId }) });
+    const restarted = config(fx, board.base);
+    running = start(restarted, { execFile, frontmost: async () => AGTERM, now, respawnConfirmMs: 600 });
+    await until(() => board.acks.length === 1, 5000, running.log);
+    expect(board.acks[0].body).toEqual({ machine_key: restarted.machineKey, result: 'failed', reason: 'respawn-failed' });
+    expect(running.log()).toContain('one respawn per session per 60s — refused');
+    expect(running.log()).toContain('respawn ledger: 1/5 spent in the last 10 min');
   });
 
   it('acks failed/not-running when the pid is gone or belongs to something else', async () => {
@@ -1066,5 +1388,112 @@ describe('runPlanCommand', () => {
     const lines: string[] = [];
     expect(await runPlanCommand('../etc', (l) => lines.push(l))).toBe(1);
     expect(lines[0]).toContain('session id');
+  });
+
+  it('--resume dry-runs the respawn of a stopped session, paths redacted', async () => {
+    const launcher = installLauncher(fx);
+    writeRecord(fx, SESSION, { cwd: workDir(fx) });
+    const lines: string[] = [];
+    const dead: ExecFile = async () => ({ code: 0, stdout: '/usr/bin/vim\n' });
+    const code = await runPlanCommand(SESSION, (l) => lines.push(l), { execFile: dead, platform: 'darwin', resume: true });
+    const text = lines.join('\n');
+    expect(code).toBe(0);
+    expect(text).toContain('Resume: launcher ready, working directory resolved');
+    expect(text).toContain('agtermctl: new session');
+    expect(text).toContain('reach pane, result resumed, starts a new session');
+    expect(text).not.toContain(NEVER);
+    // The launcher's own path is long enough to be redacted out of the command string.
+    expect(text).not.toContain(launcher);
+
+    // Without --resume the same stopped session is simply not running.
+    lines.length = 0;
+    expect(await runPlanCommand(SESSION, (l) => lines.push(l), { execFile: dead, platform: 'darwin' })).toBe(1);
+    expect(lines.join('\n')).toContain('No plan: not-running');
+    expect(lines.join('\n')).not.toContain('Resume:');
+  });
+
+  it('is reachable from the CLI: `agstatus listener plan <id> --resume` is a flag, not an error', async () => {
+    installLauncher(fx);
+    // main() launches for real, so the record names a comm no live process
+    // can match: this dry run must resolve the session as gone on any Mac.
+    writeRecord(fx, SESSION, { cwd: workDir(fx), agent_comm: '/opt/agstatus/not-a-running-agent' });
+    const { main } = await import('../src/index');
+    const lines: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => void lines.push(args.join(' ')));
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      expect(await main(['listener', 'plan', SESSION, '--resume'])).toBe(0);
+    } finally {
+      log.mockRestore();
+      err.mockRestore();
+    }
+    expect(err).not.toHaveBeenCalled(); // not "✖ Unknown option: --resume"
+    const text = lines.join('\n');
+    expect(text).toContain('Resume: launcher ready');
+    expect(text).toContain('starts a new session');
+  });
+
+  it('--resume refuses when ~/.agstatus.json says "resume": false, launcher or no launcher', async () => {
+    fs.writeFileSync(path.join(fx.home, '.agstatus.json'), JSON.stringify({ resume: false }), { mode: 0o600 });
+    installLauncher(fx);
+    writeRecord(fx, SESSION, { cwd: workDir(fx) });
+    const lines: string[] = [];
+    const dead: ExecFile = async () => ({ code: 0, stdout: '/usr/bin/vim\n' });
+    expect(await runPlanCommand(SESSION, (l) => lines.push(l), { execFile: dead, platform: 'darwin', resume: true })).toBe(1);
+    expect(lines.join('\n')).toContain('Resume: launcher not installed (or "resume": false)');
+    expect(lines.join('\n')).toContain('No plan: unsupported-host');
+  });
+});
+
+describe('resolveFacts: the resume launcher', () => {
+  let fx: Fixture;
+  const saved = new Map<string, string | undefined>();
+  const keys = ['HOME', 'AGSTATUS_RESUME'];
+
+  beforeEach(async () => {
+    for (const key of keys) saved.set(key, process.env[key]);
+    fx = await makeFixture();
+    process.env.HOME = fx.home;
+    delete process.env.AGSTATUS_RESUME;
+  });
+  afterEach(async () => {
+    await fx.close();
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  });
+
+  const record = (): LocalRecord => ({
+    v: 1, session_id: SESSION, agent: 'claude', agent_pid: 7449, agent_comm: 'claude', entrypoint: 'cli',
+    written_at: 1789286585, ended_at: null, env: {}, bins: {},
+  });
+  const quiet: ExecFile = async () => ({ code: 0, stdout: '' });
+  const facts = (stateDir: string, respawn = true, alive = false) =>
+    resolveFacts(record(), {}, quiet, alive, process.platform, undefined, { stateDir, respawn });
+
+  it('is withheld for a state directory the launcher could never find again', async () => {
+    const launcher = installLauncher(fx);
+    expect(launcherResolves(fx.stateDir, process.platform)).toBe(true);
+    expect((await facts(fx.stateDir)).launcher).toBe(launcher);
+
+    // The same launcher, 0700 and ours, in a directory of its own: nothing
+    // hands `resume-exec` an AGSTATUS_STATE_DIR, so it would read the
+    // default one, find no record and close the window — while the host's
+    // own tool exited 0 and the board was told `resumed`. Say unsupported-host.
+    const own = path.join(fx.root, 'state-of-its-own');
+    writeLauncher(own, process.execPath, path.join(fx.root, 'cli.js'));
+    expect(launcherResolves(own, process.platform)).toBe(false);
+    expect((await facts(own)).launcher).toBeUndefined();
+  });
+
+  it('is withheld while resume is off, and for anything that is not a respawn', async () => {
+    installLauncher(fx);
+    process.env.AGSTATUS_RESUME = 'off';
+    expect((await facts(fx.stateDir)).launcher).toBeUndefined();
+    delete process.env.AGSTATUS_RESUME;
+    expect((await facts(fx.stateDir, false, true)).launcher).toBeUndefined();
+    expect((await facts(fx.stateDir)).launcher).toBeDefined();
   });
 });

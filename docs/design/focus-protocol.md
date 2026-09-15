@@ -1,6 +1,6 @@
 # Focus Protocol — bring the session's window to the front from the phone
 
-Status: **design, reviewed; steps 1–2 (hook local record + opt-in `host` summary, server `host` field, docs) implemented 2026-09-13, uncommitted; steps 3–7 (commands, presence, listener, boards) not started.** Written 2026-09-13 from a 7-lane research pass (host detection, macOS focus, IDEs + multiplexers, Windows/Linux, Codex, codebase touchpoints, prior art) and a 6-lens adversarial review (security, privacy, protocol/compat, cross-platform honesty, implementer feasibility, completeness). Every claim below is tagged **[V]** verified on a Mac in this repo's dev environment, **[D]** docs/source-only, or **[I]** inferred. Untagged statements are design decisions. Herdr (§2, §3.2, §4–§6, §10, §11) added 2026-09-13 after checking 0.7.0 on the same Mac.
+Status: **design, reviewed; steps 1–6 implemented — hook local record + opt-in `host` summary and server `host` field (2026-09-13), server commands + presence, listener core, boards, and step 5 (respawn: the `agstatus-resume` launcher, the respawn rows, the guards, the `"resume": false` switch) on 2026-09-15, hardened after an adversarial review on 2026-09-16 (§9 step 5). Step 7 (signed sender for the AppleScript rows, Windows, Linux) not started.** Written 2026-09-13 from a 7-lane research pass (host detection, macOS focus, IDEs + multiplexers, Windows/Linux, Codex, codebase touchpoints, prior art) and a 6-lens adversarial review (security, privacy, protocol/compat, cross-platform honesty, implementer feasibility, completeness). Every claim below is tagged **[V]** verified on a Mac in this repo's dev environment, **[D]** docs/source-only, or **[I]** inferred. Untagged statements are design decisions. Herdr (§2, §3.2, §4–§6, §10, §11) added 2026-09-13 after checking 0.7.0 on the same Mac.
 
 ## 1. What this is
 
@@ -130,11 +130,11 @@ Rules: multiplexer vars override `TERM_PROGRAM` (they are set later in the chain
 ### 5.1 Trust rules (the part reviewers called a blocker)
 
 - **argv only.** Every launch is `execFile`/`spawn` with an argument array and `shell: false`. Nothing from the record is ever interpolated into a shell string, an AppleScript source, or a `.command` file.
-- **Hosts that only accept a command string** (Terminal.app `.command`/`do script`, iTerm2 `create window … command`, `screen -X screen`, `tmux new-window`, `agtermctl --command`, Warp launch configs) get the fixed text `"<abs>/agstatus-resume" <session-uuid>` and nothing else. `agstatus-resume` is the listener's own launcher: it validates the UUID (`^[0-9a-f]{8}-…$`), loads the record itself, `chdir`s to the recorded cwd, and `execFile`s the pinned agent binary with exactly `['--resume', uuid]` (Claude) or `['resume', uuid]` (Codex). Never a prompt, never `-c`. This matters for Codex in particular: `codex resume [SESSION_ID] [PROMPT]` accepts a positional prompt and `-c key=value` overrides that can widen the sandbox **[V]**.
+- **Hosts that only accept a command string** (Terminal.app `.command`/`do script`, iTerm2 `create window … command`, `screen -X screen`, `tmux new-window`, `agtermctl --command`, Warp launch configs) get the fixed text `"<abs>/agstatus-resume" <session-uuid>` and nothing else. `agstatus-resume` is the listener's own launcher: it validates the UUID (`^[0-9a-f]{8}-…$`), checks that resume is still switched on and that no record for the session is still alive (a re-delivered command must not put two `--resume <uuid>` on one transcript), loads the record itself, `chdir`s to the recorded cwd, and `execFile`s the pinned agent binary with exactly `['--resume', uuid]` (Claude) or `['resume', uuid]` (Codex). Never a prompt, never `-c`. Two consequences of "nothing else interpolated, ever": the script carries no state directory, so `resume-exec` resolves the **platform default** — the host hands it no environment of ours (`runPlan` gives a step `PATH` alone, `open -n -b` hands the app launchd's environment) — and an install that set `AGSTATUS_STATE_DIR` therefore withholds `facts.launcher` and answers `unsupported-host` rather than ack a `resumed` for a window that found no record and closed; and because it is a wrapper and not an `execv`, it holds SIGINT/SIGQUIT (no-op handlers) and forwards SIGTERM/SIGHUP while the agent runs, or the first Ctrl-C would kill the wrapper the terminal is watching and take the resumed session's window with it. This matters for Codex in particular: `codex resume [SESSION_ID] [PROMPT]` accepts a positional prompt and `-c key=value` overrides that can widen the sandbox **[V]**.
 - **osascript** is invoked with `on run argv` and the tty/cwd passed as arguments, never spliced into the script; `do script` uses `quoted form of`.
 - **The record is data, not instructions.** Validate at the listener, independent of the server: `session_id`/`machine_id` UUID; `tty` `^/dev/ttys[0-9]{3,4}$`; `agent_pid` integer that resolves to a live process whose `comm` equals `agent_comm`; `cwd` absolute, no control chars, `stat()` a directory owned by the listener's uid; bundle ids `^[A-Za-z0-9.-]{3,128}$` **and present in the listener's own strategy table** for anything beyond `open -b`; `app.path` is never taken from the record — resolve it via `mdfind kMDItemCFBundleIdentifier == …` or the bundle table; per-host id regexes (`KITTY_WINDOW_ID`/`WEZTERM_PANE` integers, `AGTERM_*` UUIDs, `ITERM_SESSION_ID` `^w\d+t\d+p\d+:[0-9A-F-]+$`, tmux target Claude's `/^[A-Za-z0-9_.-]{1,64}:@?\d{1,6}\.%?\d{1,6}$/`, Herdr ids `^w\d{1,6}$` / `^w\d{1,6}:t\d{1,6}$` / `^w\d{1,6}:p\d{1,6}$`); socket paths must exist, be sockets, and be owned by the uid. Anything failing → `failed / bad-record`, no action.
 - **Binaries are resolved by the listener, never from PATH.** Order: `record.bins` (captured under the user's shell PATH at hook time) → `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin` → `<bundle>/Contents/MacOS/<tool>` (agtermctl, kitten, wezterm) → `/Applications/ChatGPT.app/Contents/Resources/codex`. The LaunchAgent plist also sets `EnvironmentVariables.PATH` to the installer's PATH, and respawns run with `record.path`. `agstatus listener doctor` prints what resolved.
-- **Guards.** Per-session cooldown (one focus per 2 s), one respawn per session per 60 s, at most 5 respawns per 10 min machine-wide, and a circuit breaker that ignores commands for 5 min after 20 in a minute — all logged.
+- **Guards.** Per-session **and per command type** cooldown (one focus per 2 s, one resume per 2 s — keyed on the session alone the cooldown would swallow the Resume tap the focus that just failed produced, which is the only tap the board offers in that window), one respawn per session per 60 s, at most 5 respawns per 10 min machine-wide, and a circuit breaker that ignores commands for 5 min after 20 in a minute — all logged. The two respawn counters live in `<state>/respawns.json` (0600, pruned to their windows), not in the process: the LaunchAgent is `KeepAlive` with a 10 s throttle, so an in-memory ledger would be re-armed by every crash, log-out or `launchctl kickstart`, and "5 per 10 min machine-wide" would bound one process lifetime rather than the machine.
 - **`SSH_CONNECTION`** means remote only when no multiplexer is present or the resolved mux client's tty belongs to sshd; a tmux server started over SSH and attached locally is not remote.
 
 ### 5.2 Decision ladder (macOS)
@@ -165,15 +165,38 @@ Rules: multiplexer vars override `TERM_PROGRAM` (they are set later in the chain
    Cursor / Windsurf             open -b   (cursor://file unconfirmed)                                                                  app   [I]
    com.jetbrains.* / dev.zed.Zed project_root known ? open -b <bundle> <root> : open -b                                                window|app [V root-open only]
    anything else with a bundle   open -b                                                                                               app
-4  type == resume ∧ !alive → respawn in the SAME app via the fixed launcher (§5.1): agterm session new --cwd --command;
-   kitten @ launch --type=os-window --cwd; wezterm cli spawn --cwd; open -na Ghostty/Alacritty/Rio --args --working-directory=<cwd> -e <launcher> <uuid>;
-   Terminal: .command file + open -b com.apple.Terminal; iTerm2: create window with default profile command; Warp: warp://action/new_tab?path=;
-   VS Code (Claude extension): focus the window, then open "vscode://anthropic.claude-code/open?session=<uuid>";
-   Codex terminal: launcher runs <codex-bin> resume <root_thread_id>; Codex Desktop: the deep link (works for archived threads via an interstitial).
-   herdr (server running): herdr agent start <label> --cwd <cwd> --workspace <HERDR_WORKSPACE_ID> --tab <HERDR_TAB_ID> --focus -- <launcher> <uuid>
-   (argv after `--`, never a string), then the outer terminal as in step 2; server gone → respawn in the outer app like any terminal.
-   entrypoint claude-desktop → open -b, activated, reason not-running ("resume it inside Claude"); sdk-cli / codex-exec → never respawn.
-   cwd: record.cwd → glob ~/.claude/projects/*/<uuid>.jsonl and read the `cwd` field (the dir name is lossy, never decode it) → rollout session_meta.cwd.
+4  type == resume ∧ !alive → respawn: ONE process, and it is always the launcher (§5.1). As shipped, with
+   L := facts.launcher, U := the uuid, D := the working directory the RUNTIME resolved (the planner reads no disk).
+   Gates, in order: no L (never installed, not a 0700 file of ours, resume switched off, or a state dir the
+   launcher could not find again — §5.1) → unsupported-host;
+   entrypoint sdk-cli / codex-exec → unsupported-type; entrypoint claude-desktop → open -b, activated/app (nothing starts);
+   then U := UUID_RE(session_id) else bad-record, and D := isAbsPath else respawn-failed — demanded only by rows that spawn.
+   com.umputun.agterm            agtermctl session new --cwd D --command "'L' U" --socket $AGTERM_SOCKET; open -b (frontmost)  pane  [D]
+   net.kovidgoyal.kitty          kitten @ --to unix:… launch --type=os-window --cwd=D L U; no remote control → the open -n row  pane  [D]
+   com.github.wez.wezterm        wezterm cli spawn --new-window --cwd D -- L U (+WEZTERM_UNIX_SOCKET); no binary → unsupported-host  pane [D]
+   ghostty / alacritty / rio     open -n -b <bundle> --args --working-directory=D -e L U                                       window [D]
+   com.openai.codex              the same deep link step 3 uses — result resumed, reach thread, nothing started               thread [V]
+   com.apple.Terminal, iterm2    command *string* only, through Apple events or a .command file → unsupported-host (v1.1, §5.4)
+   Warp/Hyper/Tabby/Xcode, VS Code/Cursor/Windsurf, JetBrains/Zed, unknown bundle → unsupported-host; malformed bundle → bad-record
+   mux: tmux -S S new-window -t <session>: -c D "'L' U"  (the session name from mux.target, as the focus row parses it,
+        else bad-record — without -t the window lands in whatever session the server calls current);
+        herdr agent start <record.agent> --cwd D --focus -- L U (HERDR_SOCKET_PATH=S, argv
+        after `--`, never a string), then the outer app's step-3 focus leg; zellij / screen → unsupported-host.               pane  [D]
+   Only agterm and tmux take a command STRING, and it is exactly `'L' U`: a launcher path holding ' " or \ loses those two rows
+   rather than produce an ambiguous string. record.app.path is never used — `open -n -b` takes the bundle id from the table (§5.1).
+   cwd: record.cwd (stat: a directory of ours) → Claude: ~/.claude/projects/*/<uuid>.jsonl, newest first, the first line whose
+   `cwd` is a directory of ours (O_NOFOLLOW, ≤1 MiB, ≤500 lines; the folder name is lossy, never decoded) → Codex: `cwd` (top
+   level or under `payload`) of the transcript's first session_meta line.
+   Runtime guards (§5.1), on the plans that respawn: one per session per 60 s, 5 per machine per 10 min → failed/respawn-failed
+   with nothing launched. Every respawn step gets 15 s instead of 5 (a terminal cold start); a step that exits non-zero →
+   failed/respawn-failed, never unsupported-host. The launcher is never argv[0] of a step, so the runner's allow-list is
+   unchanged: it is an argument of the host's own tool, or the quoted half of the one command string.
+   Everything after the step that starts the agent is `optional` (the `open -b` raise of agterm's row, the outer app's whole
+   focus leg after a mux respawn): the session exists, and a failed raise must not report that nothing came up.
+   Evidence, because exit 0 proves nothing here — `open -n -b` returns as soon as LaunchServices takes the request, and the
+   window may then close with "no local record" in it: after the last step the runtime polls `<state>/sessions/<id>/` for up
+   to 12 s for a record the hook did not write before (a new pid, or a newer written_at, at SessionStart). None → failed/
+   respawn-failed. Only then is the ack `resumed`.
 5  verify: poll `lsappinfo front` ≤ 500 ms; ack focused/activated only if the target bundle is frontmost, else `selected` — macOS keeps the current app in front while the user is typing [V].
 6  ack {result, reach, reason}; log {id, plan, per-step exit codes, frontmost before/after}.
 ```
@@ -190,34 +213,41 @@ Linux: X11 → pane via terminal IPC where present, window via `xdotool windowac
 
 - **v1 (macOS):** Node process, LaunchAgent (`agstatus listener install | uninstall | status | doctor | plan`). Only prompt-free strategies: agterm, kitty, iTerm2 URL, WezTerm CLI, deep links, `open -b`, JetBrains root-open, respawn via `open`/launcher. Terminal.app and Ghostty degrade to `open -b` and say so.
 - **v1.1:** a signed `AgStatus Listener.app` (or a future menubar app) as the Apple-events sender, so the AppleScript strategies can be approved once per target app.
-- The installer is the **only** writer of `focus: true`: interactive, prints the exact `host` object that will be sent, merges into `~/.agstatus.json` (never overwrites `url`/`secret`), resolves the board URL with the same precedence `agstatus status` already uses (`~/.claude/settings.json` env → Codex `hooks.json` command → file), refuses to install when those disagree, writes the file `0600`. `agstatus listener uninstall` sets `focus: false` (so live cards clear), removes the LaunchAgent and log, and with confirmation the sessions directory; `agstatus uninstall` calls it. `AGSTATUS_FOCUS=off` env overrides the file.
+- The installer is the **only** writer of `focus: true`: interactive, prints the exact `host` object that will be sent, merges into `~/.agstatus.json` (never overwrites `url`/`secret`), resolves the board URL with the same precedence `agstatus status` already uses (`~/.claude/settings.json` env → Codex `hooks.json` command → file), refuses to install when those disagree, writes the file `0600`. `agstatus listener uninstall` sets `focus: false` (so live cards clear), removes the LaunchAgent, the log and the resume launcher (nothing that starts a session outlives the listener), and with confirmation the sessions directory; `agstatus uninstall` calls it. `AGSTATUS_FOCUS=off` env overrides the file.
 - The Node SSE client is hand-rolled (no `EventSource` in Node 24, zero-dependency rule): fetch + stream frame parser + reconnect/backoff + idle watchdog + 429 handling, ~80 lines; `main()` must return a never-resolving promise so the agent stays up.
 
 ## 6. Capability matrix — what the board may promise
 
-| Host | Reach | Mechanism | Needs | Status |
-|---|---|---|---|---|
-| agterm | pane | agtermctl | listener | **[V]** |
-| kitty | pane | `kitten @ focus-window` | `allow_remote_control` + `listen_on unix:` | **[V]** |
-| Codex Desktop | thread | `codex://threads/<id>` | listener | **[V]** |
-| JetBrains (open project) | window | `open -b <ide> <root>` | project root resolvable | **[V]** |
-| iTerm2 | pane | `iterm2:reveal` URL | — | [D] experimental |
-| WezTerm | pane (single window) / app | `wezterm cli activate-pane` + `open -b` | — | [D] experimental |
-| Terminal.app | tab | AppleScript by tty | Automation consent, signed listener (v1.1) | [D] |
-| Ghostty > 1.3.1 | tab | AppleScript by tty | same | [D] |
-| Ghostty 1.3.1 | tab only if cwd unambiguous, else app | AppleScript by cwd | same | [D] |
-| tmux / zellij / screen | pane, then the outer terminal's reach | mux CLI + client resolution | — | [V tmux-shape, I zellij/screen] |
-| Herdr | pane, then the outer terminal's reach | herdr CLI/socket + client resolution | herdr running | [V env+CLI, I focus] |
-| VS Code (+ Claude extension) | window | `vscode://file/<folder>/` | lock file | [D] |
-| Cursor, Windsurf, Zed | app | `open -b` | — | [I] |
-| Alacritty, Warp, Hyper, Tabby, Rio, Claude Desktop, Xcode | app | `open -b` | — | [V/D] |
-| Windows Terminal | app (window if single) | EnumWindows + foreground trick | interactive-session listener | [D] |
-| conhost | window | `SetForegroundWindow` + trick | same | [D] |
-| Linux X11 | window (+ pane via IPC) | `xdotool` / terminal IPC | xdotool | [D] |
-| Linux Wayland — Sway/Hyprland/KDE | window (+ pane via IPC) | compositor IPC | — | [D] |
-| Linux Wayland — GNOME | selected only | terminal IPC | Shell extension for raise | [D] |
-| SSH-remote session (no mux) | none | — | — | — |
-| No record / no host | none | — | — | — |
+`Reach`, `Mechanism` and `Needs` describe **focus**; `Resume` is what a second tap does on a session that is gone (§5.2 step 4), as shipped in v1 — every entry in it that starts a process is `experimental: true` until §10 clears it.
+
+| Host | Reach | Mechanism | Needs | Status | Resume |
+|---|---|---|---|---|---|
+| agterm | pane | agtermctl | listener | **[V]** | pane — `agtermctl session new --command "'L' U"` |
+| kitty | pane | `kitten @ focus-window` | `allow_remote_control` + `listen_on unix:` | **[V]** | pane — `kitten @ launch --type=os-window`; without remote control, window via `open -n` |
+| Codex Desktop | thread | `codex://threads/<id>` | listener | **[V]** | thread — the same link (reopens an archived thread; nothing is started) |
+| JetBrains (open project) | window | `open -b <ide> <root>` | project root resolvable | **[V]** | — no agent session to resume |
+| iTerm2 | pane | `iterm2:reveal` URL | — | [D] experimental | — command string needs the signed sender (v1.1) |
+| WezTerm | pane (single window) / app | `wezterm cli activate-pane` + `open -b` | — | [D] experimental | pane — `wezterm cli spawn --new-window -- L U` |
+| Terminal.app | tab | AppleScript by tty | Automation consent, signed listener (v1.1) | [D] | — `.command` file or Apple events (v1.1) |
+| Ghostty > 1.3.1 | tab | AppleScript by tty | same | [D] | window — `open -n -b … --args --working-directory=D -e L U` |
+| Ghostty 1.3.1 | tab only if cwd unambiguous, else app | AppleScript by cwd | same | [D] | window — same `open -n` row |
+| tmux / zellij / screen | pane, then the outer terminal's reach | mux CLI + client resolution | — | [V tmux-shape, I zellij/screen] | tmux: pane — `new-window -c D "'L' U"`, then the outer app's focus leg; zellij / screen: — |
+| Herdr | pane, then the outer terminal's reach | herdr CLI/socket + client resolution | herdr running | [V env+CLI, I focus] | pane — `herdr agent start … --focus -- L U`, then the outer app's focus leg |
+| VS Code (+ Claude extension) | window | `vscode://file/<folder>/` | lock file | [D] | — the deep link needs the extension and the right window (v1.1) |
+| Cursor, Windsurf, Zed | app | `open -b` | — | [I] | — |
+| Alacritty, Rio | app | `open -b` | — | [V/D] | window — the `open -n` row |
+| Warp, Hyper, Tabby, Xcode | app | `open -b` | — | [V/D] | — no command from `open` |
+| Claude Desktop | app | `open -b` | — | **[V]** | app — activated, nothing started (no documented resume link) |
+| Headless: `claude -p` / Agent SDK, `codex exec` | — | — | — | — | — never respawned (`unsupported-type`) |
+| Windows Terminal | app (window if single) | EnumWindows + foreground trick | interactive-session listener | [D] | — (with the Windows listener: `wt.exe -w new nt -d …`) |
+| conhost | window | `SetForegroundWindow` + trick | same | [D] | — |
+| Linux X11 | window (+ pane via IPC) | `xdotool` / terminal IPC | xdotool | [D] | — |
+| Linux Wayland — Sway/Hyprland/KDE | window (+ pane via IPC) | compositor IPC | — | [D] | — |
+| Linux Wayland — GNOME | selected only | terminal IPC | Shell extension for raise | [D] | — |
+| SSH-remote session (no mux) | none | — | — | — | — |
+| No record / no host | none | — | — | — | — |
+
+`L` is `<state>/agstatus-resume`, `U` the session uuid, `D` the resolved working directory. A `—` under Resume is `failed / unsupported-host` (or `unsupported-type` for the headless row), never a half-working attempt. Resume is on by default and switched off per machine with `"resume": false` / `AGSTATUS_RESUME=off`, which empties this whole column (§11).
 
 ## 7. Board UX
 
@@ -239,7 +269,8 @@ The public promise today (`docs/privacy.md:13-15`, `public/privacy.html`, `publi
 2. **Server** — `parseHost()`, column/ALTER/load/merge/SQL, scrub on soft delete, APNs payload test, docs.
 3. **Server commands + presence** — in-memory command map with claim/ack/expire, `?listener=` presence, `machine`/`command`/`command_ack` events, limits, legacy mounting decision, tests mirroring `test/sse.test.ts`.
 4. **Listener core (macOS)** — SSE client, record loader + validator, planner + fixtures for every row, launcher, LaunchAgent + PATH, `install/uninstall/status/doctor/plan`, log. Strategies: agterm, kitty, iTerm2, WezTerm, deep links, `open -b`, JetBrains.
-5. **Respawn** — `resume` type, launcher recipes per app, guards.
+5. **Respawn** — ✅ shipped 2026-09-15: `<state>/agstatus-resume` (0700, absolute paths baked in) and `agstatus listener resume-exec <uuid>`, one respawn row per host in the planner, the cwd resolution (record → transcript), the runtime guards (60 s per session, 5 per 10 min, 15 s per step, non-zero step → `respawn-failed`), `facts.launcher` gated on `resumeEnabled()`, `--no-resume` / `"resume": false` / `AGSTATUS_RESUME=off`, and `agstatus listener plan <id> --resume`. Every row that starts a process is `experimental` until §10.
+   Review pass, 2026-09-16 — what the adversarial read changed: the focus cooldown is keyed by command type, so the Resume tap the board offers is never swallowed (blocker); the launcher holds SIGINT/SIGQUIT and forwards SIGTERM/SIGHUP, so Ctrl-C no longer closes the window it just opened (blocker); a respawn must produce a record before it acks `resumed`; the respawn ledger persists in `<state>/respawns.json`; `resume-exec` honours the switch and refuses a session that is still running; `install --no-resume` and `uninstall` delete the launcher and `AGSTATUS_RESUME=off` travels into the plist, so "off" is what `status`/`doctor` report and what the listener does; an install with a non-default `AGSTATUS_STATE_DIR` withholds the launcher instead of acking a resume that never happened; the tmux respawn names its session; the raise legs after a respawn are optional; `CODEX_ID_RE` is anchored on a hex digit; the transcript read adds `O_NONBLOCK` and the launcher's temp file is an exclusive create.
 6. **Boards** — iOS/Android/web control + presence + ack copy; notification action.
 7. **v1.1** — signed listener app and the AppleScript strategies; Windows and Linux listeners.
 
@@ -247,12 +278,14 @@ The public promise today (`docs/privacy.md:13-15`, `public/privacy.html`, `publi
 
 agterm with two open windows (`window select` raising a non-active window was not exercised); iTerm2 after moving a tab between windows (whether `reveal` matches the UUID alone); WezTerm with two OS windows; Ghostty 1.3.1 with two tabs in one repo; Terminal.app and Ghostty AppleScript from the signed sender (never executed — TCC); kitty with `listen_on` as `fd:` and with a > 104-byte socket path; tmux attached from a second terminal after detach; Herdr: focus a pane from outside while a client is attached (does `agent focus` switch workspace and tab as well?) and against a detached `herdr server` (expect `mux-detached`, never a respawn); Codex sub-agent thread tap (root id lands on the parent view, sub-agent id opens its own); the Windows foreground trick on Win 11; GNOME Wayland with and without Window Calls.
 
+Respawn rows (§5.2 step 4), none of them yet run against a real host: agterm `session new --command` (does it take the string as one command, and is the new session focused?); `kitten @ launch --type=os-window` against a kitty with remote control, and the `open -n -b net.kovidgoyal.kitty --args --working-directory=` fallback against one without (kitty documents `--directory`, with `--working-directory` only as a later alias); `wezterm cli spawn --new-window` with and without a running mux server; `open -n -b … --args --working-directory=D -e L U` on Ghostty, Alacritty and Rio (each takes `-e` differently); `tmux new-window -c D "'L' U"` with the client attached and detached; `herdr agent start --focus -- L U` (does it land in the recorded workspace and tab?); a Codex Desktop resume of an archived thread. Also: a resume whose recorded cwd is gone but whose transcript still names it, and the two guards under a double tap.
+
 ## 11. Open decisions
 
 - ~~Legacy single-tenant: mount commands there, or declare Focus multi-tenant only?~~ Mounted, behind the secret (§3.3).
 - Do we want the wire summary at all, or the leaner variant (§12)?
 - Ghostty: is the AppleScript `terminal.id` equal to `GHOSTTY_SURFACE_ID`? Irrelevant while we join on tty/cwd; worth knowing.
-- Should `resume` be gated behind a second per-machine opt-in (`resume: true`), given it is the one action that starts a process?
+- ~~Should `resume` be gated behind a second per-machine opt-in?~~ **Decided 2026-09-15: no, it ships on, with a switch.** Resume is already explicit per use — the phone only offers it after a focus came back `not-running`, so it takes a second, deliberate tap. The launcher can do exactly one thing: run the recorded agent binary with `--resume <uuid>` in the recorded directory, never a prompt and never a `-c` override. The respawn guards (one per session per minute, five per machine per ten minutes) bound a leaked token to a handful of terminal windows holding the user's own sessions. A second opt-in would instead show a button that fails until the user runs another command, which is worse for everyone and no safer. `"resume": false` in `~/.agstatus.json` (or `listener install --no-resume`) turns it off for the cautious, and off means the launcher is deleted, not merely unused — `resume-exec` refuses as well, so the mechanism is not left installed behind a flag. `AGSTATUS_RESUME=off` is read from the listener's own environment, which is the plist's: the installer copies the variable into it when it is set at install time, precisely so `status` and `doctor` never report an "off" the running listener has never heard of.
 - Herdr's native session restore keys on an agent session id it learns via `herdr pane report-agent-session <pane_id> --source ID --agent LABEL --agent-session-id ID --agent-session-path PATH`. The hook already holds all four values at `SessionStart`; calling it would let Herdr resume the same Claude/Codex session on its own. Not implemented — it would be the first time the hook writes *to* a host rather than only reading it, and Herdr's public docs describe 0.9.0 while this Mac runs 0.7.0.
 
 ## 12. The leaner alternative, for the record

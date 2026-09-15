@@ -89,10 +89,38 @@ const failed = (result: PlanResult, reason: string): void => {
 
 const argvs = (p: Plan): string[][] => p.steps.map((s) => s.argv);
 
+/** The launcher the installer writes, and the cwd the runtime resolves and hands the planner. */
+const LAUNCHER = '/Users/demo/Library/Application Support/AgStatus/agstatus-resume';
+const CWD = '/Users/demo/src/board';
+/** Exactly one path and one uuid, and nothing a shell could read as more (design §5.1). */
+const COMMAND_STRING_RE = /^'[^']+' [0-9a-f-]{36}$/;
+
+const dead = (over: Partial<MachineFacts> = {}): MachineFacts =>
+  facts({ agentAlive: false, launcher: LAUNCHER, ...over });
+
+/** A resume tap. Call plan() directly to leave `resumeCwd` out — the runtime found no directory. */
+const resume = (record: LocalRecord, f: MachineFacts = dead(), cwd: string = CWD): PlanResult =>
+  plan(record, 'resume', f, cwd);
+
+/** Every plan that starts a session says so, and acks `resumed`. */
+function respawned(result: PlanResult): Plan {
+  const p = ok(result);
+  expect(p).toMatchObject({ respawns: true, result: 'resumed' });
+  // Nothing but the launcher is ever started: the uuid is the only argument it gets.
+  const launched = p.steps.flatMap((s) => s.argv).filter((a) => a.includes('agstatus-resume'));
+  expect(launched.length).toBeGreaterThan(0);
+  for (const arg of launched) expect(arg === LAUNCHER || COMMAND_STRING_RE.test(arg)).toBe(true);
+  return p;
+}
+
 describe('plan: the ladder before any host', () => {
-  it('refuses resume — nothing in v1 starts a process', () => {
-    failed(plan(inApp('com.umputun.agterm', { env: AGTERM_ENV }), 'resume', facts()), 'unsupported-type');
-    failed(plan(inApp('com.umputun.agterm'), 'resume', facts({ agentAlive: false })), 'unsupported-type');
+  it('refuses a command type that is neither focus nor resume', () => {
+    failed(plan(inApp('com.umputun.agterm', { env: AGTERM_ENV }), 'restart' as never, facts()), 'unsupported-type');
+  });
+
+  it('is remote over SSH without a multiplexer, for resume too', () => {
+    const record = inApp('com.umputun.agterm', { env: { ...AGTERM_ENV, SSH_CONNECTION: '10.0.0.2 51234 10.0.0.9 22' } });
+    failed(resume(record), 'remote');
   });
 
   it('is remote over SSH without a multiplexer', () => {
@@ -367,6 +395,220 @@ describe('plan: multiplexers', () => {
   });
 });
 
+describe('plan: resume, one row per host (§5.2 step 4)', () => {
+  const HERDR = { kind: 'herdr' as const, target: 'w1:p3', socket: '/tmp/herdr-501/herdr.sock' };
+  const TMUX = { kind: 'tmux' as const, target: 'main:@3.%7', socket: '/private/tmp/tmux-501/default' };
+  const AGTERM = inApp('com.umputun.agterm', { env: AGTERM_ENV });
+
+  it('a live session is the focus plan, whichever button was tapped', () => {
+    const live = facts({ launcher: LAUNCHER });
+    const p = ok(plan(AGTERM, 'resume', live, CWD));
+    expect(argvs(p)).toEqual(argvs(ok(focus(AGTERM, live))));
+    expect(p).toMatchObject({ reach: 'pane', result: 'focused' });
+    expect(p.respawns).toBeFalsy();
+    // and it needs neither a launcher nor a working directory to do it
+    const bare = ok(plan(AGTERM, 'resume', facts(), undefined));
+    expect(argvs(bare)).toEqual(argvs(ok(focus(AGTERM))));
+    expect(bare.respawns).toBeFalsy();
+    const muxed = ok(plan(rec({ mux: TMUX }), 'resume', facts({ outer: { bundle: 'com.mitchellh.ghostty' } })));
+    expect(argvs(muxed)).toEqual(argvs(ok(focus(rec({ mux: TMUX }), facts({ outer: { bundle: 'com.mitchellh.ghostty' } })))));
+  });
+
+  it('with no launcher on this machine, every resume row is an unsupported host', () => {
+    failed(resume(AGTERM, facts({ agentAlive: false })), 'unsupported-host');
+    // a relative path is not a launcher
+    failed(resume(AGTERM, facts({ agentAlive: false, launcher: 'agstatus-resume' })), 'unsupported-host');
+    failed(resume(rec({ mux: TMUX }), facts({ agentAlive: false })), 'unsupported-host');
+    failed(resume(inApp('com.openai.codex', { agent: 'codex' }), facts({ agentAlive: false })), 'unsupported-host');
+  });
+
+  it('with no working directory from the runtime, the respawn fails instead of guessing one', () => {
+    failed(plan(AGTERM, 'resume', dead()), 'respawn-failed');
+    failed(resume(AGTERM, dead(), 'src/board'), 'respawn-failed');
+    failed(plan(rec({ mux: TMUX }), 'resume', dead()), 'respawn-failed');
+    failed(plan(inApp('com.mitchellh.ghostty'), 'resume', dead()), 'respawn-failed');
+    // the planner resolves none of its own: the record's cwd never appears in a plan
+    expect(JSON.stringify(ok(resume(AGTERM)))).not.toContain(NEVER);
+  });
+
+  it('a session id that is not a uuid never reaches the launcher', () => {
+    failed(resume(rec({ session_id: 'msg-test', app: { bundle: 'com.umputun.agterm', via: 'env' }, env: AGTERM_ENV })), 'bad-record');
+    failed(resume(rec({ session_id: 'msg-test', mux: TMUX })), 'bad-record');
+  });
+
+  it('headless runs are never respawned in a terminal', () => {
+    for (const entrypoint of ['sdk-cli', 'codex-exec']) {
+      failed(resume(inApp('com.umputun.agterm', { entrypoint, env: AGTERM_ENV })), 'unsupported-type');
+      failed(resume(rec({ entrypoint, mux: TMUX })), 'unsupported-type');
+    }
+    // a live one is still focused: focus never starts anything, so it is safe
+    expect(ok(plan(inApp('com.umputun.agterm', { entrypoint: 'sdk-cli', env: AGTERM_ENV }), 'resume', facts({ launcher: LAUNCHER }), CWD)).reach)
+      .toBe('pane');
+  });
+
+  it('Claude Desktop: the app comes to the front, and nothing is started', () => {
+    const p = ok(resume(inApp('com.anthropic.claudefordesktop', { entrypoint: 'claude-desktop' })));
+    expect(argvs(p)).toEqual([[OPEN, '-b', 'com.anthropic.claudefordesktop']]);
+    expect(p).toMatchObject({ reach: 'app', result: 'activated', experimental: false });
+    expect(p.respawns).toBeFalsy();
+    // the entrypoint decides it, whatever app the ppid walk landed on
+    const viaEntrypoint = ok(resume(inApp('com.apple.Terminal', { entrypoint: 'claude-desktop' })));
+    expect(argvs(viaEntrypoint)).toEqual([[OPEN, '-b', 'com.anthropic.claudefordesktop']]);
+  });
+
+  it('agterm: one `session new` carrying the launcher, then the app', () => {
+    const p = respawned(resume(AGTERM));
+    expect(argvs(p)).toEqual([
+      [BINS.agtermctl, 'session', 'new', '--cwd', CWD, '--command', `'${LAUNCHER}' ${SESSION}`,
+        '--socket', AGTERM_ENV.AGTERM_SOCKET],
+      [OPEN, '-b', 'com.umputun.agterm'],
+    ]);
+    expect(p.steps[0].argv[6]).toMatch(COMMAND_STRING_RE);
+    expect(p.steps[1].expectFrontmost).toBe('com.umputun.agterm');
+    expect(p).toMatchObject({ reach: 'pane', result: 'resumed', respawns: true, experimental: true });
+  });
+
+  it('agterm: no agtermctl, no socket, or a launcher path that cannot be quoted, and the row is refused', () => {
+    failed(resume(AGTERM, dead({ bins: {} })), 'unsupported-host');
+    const { AGTERM_SOCKET: _dropped, ...noSocket } = AGTERM_ENV;
+    void _dropped;
+    failed(resume(inApp('com.umputun.agterm', { env: noSocket })), 'unsupported-host');
+    failed(resume(AGTERM, dead({ launcher: "/Users/o'brien/AgStatus/agstatus-resume" })), 'unsupported-host');
+  });
+
+  it('kitty: launches an os-window over the socket, argv only', () => {
+    const env = { KITTY_LISTEN_ON: 'unix:/tmp/kitty-501', KITTY_WINDOW_ID: '3' };
+    const p = respawned(resume(inApp('net.kovidgoyal.kitty', { env })));
+    expect(argvs(p)).toEqual([
+      [BINS.kitten, '@', '--to', 'unix:/tmp/kitty-501', 'launch', '--type=os-window', `--cwd=${CWD}`, LAUNCHER, SESSION],
+    ]);
+    expect(p).toMatchObject({ reach: 'pane', result: 'resumed', experimental: true });
+  });
+
+  it('kitty without remote control falls through to the generic terminal row', () => {
+    const generic = [[OPEN, '-n', '-b', 'net.kovidgoyal.kitty', '--args', `--working-directory=${CWD}`, '-e', LAUNCHER, SESSION]];
+    expect(argvs(respawned(resume(inApp('net.kovidgoyal.kitty', { env: { KITTY_WINDOW_ID: '3' } }))))).toEqual(generic);
+    const noKitten = resume(inApp('net.kovidgoyal.kitty', { env: { KITTY_LISTEN_ON: 'unix:/tmp/kitty-501' } }), dead({ bins: {} }));
+    expect(argvs(respawned(noKitten))).toEqual(generic);
+  });
+
+  it('WezTerm: spawns a new window through the CLI, argv after --', () => {
+    const env = { WEZTERM_PANE: '12', WEZTERM_UNIX_SOCKET: '/Users/demo/.local/share/wezterm/gui-sock-501' };
+    const p = respawned(resume(inApp('com.github.wez.wezterm', { env })));
+    expect(argvs(p)).toEqual([[BINS.wezterm, 'cli', 'spawn', '--new-window', '--cwd', CWD, '--', LAUNCHER, SESSION]]);
+    expect(p.steps[0].env).toEqual({ WEZTERM_UNIX_SOCKET: env.WEZTERM_UNIX_SOCKET });
+    expect(p).toMatchObject({ reach: 'pane', result: 'resumed', experimental: true });
+    const noSocket = respawned(resume(inApp('com.github.wez.wezterm', { env: { WEZTERM_PANE: '12' } })));
+    expect(noSocket.steps[0].env).toBeUndefined();
+    failed(resume(inApp('com.github.wez.wezterm', { env }), dead({ bins: {} })), 'unsupported-host');
+  });
+
+  it('Ghostty, Alacritty and Rio: a new window through open, the launcher as its command', () => {
+    for (const bundle of ['com.mitchellh.ghostty', 'org.alacritty', 'com.raphaelamorim.rio']) {
+      const p = respawned(resume(inApp(bundle)));
+      expect(argvs(p)).toEqual([[OPEN, '-n', '-b', bundle, '--args', `--working-directory=${CWD}`, '-e', LAUNCHER, SESSION]]);
+      expect(p.steps[0].expectFrontmost).toBe(bundle);
+      expect(p).toMatchObject({ reach: 'window', result: 'resumed', experimental: true });
+    }
+    // The bundle comes from the table; the record's own app.path is never read (§5.1).
+    const withPath = respawned(resume(inApp('com.mitchellh.ghostty', {
+      app: { bundle: 'com.mitchellh.ghostty', path: `/Applications/${NEVER}.app`, via: 'ppid-walk' },
+    })));
+    expect(argvs(withPath)).toEqual([
+      [OPEN, '-n', '-b', 'com.mitchellh.ghostty', '--args', `--working-directory=${CWD}`, '-e', LAUNCHER, SESSION],
+    ]);
+  });
+
+  it('Terminal.app and iTerm2 wait for the signed sender instead of building a shell string', () => {
+    failed(resume(inApp('com.apple.Terminal', { env: { TERM_PROGRAM: 'Apple_Terminal' } })), 'unsupported-host');
+    const id = 'w0t1p2:0D8F5C1E-2B7A-4C3D-9E1F-6A5B4C3D2E1F';
+    failed(resume(inApp('com.googlecode.iterm2', { env: { ITERM_SESSION_ID: id } })), 'unsupported-host');
+  });
+
+  it('IDEs, Warp and the rest of the open -b table have no respawn at all', () => {
+    for (const bundle of [
+      'com.microsoft.VSCode', 'com.microsoft.VSCodeInsiders', 'com.todesktop.230313mzl4w4u92',
+      'com.exafunction.windsurf', 'com.jetbrains.intellij', 'dev.zed.Zed', 'dev.zed.Zed-Preview',
+      'com.google.android.studio', 'dev.warp.Warp-Stable', 'co.zeit.hyper', 'org.tabby',
+      'com.apple.dt.Xcode', 'com.example.someterm',
+    ]) {
+      failed(resume(inApp(bundle, { project_root: CWD })), 'unsupported-host');
+    }
+    failed(resume(rec()), 'unsupported-host');
+    failed(resume(rec({ app: { bundle: 'com example', via: 'ppid-walk' } })), 'bad-record');
+  });
+
+  it('Codex Desktop: the deep link reopens the thread, archived or not, and starts nothing', () => {
+    const codex = { thread_id: '0198a7b2-1111-7000-8000-aaaaaaaaaaaa', root_thread_id: '0198a7b2-2222-7000-8000-bbbbbbbbbbbb' };
+    const p = ok(resume(inApp('com.openai.codex', { agent: 'codex', entrypoint: 'codex-desktop', codex })));
+    expect(argvs(p)).toEqual([[OPEN, '-b', 'com.openai.codex', `codex://threads/${codex.thread_id}`]]);
+    expect(p).toMatchObject({ reach: 'thread', result: 'resumed', experimental: false });
+    expect(p.respawns).toBeFalsy();
+    failed(resume(inApp('com.openai.codex', { agent: 'codex', codex: { thread_id: 'not a thread!' } })), 'bad-record');
+  });
+
+  it('tmux: a new window in the session that died, then the outer terminal as a focus raises it', () => {
+    const p = respawned(resume(rec({ mux: TMUX }), dead({ outer: { bundle: 'com.mitchellh.ghostty' } })));
+    // `-t main:` — without it the window lands in whatever session the server
+    // calls current, and the terminal is then raised showing the wrong one.
+    expect(argvs(p)).toEqual([
+      [BINS.tmux, '-S', TMUX.socket, 'new-window', '-t', 'main:', '-c', CWD, `'${LAUNCHER}' ${SESSION}`],
+      [OPEN, '-b', 'com.mitchellh.ghostty'],
+    ]);
+    expect(p.steps[0].argv[8]).toMatch(COMMAND_STRING_RE);
+    expect(p).toMatchObject({ reach: 'pane', result: 'resumed', experimental: true });
+    // Everything after the step that started the agent is best-effort: a
+    // raise that fails must not report that nothing came up.
+    expect(p.steps[0].optional).toBeFalsy();
+    expect(p.steps.slice(1).every((step) => step.optional === true)).toBe(true);
+    // the outer app's own focus row runs after the new window, exactly as for a focus
+    const viaAgterm = respawned(resume(rec({ mux: TMUX }), dead({ outer: { bundle: 'com.umputun.agterm', env: AGTERM_ENV } })));
+    expect(argvs(viaAgterm).map((a) => a[0])).toEqual([BINS.tmux, OPEN, BINS.agtermctl, BINS.agtermctl]);
+    expect(viaAgterm.steps.slice(1).every((step) => step.optional === true)).toBe(true);
+    // no outer app: the session is back in its pane and the window stays where it was
+    const alone = respawned(resume(rec({ mux: TMUX })));
+    expect(argvs(alone)).toEqual([
+      [BINS.tmux, '-S', TMUX.socket, 'new-window', '-t', 'main:', '-c', CWD, `'${LAUNCHER}' ${SESSION}`],
+    ]);
+    expect(alone.reach).toBe('pane');
+  });
+
+  it('tmux: a target that does not name its session is a bad record, like the focus row', () => {
+    failed(resume(rec({ mux: { kind: 'tmux', target: 'main@3.%7', socket: TMUX.socket } })), 'bad-record');
+    failed(resume(rec({ mux: { kind: 'tmux', socket: TMUX.socket } })), 'bad-record');
+  });
+
+  it('tmux: no socket is a bad record; no tmux, or a launcher that cannot be quoted, an unsupported host', () => {
+    failed(resume(rec({ mux: { kind: 'tmux', target: TMUX.target } })), 'bad-record');
+    failed(resume(rec({ mux: TMUX }), dead({ bins: {} })), 'unsupported-host');
+    failed(resume(rec({ mux: TMUX }), dead({ launcher: "/Users/o'brien/agstatus-resume" })), 'unsupported-host');
+  });
+
+  it('herdr: `agent start` with the launcher as argv after --, labelled by the record agent', () => {
+    const p = respawned(resume(rec({ mux: HERDR })));
+    expect(argvs(p)).toEqual([[BINS.herdr, 'agent', 'start', 'claude', '--cwd', CWD, '--focus', '--', LAUNCHER, SESSION]]);
+    expect(p.steps[0].env).toEqual({ HERDR_SOCKET_PATH: HERDR.socket });
+    expect(p).toMatchObject({ reach: 'pane', result: 'resumed', experimental: true });
+    expect(argvs(respawned(resume(rec({ agent: 'codex', mux: HERDR }))))[0][3]).toBe('codex');
+    failed(resume(rec({ mux: { kind: 'herdr', target: 'w1:p3' } })), 'bad-record');
+    failed(resume(rec({ mux: HERDR }), dead({ bins: {} })), 'unsupported-host');
+  });
+
+  it('zellij and screen have no v1 respawn', () => {
+    failed(resume(rec({ mux: { kind: 'zellij', target: '4', session: 'dev' } })), 'unsupported-host');
+    failed(resume(rec({ mux: { kind: 'screen', target: '2', session: '12345.ttys002.studio' } })), 'unsupported-host');
+  });
+
+  it('nothing from the record env reaches a respawn plan unless a strategy whitelisted it', () => {
+    const env = { ...LEAKY_ENV, KITTY_LISTEN_ON: 'unix:/tmp/kitty-501', TERM_PROGRAM: `kitty-${NEVER}` };
+    const json = JSON.stringify(respawned(resume(inApp('net.kovidgoyal.kitty', { env }))));
+    for (const [key, value] of Object.entries(env)) {
+      if (key === 'KITTY_LISTEN_ON') continue;
+      expect(json).not.toContain(value);
+    }
+  });
+});
+
 describe('describe', () => {
   it('prints one line per step, redacts long paths, and ends with the reach', () => {
     const socket = '/Users/demo/Library/Application Support/agterm/control.sock';
@@ -393,6 +635,28 @@ describe('describe', () => {
     expect(text.split('\n').at(-1)).toBe('reach pane, result selected, experimental');
     const tmux = ok(focus(rec({ mux: { kind: 'tmux', target: 'main:@3.%7', socket: '/private/tmp/tmux-501/default' } })));
     expect(describePlan(tmux)).toContain('switch-client -t main (optional)');
+  });
+
+  it('renders a respawn: the command string stays one path and one uuid, and the summary says so', () => {
+    const long = '/Users/demo/Library/Mobile Documents/com~apple~CloudDocs/board';
+    const p = respawned(resume(inApp('com.umputun.agterm', { env: AGTERM_ENV }), dead(), long));
+    const lines = describePlan(p).split('\n');
+    expect(lines[0]).toBe(`1. agtermctl: new session: ${BINS.agtermctl} session new --cwd <path> `
+      + `--command '<path>' ${SESSION} --socket ${AGTERM_ENV.AGTERM_SOCKET}`);
+    expect(lines[1]).toBe('2. open: activate app: /usr/bin/open -b com.umputun.agterm '
+      + '(optional; expect frontmost com.umputun.agterm)');
+    expect(lines[2]).toBe('reach pane, result resumed, starts a new session, experimental');
+    expect(lines.join('\n')).not.toContain(LAUNCHER);
+    expect(lines.join('\n')).not.toContain(long);
+  });
+
+  it('redacts the directory behind a --working-directory= flag, and the launcher in front of the uuid', () => {
+    const long = '/Users/demo/Library/Mobile Documents/com~apple~CloudDocs/board';
+    const text = describePlan(respawned(resume(inApp('com.mitchellh.ghostty'), dead(), long)));
+    expect(text.split('\n')[0]).toBe('1. open: new terminal window: /usr/bin/open -n -b com.mitchellh.ghostty '
+      + `--args --working-directory=<path> -e <path> ${SESSION} (expect frontmost com.mitchellh.ghostty)`);
+    expect(text).not.toContain(long);
+    expect(text).not.toContain(LAUNCHER);
   });
 
   it('redacts only long absolute paths', () => {

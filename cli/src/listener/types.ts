@@ -144,6 +144,8 @@ export interface Step {
 
 export interface Plan {
   steps: Step[];
+  /** True when the plan starts an agent rather than only raising a window. */
+  respawns?: boolean;
   /** What the plan achieves when every step succeeds. */
   reach: Reach;
   /** Which result to ack when every step succeeds (focused for pane/tab/window, activated for app, resumed, …). */
@@ -168,4 +170,13 @@ export interface MachineFacts {
   agentAlive: boolean;
   /** For tmux/herdr/screen/zellij: the outer terminal that the attached client sits in, if resolvable. */
   outer?: { bundle?: string; tty?: string; env?: Record<string, string> };
+  /**
+   * Absolute path of `agstatus-resume`, the launcher the installer writes into
+   * the state dir. It is the ONLY thing a resume plan ever runs: hosts that
+   * take an argv array get it as argv[0], and hosts that only accept a command
+   * *string* get `'<path>' <session-uuid>` — a fixed path plus a token that has
+   * passed UUID_RE, so there is nothing in the string to escape. Absent when
+   * the launcher is missing, which makes every resume plan unsupported-host.
+   */
+  launcher?: string;
 }

@@ -203,6 +203,8 @@ describe('init/uninstall with a detected Codex install', () => {
             CLAUDE_STATUS_URL: url,
             AGSTATUS_USAGE: 'off',
             AGSTATUS_SOURCE: 'codex',
+            // Keep the Focus record out of the developer's own state directory.
+            AGSTATUS_STATE_DIR: codexDir,
             ...extraEnv,
           },
           timeout: 8000,

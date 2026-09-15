@@ -26,6 +26,7 @@ import {
   uninstall as listenerUninstall,
   type ListenerCommandOptions,
 } from './listener/install';
+import { runResumeExec } from './listener/resume';
 import type { ListenerConfig } from './listener/types';
 import {
   codexDetected,
@@ -281,7 +282,11 @@ function safeReadCodexHooks(): Record<string, unknown> {
  * take `agstatus init` down with it.
  */
 interface ListenerRuntime {
-  runPlanCommand(sessionId: string, log: (line: string) => void): Promise<number | void>;
+  runPlanCommand(
+    sessionId: string,
+    log: (line: string) => void,
+    deps?: { resume?: boolean }
+  ): Promise<number | void>;
   /** Resolves only once `signal` aborts; throws before subscribing when another listener holds the lock. */
   runListener(cfg: ListenerConfig, deps?: { signal?: AbortSignal }): Promise<void>;
 }
@@ -295,7 +300,12 @@ async function runListenerCommand(
   const str = (k: string): string | undefined => (typeof flags.get(k) === 'string' ? (flags.get(k) as string) : undefined);
   switch (sub) {
     case 'install':
-      return listenerInstall({ name: str('name'), url: str('url') });
+      return listenerInstall({
+        name: str('name'),
+        url: str('url'),
+        // Absent unless asked for: no flag must never write the key.
+        ...(flags.get('no-resume') === true ? { resume: false } : {}),
+      });
     case 'uninstall':
       return listenerUninstall({ purge: flags.get('purge') === true });
     case 'status':
@@ -304,13 +314,24 @@ async function runListenerCommand(
       return listenerDoctor();
     case 'plan': {
       if (!arg) {
-        console.error('✖ Usage: agstatus listener plan <session_id>\n');
+        console.error('✖ Usage: agstatus listener plan <session_id> [--resume]\n');
         console.log(USAGE);
         return 1;
       }
       const runtime = (await import(LISTENER_RUNTIME)) as ListenerRuntime;
-      const code = await runtime.runPlanCommand(arg, console.log);
+      // `--resume` is the dry run of the Resume tap — the only way to see
+      // what a respawn would launch on this machine before it launches it.
+      const code = await runtime.runPlanCommand(arg, console.log, { resume: flags.get('resume') === true });
       return typeof code === 'number' ? code : 0;
+    }
+    case 'resume-exec': {
+      // What <stateDir>/agstatus-resume execs, and the only path that starts
+      // an agent. Not in the usage summary: nobody types this by hand.
+      if (!arg) {
+        console.error('✖ Usage: agstatus listener resume-exec <session-id>');
+        return 1;
+      }
+      return runResumeExec(arg);
     }
     case 'run': {
       const cfg = resolveListenerConfig({ name: str('name'), url: str('url') });
@@ -355,16 +376,20 @@ init options:
   --no-qr           Skip the QR code
 
 listener commands (macOS; see docs/hooks.md "Focus"):
-  install [--name <label>] [--url <board>]   Create machine.json, set "focus": true, start the LaunchAgent
+  install [--name <label>] [--url <board>] [--no-resume]
+                                             Create machine.json, set "focus": true, start the LaunchAgent;
+                                             --no-resume writes "resume": false (Resume taps stay refused)
   uninstall [--purge]                        Stop it, set "focus": false; --purge also drops records and log
   status                                     Agent state, machine id, board, last log lines
   doctor                                     Which tools and strategies are available, config sanity
-  plan <session_id>                          Print what a focus command would run, without running it
+  plan <session_id> [--resume]               Print what a focus command would run, without running it;
+                                             --resume dry-runs the Resume tap (a respawn when it is gone)
   run                                        Run the listener in the foreground (what the LaunchAgent runs)
+  resume-exec <session-id>                   Resume that session here — what the resume launcher execs
 `;
 
 const VALUE_FLAGS = new Set(['url', 'code', 'secret', 'name']);
-const BOOL_FLAGS = new Set(['minimal', 'no-qr', 'help', 'codex', 'no-codex', 'purge']);
+const BOOL_FLAGS = new Set(['minimal', 'no-qr', 'help', 'codex', 'no-codex', 'purge', 'no-resume', 'resume']);
 
 export async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;

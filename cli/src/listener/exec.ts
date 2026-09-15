@@ -1,7 +1,8 @@
 import { execFile } from 'child_process';
 import path from 'path';
 import { OPEN } from './plan';
-import type { Outcome, Plan, Reason, Step } from './types';
+import { INT_RE } from './records';
+import type { LocalRecord, Outcome, Plan, Reason, Step } from './types';
 
 /**
  * The runner: takes a plan the planner produced and launches its steps, one
@@ -25,6 +26,9 @@ export const LSAPPINFO = SYSTEM_BINS.lsappinfo;
 
 /** What every launch sees, whatever the listener itself was started with. */
 export const STEP_PATH = '/usr/bin:/bin';
+/** Every process-table read runs with this environment and this bound. */
+export const PS_ENV: NodeJS.ProcessEnv = { PATH: STEP_PATH };
+export const PS_TIMEOUT_MS = 3000;
 const STEP_TIMEOUT_MS = 5000;
 const MAX_BUFFER = 64 * 1024;
 const FRONTMOST_WAIT_MS = 500;
@@ -105,6 +109,45 @@ export async function defaultFrontmost(exec: ExecFile = defaultExecFile): Promis
   } catch {
     return null;
   }
+}
+
+/** A pid we could signal — one of our own processes; the Windows stand-in for `ps`. */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `agent_pid` is live and its comm is the recorded one (basenames compared:
+ * macOS prints the executable's full path, the hook may have kept either).
+ * A record without a comm — the hook could not read the process table —
+ * is not trusted on the pid alone: the live comm must then be the agent's
+ * own name or `node`, the two shapes a Claude/Codex process takes. Windows
+ * has no ps; the pid is probed instead.
+ *
+ * Two callers: the runtime, deciding whether a tap is a focus or a respawn,
+ * and `listener resume-exec`, refusing to start a second agent on a session
+ * that turned out to be running after all.
+ */
+export async function isAgentAlive(
+  record: LocalRecord,
+  exec: ExecFile,
+  platform: NodeJS.Platform = process.platform
+): Promise<boolean> {
+  if (platform === 'win32') return pidAlive(record.agent_pid);
+  const pid = String(record.agent_pid);
+  if (!INT_RE.test(pid)) return false;
+  const { code, stdout } = await exec(PS, ['-o', 'comm=', '-p', pid], { env: PS_ENV, timeout: PS_TIMEOUT_MS });
+  if (code !== 0) return false;
+  const comm = stdout.split('\n')[0]?.trim() ?? '';
+  if (!comm) return false;
+  const name = path.basename(comm);
+  if (record.agent_comm) return name === path.basename(record.agent_comm);
+  return name === record.agent || name === 'node';
 }
 
 /** A bare name only for a binary in SYSTEM_BINS; otherwise argv[0] must already be absolute. */

@@ -520,6 +520,10 @@ a random machine id — the raw id never leaves the file; the board sees
 only a hash of it and the board URL, so it links nothing across boards;</li>
 <li>sets <code>&quot;focus&quot;: true</code> in <code>~/.agstatus.json</code>, keeping every other key (and
 writes <code>url</code> there only if the file had none);</li>
+<li>writes the resume launcher <code>agstatus-resume</code> (mode <code>0700</code>) into the state
+directory — the only thing a Resume tap can ever start, see
+<a href="#hooks-resume">Resume</a> below; <code>--no-resume</code> writes <code>&quot;resume&quot;: false</code> instead and
+writes no launcher at all;</li>
 <li>writes and loads <code>~/Library/LaunchAgents/com.agstatus.listener.plist</code>,
 which runs <code>agstatus listener run</code> with the <code>PATH</code> of the shell you
 installed from, so the terminal tools it may call resolve the same way
@@ -540,10 +544,13 @@ clear the <code>npx</code> cache.</p>
 <pre><code class="language-bash">npx agstatus listener status               # loaded? pid, machine label + public id, board, last log lines
 npx agstatus listener doctor               # which tools resolved and which strategies that enables, config sanity
 npx agstatus listener plan &lt;session_id&gt;    # dry run: print what a tap on that session would execute, run nothing
+npx agstatus listener plan &lt;id&gt; --resume   # the same for the Resume tap: what a respawn would launch
 npx agstatus listener uninstall [--purge]  # stop and remove the agent, set &quot;focus&quot;: false (cards clear)
 </code></pre>
 <p><code>uninstall</code> keeps the session records and the log (and <code>machine.json</code>, so a
-reinstall keeps the same id); <code>--purge</code> removes the records and the log.
+reinstall keeps the same id); <code>--purge</code> removes the records and the log. The
+resume launcher goes either way: nothing that can start a session is left on
+a machine whose listener has been taken down.
 <code>npx agstatus uninstall</code> — the hook uninstall — runs <code>listener uninstall</code>
 as well whenever the LaunchAgent is present or <code>&quot;focus&quot;: true</code> is still
 set, so switching AgStatus off on a machine switches Focus off with it.
@@ -570,10 +577,102 @@ in the table, the pane is selected and the window stays where it is).
 Tab-exact focus in Terminal.app and
 Ghostty needs Apple Events, which a plain Node process cannot send without
 prompting for every app; that arrives with the signed listener app in a
-later release. Resuming a session that is no longer running is also later:
-in v1 a tap on a stopped session answers &quot;not running&quot;. Linux and Windows
+later release. A tap on a session that is no longer running answers &quot;not
+running&quot;, and the board then offers <a href="#hooks-resume">Resume</a>. Linux and Windows
 have no LaunchAgent equivalent yet; <code>agstatus listener run</code> works there in
 the foreground, without the terminal-specific strategies.</p>
+<h4 id="hooks-resume"><a class="anchor" href="#hooks-resume">Resume</a></h4>
+<p>When a tap comes back &quot;not running&quot; — the terminal was closed, or the
+machine rebooted — the board offers <strong>Resume</strong>: a second, deliberate tap
+that starts the session again on that machine. It is on by default once the
+listener is installed, and it can do exactly one thing.</p>
+<p><code>agstatus listener install</code> writes a launcher, <code>agstatus-resume</code>, into the
+state directory (mode <code>0700</code>, owned by you). Its entire content is three
+fixed lines, with the absolute paths of Node and of the CLI baked in at
+install time and nothing else interpolated, ever:</p>
+<pre><code class="language-sh">#!/bin/sh
+# AgStatus Focus resume launcher — written by `agstatus listener install`.
+exec &quot;&lt;node&gt;&quot; &quot;&lt;cli.js&gt;&quot; listener resume-exec &quot;$1&quot;
+</code></pre>
+<p>A Resume plan opens a terminal and hands it that launcher and the session
+id — nothing else. The launcher checks that the id is a uuid, reads the
+local record itself, and runs the recorded agent binary with exactly
+<code>--resume &lt;id&gt;</code> (Claude Code) or <code>resume &lt;id&gt;</code> (Codex) in the directory the
+session ran in: never a prompt, never a <code>-c</code> override, never a shell. Hosts
+that take an argument list get <code>&lt;launcher&gt; &lt;id&gt;</code>; the two that only take a
+command <em>string</em> (agterm&#39;s <code>--command</code>, <code>tmux new-window</code>) get the fixed
+text <code>&#39;&lt;launcher&gt;&#39; &lt;id&gt;</code> — an absolute path the installer wrote plus a
+token that has already matched the uuid pattern, so there is nothing in it
+to quote or escape. Nothing from the record is ever part of a command
+string. If the launcher is missing, or is not a <code>0700</code> file you own, every
+Resume tap answers <code>unsupported-host</code>.</p>
+<p>Two more things follow from those three fixed lines. The launcher is started
+by a terminal, a multiplexer server or LaunchServices, so it is handed no
+environment of yours: it reads the <em>default</em> state directory (the table
+above), whatever <code>AGSTATUS_STATE_DIR</code> said at install time. An install that
+moved the state directory therefore keeps Focus and refuses Resume — no
+launcher is written, <code>status</code> and <code>doctor</code> say why, and every tap answers
+<code>unsupported-host</code> rather than opening a window that closes again. And
+because the launcher is a wrapper rather than a real <code>exec</code>, it stays out of
+the way of the terminal&#39;s own signals: Ctrl-C in the resumed window
+interrupts the agent&#39;s turn as usual and does not close the window with it.</p>
+<p><code>resume-exec</code> re-checks two things before it starts anything: that resume is
+still switched on, and that the session is not already running (a command the
+board re-sent must not put two <code>--resume &lt;id&gt;</code> on one transcript). Both
+answer with one line and exit.</p>
+<p>What can resume in v1: <strong>agterm</strong>; <strong>kitty</strong> (with <code>allow_remote_control</code>
+and a <code>listen_on unix:</code> socket, otherwise a new window); <strong>WezTerm</strong>;
+<strong>Ghostty</strong>, <strong>Alacritty</strong> and <strong>Rio</strong> (a new window through <code>open -n</code>);
+<strong>tmux</strong> and <strong>Herdr</strong> (a new pane in the same session, then the outer
+terminal is raised); and <strong>Codex Desktop</strong>, whose <code>codex://threads/</code> link
+reopens the thread without starting anything. Every row that starts a
+process ships as experimental until it has been checked on a real setup —
+the ack carries that and the board shows it.</p>
+<p>What cannot, and why:</p>
+<ul>
+<li><strong>Terminal.app</strong> and <strong>iTerm2</strong> can only be handed a command through
+Apple Events or a file on disk. Both wait for the signed listener app —
+the same release that brings tab-exact focus there.</li>
+<li><strong>VS Code, Cursor, Windsurf, JetBrains IDEs, Zed</strong> have no agent session
+to resume from outside, and <strong>Warp, Hyper, Tabby, Xcode</strong> take no command
+from <code>open</code>: a Resume tap on them answers <code>unsupported-host</code>.</li>
+<li><strong>Claude Desktop</strong> keeps its own conversation list and documents no
+resume link, so the tap just brings the app to the front.</li>
+<li>Headless runs — <code>claude -p</code> and the Agent SDK, <code>codex exec</code> — are never
+respawned; there is no terminal they belonged to.</li>
+<li>A session whose working directory is gone answers <code>respawn-failed</code>. The
+directory comes from the record, or from the session&#39;s own transcript
+(<code>~/.claude/projects/…/&lt;id&gt;.jsonl</code>, or Codex&#39;s <code>session_meta</code> line), and
+it has to be a directory you own.</li>
+</ul>
+<p>A respawn has to prove itself before the board hears <code>resumed</code>. <code>open -n -b</code>
+exits as soon as macOS accepts the request, and <code>agtermctl session new</code>
+exits as soon as the pane exists, so the listener waits (up to twelve
+seconds) for the hook to write a record for that session — the sign that an
+agent actually came up. Nothing arrives, the tap answers <code>respawn-failed</code>.
+The step that raises the window afterwards is best-effort: a session sitting
+in a new pane is not &quot;nothing started&quot; because <code>open -b</code> failed.</p>
+<p>Guards, enforced on the machine and logged: one resume per session per
+minute and at most five per machine per ten minutes — counted in
+<code>respawns.json</code> in the state directory, so a listener that restarts (the
+LaunchAgent comes back ten seconds after any exit) does not start the count
+again — on top of the focus limits (one tap per session and command type per
+two seconds, and a breaker that ignores the board for five minutes after
+twenty taps in a minute). A refused tap starts nothing and answers
+<code>respawn-failed</code>.</p>
+<p>To keep Focus but switch Resume off, so those taps come back refused:</p>
+<pre><code class="language-bash">npx agstatus listener install --no-resume   # writes &quot;resume&quot;: false in ~/.agstatus.json
+</code></pre>
+<p>Setting <code>&quot;resume&quot;: false</code> in <code>~/.agstatus.json</code> by hand does the same at any
+time — re-run <code>install</code> afterwards and the launcher is deleted, so &quot;off&quot;
+means the file that starts sessions is gone, not merely unused.
+<code>AGSTATUS_RESUME=off</code> overrides the file, and because the LaunchAgent has
+only the environment the installer gave it, that variable has to be set when
+you run <code>install</code>: it is then copied into the agent&#39;s plist. Setting it in a
+shell rc afterwards changes nothing for the running listener, and
+<code>status</code>/<code>doctor</code> say so instead of reporting an &quot;off&quot; that is not. Both
+commands print which switch is in force, where the launcher is, and
+<code>npx agstatus listener uninstall</code> removes it.</p>
 <h3 id="hooks-openai-codex-specifics"><a class="anchor" href="#hooks-openai-codex-specifics">OpenAI Codex specifics</a></h3>
 <p><code>agstatus init</code> configures Codex automatically when <code>~/.codex</code> exists
 (<code>CODEX_HOME</code> is respected; <code>--no-codex</code> opts out, <code>--codex</code> forces it):</p>

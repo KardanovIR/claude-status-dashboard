@@ -24,12 +24,14 @@ interface Posted {
 let server: ChildProcess;
 let base: string;
 let capturePath: string;
+let stateDir: string;
 
 beforeAll(async () => {
-  capturePath = path.join(
-    fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-msg-')),
-    'posted.jsonl',
-  );
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-msg-'));
+  capturePath = path.join(dir, 'posted.jsonl');
+  // The hook writes a Focus record whenever the machine has opted in; without
+  // this the suite would leave fixtures in the developer's own state directory.
+  stateDir = dir;
   fs.writeFileSync(capturePath, '');
 
   const script = `
@@ -75,7 +77,7 @@ function fireEvent(
       ...payload,
     }),
     // AGSTATUS_USAGE=off: never read real credentials from a test.
-    env: { ...process.env, CLAUDE_STATUS_URL: base, AGSTATUS_USAGE: 'off', ...extraEnv },
+    env: { ...process.env, CLAUDE_STATUS_URL: base, AGSTATUS_USAGE: 'off', AGSTATUS_STATE_DIR: stateDir, ...extraEnv },
     timeout: 8000,
   });
   // The hook awaits its POST before exiting, but the server still has to write.

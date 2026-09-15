@@ -97,7 +97,7 @@ function fireCodex(
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-tmp-'));
   execFileSync(process.execPath, [HOOK], {
     input: JSON.stringify({ session_id: sessionId, cwd: '/tmp/demo-project', ...payload }),
-    env: { ...process.env, CLAUDE_STATUS_URL: base, AGSTATUS_SOURCE: 'codex', CODEX_HOME: home, TMPDIR: tmp, ...extraEnv },
+    env: { ...process.env, CLAUDE_STATUS_URL: base, AGSTATUS_SOURCE: 'codex', CODEX_HOME: home, TMPDIR: tmp, AGSTATUS_STATE_DIR: tmp, ...extraEnv },
     timeout: 8000,
   });
   const deadline = Date.now() + 3000;
@@ -231,7 +231,7 @@ describe('Codex plan usage', () => {
       fs.writeFileSync(capturePath, '');
       execFileSync(process.execPath, [HOOK], {
         input: JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-thr', cwd: '/tmp/p' }),
-        env: { ...process.env, CLAUDE_STATUS_URL: base, AGSTATUS_SOURCE: 'codex', CODEX_HOME: home, TMPDIR: tmp },
+        env: { ...process.env, CLAUDE_STATUS_URL: base, AGSTATUS_SOURCE: 'codex', CODEX_HOME: home, TMPDIR: tmp, AGSTATUS_STATE_DIR: tmp },
         timeout: 8000,
       });
       const posts = fs.readFileSync(capturePath, 'utf8').trim().split('\n').filter(Boolean)
@@ -356,7 +356,7 @@ describe('Codex plan usage', () => {
         input: JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-share', cwd: '/tmp/p' }),
         // AGSTATUS_USAGE stays on, but Claude has no credentials under this
         // HOME, so only the throttle file it writes matters here.
-        env: { ...process.env, CLAUDE_STATUS_URL: base, AGSTATUS_SOURCE: source, CODEX_HOME: home, TMPDIR: tmp,
+        env: { ...process.env, CLAUDE_STATUS_URL: base, AGSTATUS_SOURCE: source, CODEX_HOME: home, TMPDIR: tmp, AGSTATUS_STATE_DIR: tmp,
                HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-nh-')) },
         timeout: 8000,
       });

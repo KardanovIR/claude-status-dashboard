@@ -67,7 +67,13 @@ export const TMUX_TARGET_RE = /^[A-Za-z0-9_.-]{1,64}:@?\d{1,6}\.%?\d{1,6}$/;
 export const HERDR_WORKSPACE_RE = /^w\d{1,6}$/;
 export const HERDR_TAB_RE = /^w\d{1,6}:t\d{1,6}$/;
 export const HERDR_PANE_RE = /^w\d{1,6}:p\d{1,6}$/;
-export const CODEX_ID_RE = /^[0-9a-f-]{1,64}$/i;
+/**
+ * A Codex thread id (a uuid in practice). Anchored on a hex digit on
+ * purpose: `codex resume <id>` takes this as an argument and a leading `-`
+ * would be read as a flag, and `codex://threads/<id>` is a URL — neither may
+ * start with a dash.
+ */
+export const CODEX_ID_RE = /^[0-9a-f][0-9a-f-]{0,63}$/i;
 /** tmux/zellij/screen/herdr session names (screen's STY is `pid.tty.host`). */
 export const MUX_SESSION_RE = /^[A-Za-z0-9_.-]{1,128}$/;
 export const ZELLIJ_PANE_RE = /^[A-Za-z0-9_-]{1,32}$/;

@@ -103,6 +103,8 @@ function run(source: 'claude' | 'codex', extraEnv: Record<string, string> = {}, 
   const env: Record<string, string> = {
     ...process.env as Record<string, string>,
     CLAUDE_STATUS_URL: base, TMPDIR: tmp,
+    // Keep the Focus record out of the developer's own state directory.
+    AGSTATUS_STATE_DIR: tmp,
     ...(source === 'codex' ? { AGSTATUS_SOURCE: 'codex', CODEX_HOME: home } : { HOME: home }),
     ...extraEnv,
   };

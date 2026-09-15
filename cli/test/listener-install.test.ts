@@ -20,6 +20,7 @@ import {
   doctor,
   install,
   listenerInstalled,
+  plistEnv,
   plistPath,
   plistProgramArguments,
   plistUrlFlag,
@@ -46,7 +47,7 @@ const EXPECTED_PUBLIC_ID = 'fa1ac1e7c51a98ad6856f1299ad52080';
 
 const ENV_KEYS = [
   'HOME', 'AGSTATUS_STATE_DIR', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME',
-  'CLAUDE_STATUS_URL', 'CLAUDE_STATUS_SECRET', 'AGSTATUS_FOCUS',
+  'CLAUDE_STATUS_URL', 'CLAUDE_STATUS_SECRET', 'AGSTATUS_FOCUS', 'AGSTATUS_RESUME',
 ];
 
 interface Workspace {
@@ -91,10 +92,13 @@ let ws: Workspace;
 beforeEach(() => {
   saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
   for (const k of ENV_KEYS) delete process.env[k];
-  ws = {
-    home: fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-lhome-')),
-    state: fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-lstate-')),
-  };
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-lhome-'));
+  // The macOS default under this HOME (every call below is platform:
+  // 'darwin'): the resume launcher is handed no environment, so it reads
+  // exactly this path — an install that moved the state dir keeps focus and
+  // loses resume, which the tests further down assert.
+  ws = { home, state: path.join(home, 'Library', 'Application Support', 'AgStatus') };
+  fs.mkdirSync(ws.state, { recursive: true, mode: 0o700 });
   process.env.HOME = ws.home;
   process.env.AGSTATUS_STATE_DIR = ws.state;
 });
@@ -105,7 +109,6 @@ afterEach(() => {
     else process.env[k] = saved[k];
   }
   fs.rmSync(ws.home, { recursive: true, force: true });
-  fs.rmSync(ws.state, { recursive: true, force: true });
 });
 
 const quiet = (): { log: (l: string) => void; out: () => string } => {
@@ -364,6 +367,147 @@ describe('a hook that predates Focus', () => {
   });
 });
 
+describe('the resume launcher', () => {
+  const launcher = (): string => path.join(ws.state, 'agstatus-resume');
+
+  it('is written 0700 with both absolute paths baked in, and doctor vouches for it', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    const { exec } = recorder();
+    const { log, out } = quiet();
+    expect(await install(darwin({ exec, log }))).toBe(0);
+
+    expect(fs.statSync(launcher()).mode & 0o777).toBe(0o700);
+    expect(fs.readFileSync(launcher(), 'utf8')).toBe(
+      '#!/bin/sh\n' +
+        '# AgStatus Focus resume launcher — written by `agstatus listener install`.\n' +
+        'exec "/usr/local/bin/node" "/opt/agstatus/dist/cli.js" listener resume-exec "$1"\n'
+    );
+    expect(out()).toContain(launcher());
+
+    const checked = quiet();
+    await doctor(darwin({ exec: recorder().exec, log: checked.log }));
+    expect(checked.out()).toContain(`✔ ${launcher()}`);
+
+    const shown = quiet();
+    await status(darwin({ exec: recorder().exec, log: shown.log }));
+    expect(shown.out()).toContain(`Resume:    on — ${launcher()}`);
+  });
+
+  it('is reported as a problem by doctor once its mode is loosened', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    expect(await install(darwin({ exec: recorder().exec, log: quiet().log }))).toBe(0);
+    fs.chmodSync(launcher(), 0o755);
+
+    const checked = quiet();
+    expect(await doctor(darwin({ exec: recorder().exec, log: checked.log }))).toBe(1);
+    expect(checked.out()).toContain('is not a 0700 regular file owned by you');
+
+    fs.rmSync(launcher());
+    const missing = quiet();
+    expect(await doctor(darwin({ exec: recorder().exec, log: missing.log }))).toBe(1);
+    expect(missing.out()).toContain(`✖ ${launcher()} missing`);
+  });
+
+  it('--no-resume writes "resume": false, and install, doctor and status all say resume is off', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    const { log, out } = quiet();
+    expect(await install(darwin({ exec: recorder().exec, log, resume: false }))).toBe(0);
+    expect(readJson(path.join(ws.home, '.agstatus.json'))).toEqual({ focus: true, url: BOARD, resume: false });
+    expect(out()).toContain('Resume:    off');
+
+    const checked = quiet();
+    await doctor(darwin({ exec: recorder().exec, log: checked.log }));
+    expect(checked.out()).toContain('resume is off');
+    expect(checked.out()).not.toContain(`✖ ${launcher()}`); // a choice, not a fault
+
+    const shown = quiet();
+    await status(darwin({ exec: recorder().exec, log: shown.log }));
+    expect(shown.out()).toContain('Resume:    off');
+
+    // Off means the file is gone: the one mechanism that starts a process is
+    // not left installed and runnable behind a switch (design §11).
+    expect(fs.existsSync(launcher())).toBe(false);
+
+    // …and an install that clears the switch writes it back.
+    fs.writeFileSync(path.join(ws.home, '.agstatus.json'), JSON.stringify({ focus: true, url: BOARD }));
+    expect(await install(darwin({ exec: recorder().exec, log: quiet().log }))).toBe(0);
+    expect(fs.existsSync(launcher())).toBe(true);
+  });
+
+  it('AGSTATUS_RESUME=off at install time travels with the agent, and the launcher is not written', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    process.env.AGSTATUS_RESUME = 'off';
+    const { log, out } = quiet();
+    expect(await install(darwin({ exec: recorder().exec, log }))).toBe(0);
+    // The plist is the listener's whole environment, so the switch has to be
+    // in it or `status`/`doctor` would report a shell variable the running
+    // listener never sees.
+    expect(plistEnv(fs.readFileSync(plistPath(ws.home), 'utf8')).AGSTATUS_RESUME).toBe('off');
+    expect(fs.existsSync(launcher())).toBe(false);
+    expect(out()).toContain('Resume:    off (AGSTATUS_RESUME=off');
+    expect(readJson(path.join(ws.home, '.agstatus.json'))).toEqual({ focus: true, url: BOARD });
+
+    // Unset in this shell, the agent still carries it: both reports follow
+    // the agent, not the shell.
+    delete process.env.AGSTATUS_RESUME;
+    const shown = quiet();
+    await status(darwin({ exec: recorder().exec, log: shown.log }));
+    expect(shown.out()).toContain("Resume:    off (AGSTATUS_RESUME=off in the LaunchAgent's environment)");
+  });
+
+  it('says so when AGSTATUS_RESUME=off is only in this shell, not in the installed agent', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    expect(await install(darwin({ exec: recorder().exec, log: quiet().log }))).toBe(0);
+    process.env.AGSTATUS_RESUME = 'off';
+
+    const shown = quiet();
+    await status(darwin({ exec: recorder().exec, log: shown.log }));
+    expect(shown.out()).toContain(`Resume:    on — ${launcher()}`);
+    expect(shown.out()).toContain('AGSTATUS_RESUME=off is set in this shell');
+    expect(shown.out()).toContain('does not apply to the running listener');
+
+    const checked = quiet();
+    await doctor(darwin({ exec: recorder().exec, log: checked.log }));
+    expect(checked.out()).toContain(`✔ ${launcher()}`);
+    expect(checked.out()).toContain('AGSTATUS_RESUME=off is set in this shell');
+  });
+
+  it('refuses the feature honestly when the state directory is not the one the launcher would read', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    const own = path.join(ws.home, 'state-of-its-own');
+    process.env.AGSTATUS_STATE_DIR = own;
+    const { log, out } = quiet();
+    expect(await install(darwin({ exec: recorder().exec, log }))).toBe(0);
+
+    // No launcher at all: it would be handed no environment, read the
+    // default state dir, find nothing, and the board would still have been
+    // told `resumed` (design §5.2 step 4).
+    expect(fs.existsSync(path.join(own, 'agstatus-resume'))).toBe(false);
+    expect(out()).toContain('Resume:    off — a state directory of its own cannot be resumed');
+    expect(out()).toContain(ws.state);
+
+    const shown = quiet();
+    await status(darwin({ exec: recorder().exec, log: shown.log }));
+    expect(shown.out()).toContain('Resume:    off — a state directory of its own cannot be resumed');
+
+    const checked = quiet();
+    expect(await doctor(darwin({ exec: recorder().exec, log: checked.log }))).toBe(1);
+    expect(checked.out()).toContain('which resume cannot use');
+    expect(checked.out()).toContain('Resume taps answer unsupported-host');
+  });
+
+  it('is off for one run under AGSTATUS_RESUME=off, without touching the file', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    expect(await install(darwin({ exec: recorder().exec, log: quiet().log }))).toBe(0);
+    expect(readJson(path.join(ws.home, '.agstatus.json'))).toEqual({ focus: true, url: BOARD });
+
+    process.env.AGSTATUS_RESUME = 'off';
+    const checked = quiet();
+    await doctor(darwin({ exec: recorder().exec, log: checked.log }));
+    expect(checked.out()).toContain('AGSTATUS_RESUME=off');
+  });
+});
+
 describe('uninstall', () => {
   it('boots the agent out, removes the plist, sets focus:false, and purges only on request', async () => {
     withSettingsUrl(ws.home, BOARD);
@@ -381,6 +525,10 @@ describe('uninstall', () => {
     expect(readJson(path.join(ws.home, '.agstatus.json'))).toEqual({ focus: false, url: BOARD });
     expect(fs.existsSync(path.join(ws.state, 'sessions', 'abc', '1.json'))).toBe(true);
     expect(fs.existsSync(path.join(ws.state, 'machine.json'))).toBe(true);
+
+    // The launcher goes with the agent, purge or no purge: nothing that can
+    // start a session is left behind on a machine with no listener.
+    expect(fs.existsSync(path.join(ws.state, 'agstatus-resume'))).toBe(false);
 
     expect(await uninstall(darwin({ exec, log, purge: true }))).toBe(0);
     expect(fs.existsSync(path.join(ws.state, 'sessions'))).toBe(false);

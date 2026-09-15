@@ -3,8 +3,8 @@ import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { settingsPath } from '../settings';
-import { codexHooksPath } from '../codex';
+import { hookInstallPath, settingsPath } from '../settings';
+import { codexHookInstallPath, codexHooksPath } from '../codex';
 import {
   BIN_NAMES,
   BOARD_URL_RE,
@@ -334,6 +334,14 @@ export async function install(opts: ListenerCommandOptions = {}): Promise<number
   log(`  { "machine": { "id": "${id}", "name": "${name}" },`);
   log('    "app": { "slug", "name", "kind" } }   ← the app each session runs in,');
   log('                                            e.g. {"slug":"agterm","name":"agterm","kind":"terminal"}');
+  const stale = staleFocusHooks();
+  if (stale.length > 0) {
+    log('');
+    log('⚠ The hook installed on this machine predates Focus, so nothing writes the');
+    log('  local record a tap needs — the board will show no control for its sessions:');
+    for (const file of stale) log(`    ${file}`);
+    log('  Run `npx agstatus init` to refresh it.');
+  }
   const other = urlDisagreement(picked);
   if (other) {
     log('');
@@ -496,6 +504,27 @@ const STRATEGY_BINS: Array<{ strategy: string; bin: (typeof BIN_NAMES)[number] }
   { strategy: 'Codex in a terminal (resume, later)', bin: 'codex' },
 ];
 
+/**
+ * A hook from before Focus shipped still reports status perfectly well, but it
+ * writes no local record and sends no `host` — so the board shows no control
+ * and a tap would have nothing to act on. The marker is the function that
+ * derives the machine key; `npx agstatus init` refreshes the file.
+ */
+const FOCUS_HOOK_MARKER = 'function machineKey(';
+
+function hookSupportsFocus(file: string): boolean | null {
+  try {
+    return fs.readFileSync(file, 'utf8').includes(FOCUS_HOOK_MARKER);
+  } catch {
+    return null; // not installed through this channel
+  }
+}
+
+/** Reports every installed hook that is too old for Focus. Empty when all are current. */
+export function staleFocusHooks(): string[] {
+  return [hookInstallPath(), codexHookInstallPath()].filter((f) => hookSupportsFocus(f) === false);
+}
+
 export async function doctor(opts: ListenerCommandOptions = {}): Promise<number> {
   const { log, platform, stateDir } = context(opts);
   let problems = 0;
@@ -540,6 +569,10 @@ export async function doctor(opts: ListenerCommandOptions = {}): Promise<number>
     bad(`  ✖ ${(err as Error).message}`);
   }
   if (process.env.AGSTATUS_FOCUS === 'off') log('  ⚠ AGSTATUS_FOCUS=off in this environment overrides the file');
+  for (const stale of staleFocusHooks()) {
+    bad(`  ✖ ${stale} predates Focus — it writes no record, so a tap has nothing to act on`);
+    log('    — run `npx agstatus init` to refresh the hook');
+  }
 
   const candidates = safeCandidates(log);
   const picked = candidates[0];

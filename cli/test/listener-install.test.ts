@@ -338,6 +338,32 @@ describe('install', () => {
   });
 });
 
+describe('a hook that predates Focus', () => {
+  it('is named by install and doctor, with the way out', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    const hook = path.join(ws.home, '.claude', 'hooks', 'agstatus-hook.js');
+    fs.mkdirSync(path.dirname(hook), { recursive: true });
+    fs.writeFileSync(hook, '// agstatus 1.3.0 — reports status, knows nothing about Focus\n');
+
+    const { exec } = recorder();
+    const installed = quiet();
+    expect(await install(darwin({ exec, log: installed.log }))).toBe(0);
+    expect(installed.out()).toContain('predates Focus');
+    expect(installed.out()).toContain(hook);
+    expect(installed.out()).toContain('npx agstatus init');
+
+    const checked = quiet();
+    expect(await doctor(darwin({ exec: recorder().exec, log: checked.log }))).toBe(1);
+    expect(checked.out()).toContain('predates Focus');
+
+    // A hook that carries the Focus code is silent.
+    fs.writeFileSync(hook, 'function machineKey(machineId, base) { return machineId + base; }\n');
+    const current = quiet();
+    await doctor(darwin({ exec: recorder().exec, log: current.log }));
+    expect(current.out()).not.toContain('predates Focus');
+  });
+});
+
 describe('uninstall', () => {
   it('boots the agent out, removes the plist, sets focus:false, and purges only on request', async () => {
     withSettingsUrl(ws.home, BOARD);

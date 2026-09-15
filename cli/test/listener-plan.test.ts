@@ -120,9 +120,9 @@ describe('plan: terminals by bundle', () => {
     const p = ok(focus(inApp('com.umputun.agterm', { env: AGTERM_ENV })));
     expect(argvs(p)).toEqual([
       [OPEN, '-b', 'com.umputun.agterm'],
-      [BINS.agtermctl, '--socket', AGTERM_ENV.AGTERM_SOCKET, 'window', 'select', AGTERM_ENV.AGTERM_WINDOW_ID],
-      [BINS.agtermctl, '--socket', AGTERM_ENV.AGTERM_SOCKET, 'session', 'select',
-        '--target', AGTERM_ENV.AGTERM_SESSION_ID, '--window', AGTERM_ENV.AGTERM_WINDOW_ID],
+      [BINS.agtermctl, 'window', 'select', AGTERM_ENV.AGTERM_WINDOW_ID, '--socket', AGTERM_ENV.AGTERM_SOCKET],
+      [BINS.agtermctl, 'session', 'select', '--target', AGTERM_ENV.AGTERM_SESSION_ID,
+        '--window', AGTERM_ENV.AGTERM_WINDOW_ID, '--socket', AGTERM_ENV.AGTERM_SOCKET],
     ]);
     expect(p.steps.map((s) => s.expectFrontmost)).toEqual([undefined, undefined, 'com.umputun.agterm']);
     expect(p).toMatchObject({ reach: 'pane', result: 'focused', experimental: false });
@@ -283,9 +283,9 @@ describe('plan: multiplexers', () => {
     expect(argvs(p)).toEqual([
       [BINS.herdr, 'agent', 'focus', 'w1:p3'],
       [OPEN, '-b', 'com.umputun.agterm'],
-      [BINS.agtermctl, '--socket', AGTERM_ENV.AGTERM_SOCKET, 'window', 'select', AGTERM_ENV.AGTERM_WINDOW_ID],
-      [BINS.agtermctl, '--socket', AGTERM_ENV.AGTERM_SOCKET, 'session', 'select',
-        '--target', AGTERM_ENV.AGTERM_SESSION_ID, '--window', AGTERM_ENV.AGTERM_WINDOW_ID],
+      [BINS.agtermctl, 'window', 'select', AGTERM_ENV.AGTERM_WINDOW_ID, '--socket', AGTERM_ENV.AGTERM_SOCKET],
+      [BINS.agtermctl, 'session', 'select', '--target', AGTERM_ENV.AGTERM_SESSION_ID,
+        '--window', AGTERM_ENV.AGTERM_WINDOW_ID, '--socket', AGTERM_ENV.AGTERM_SOCKET],
     ]);
     expect(p.steps[0].env).toEqual({ HERDR_SOCKET_PATH: HERDR.socket });
     expect(p.steps[0].label).toBe('herdr: focus pane');
@@ -375,7 +375,7 @@ describe('describe', () => {
     const lines = text.split('\n');
     expect(lines).toHaveLength(4);
     expect(lines[0]).toBe('1. open: activate app: /usr/bin/open -b com.umputun.agterm');
-    expect(lines[1]).toBe(`2. agtermctl: select window: ${BINS.agtermctl} --socket <path> window select ${AGTERM_ENV.AGTERM_WINDOW_ID}`);
+    expect(lines[1]).toBe(`2. agtermctl: select window: ${BINS.agtermctl} window select ${AGTERM_ENV.AGTERM_WINDOW_ID} --socket <path>`);
     expect(lines[2]).toContain('(expect frontmost com.umputun.agterm)');
     expect(lines[3]).toBe('reach pane, result focused');
     expect(text).not.toContain(socket);

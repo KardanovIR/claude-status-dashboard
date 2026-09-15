@@ -75,6 +75,8 @@ const appOnly: Strategy = ({ bundle }) => leg(`open -b ${bundle}`, [openApp(bund
 
 const agterm: Strategy = (ctx) => {
   const ctl = bin(ctx.bins, 'agtermctl');
+  // `--socket` is an option of each agtermctl SUBCOMMAND, not a global flag:
+  // `agtermctl --socket X window select Y` exits 64 with "Unknown option".
   const { AGTERM_SOCKET: socket, AGTERM_WINDOW_ID: window, AGTERM_SESSION_ID: session } = ctx.env;
   if (!ctl || !socket || !SOCKET_RE.test(socket) || !window || !UUID_RE.test(window)
     || !session || !UUID_RE.test(session)) {
@@ -82,9 +84,9 @@ const agterm: Strategy = (ctx) => {
   }
   return leg('agterm session', [
     openApp(ctx.bundle, false),
-    { argv: [ctl, '--socket', socket, 'window', 'select', window], label: 'agtermctl: select window' },
+    { argv: [ctl, 'window', 'select', window, '--socket', socket], label: 'agtermctl: select window' },
     {
-      argv: [ctl, '--socket', socket, 'session', 'select', '--target', session, '--window', window],
+      argv: [ctl, 'session', 'select', '--target', session, '--window', window, '--socket', socket],
       expectFrontmost: ctx.bundle,
       label: 'agtermctl: select session',
     },

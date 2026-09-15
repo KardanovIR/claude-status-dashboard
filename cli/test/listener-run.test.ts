@@ -379,9 +379,9 @@ describe('runListener', () => {
     expect(launches.map((l) => [l.file, ...l.args])).toEqual([
       ['/bin/ps', '-o', 'comm=', '-p', '7449'],
       ['/usr/bin/open', '-b', AGTERM],
-      [fx.stub, '--socket', fx.sock, 'window', 'select', AGTERM_ENV.AGTERM_WINDOW_ID],
-      [fx.stub, '--socket', fx.sock, 'session', 'select',
-        '--target', AGTERM_ENV.AGTERM_SESSION_ID, '--window', AGTERM_ENV.AGTERM_WINDOW_ID],
+      [fx.stub, 'window', 'select', AGTERM_ENV.AGTERM_WINDOW_ID, '--socket', fx.sock],
+      [fx.stub, 'session', 'select', '--target', AGTERM_ENV.AGTERM_SESSION_ID,
+        '--window', AGTERM_ENV.AGTERM_WINDOW_ID, '--socket', fx.sock],
     ]);
     for (const launch of launches) {
       expect(path.isAbsolute(launch.file)).toBe(true);
@@ -929,7 +929,7 @@ describe('runPlan', () => {
   const plan = (over: Partial<Plan> = {}): Plan => ({
     steps: [
       { argv: ['/usr/bin/open', '-b', AGTERM], label: 'open: activate app' },
-      { argv: ['/opt/x/agtermctl', '--socket', '/tmp/s', 'window', 'select', 'w'], env: { HERDR_SOCKET_PATH: '/tmp/h' }, label: 'agtermctl: select window', expectFrontmost: AGTERM },
+      { argv: ['/opt/x/agtermctl', 'window', 'select', 'w', '--socket', '/tmp/s'], env: { HERDR_SOCKET_PATH: '/tmp/h' }, label: 'agtermctl: select window', expectFrontmost: AGTERM },
     ],
     reach: 'pane',
     result: 'focused',

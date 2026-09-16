@@ -7,13 +7,12 @@ the same shape (event JSON on stdin with `hook_event_name`, `session_id`,
 `cwd`), so one small script serves both: it receives each event and posts a
 status webhook to your board. Ways to set it up:
 
-1. **`npx agstatus init`** (recommended) — installs a dependency-free Node
-   hook and wires up Claude Code, plus Codex when `~/.codex` exists. Homebrew
-   users can `brew install kardanovir/tap/agstatus` and run `agstatus init` —
-   same CLI, on your PATH.
+1. **The installer** (recommended) — one command; installs the CLI and a
+   dependency-free Node hook, and wires up Claude Code, plus Codex when
+   `~/.codex` exists. See [Install](#install) below.
 2. **Claude Code plugin** — hooks bundled as a plugin, no settings.json
    surgery; see [Claude Code plugin](#claude-code-plugin) below. Claude Code
-   only (Codex still needs `agstatus init`).
+   only (Codex needs [the installer](#install)).
 3. **Manual bash hook** — *deprecated.* The original
    `hooks/claude-status-hook.sh`, still shipped and still working, for people
    who want to see and customize every moving part. It reports status only:
@@ -26,13 +25,45 @@ The Node hook additionally enforces a 3 s HTTP timeout, a ~4 s overall
 safety timeout, and never writes to stdout (Codex interprets hook stdout as
 behavior-control decisions).
 
-## `npx agstatus init`
+## Install
+
+macOS and Linux:
 
 ```bash
-npx agstatus init
+curl -fsSL https://agstatus.online/install.sh | sh
 ```
 
-What it does, in order:
+Windows (PowerShell 5.1 or newer):
+
+```powershell
+irm https://agstatus.online/install.ps1 | iex
+```
+
+Both scripts do the same two things: unpack the CLI, then run `agstatus init`.
+Nothing is installed system-wide and nothing needs `sudo` — everything lands
+under one prefix you own:
+
+```
+~/.agstatus/            # or $AGSTATUS_HOME; on Windows, %LOCALAPPDATA%\AgStatus
+├── bin/agstatus        # the launcher you run (agstatus.cmd on Windows)
+└── lib/
+    ├── agstatus/       # the CLI and the hook it installs
+    └── node_modules/   # its one runtime dependency
+```
+
+The installer puts `~/.agstatus/bin` on your `PATH` for you — a marked block
+appended to your shell profile on macOS and Linux, the persistent user `PATH`
+on Windows — so open a new terminal before typing `agstatus` yourself. Re-run
+the installer to upgrade: it is the same command for a first install and an
+update, and it replaces only `bin/` and `lib/`, leaving the state the hook
+keeps under the same prefix alone.
+
+Self-hosting? Every board serves both scripts, so
+`curl -fsSL https://status.example.com/install.sh | sh -s -- --url https://status.example.com`
+installs from your own instance — see
+[Pointing clients at your instance](self-hosting.md#pointing-clients-at-your-instance).
+
+`init` then runs, in order:
 
 1. Contacts the server (`GET /api/config`) — the hosted instance by default.
 2. Acquires a board: claims your pairing code (`--code`), creates a new
@@ -45,6 +76,32 @@ What it does, in order:
    settings and hooks are preserved; re-running `init` replaces only the
    AgStatus entries.
 5. Prints your dashboard URL and a QR code to open it on your phone.
+
+On macOS the installer also sets up the [Focus listener](#focus-optional-opt-in)
+so a tap on a board card brings that session's terminal to the front. It is
+not a prompt — it prints the exact host summary your machines will start
+sending, and `--no-focus` skips it.
+
+### Passing flags to the installer
+
+Everything after `--` goes to `agstatus init`, so the flags in the next table
+work through the one-liner:
+
+```bash
+curl -fsSL https://agstatus.online/install.sh | sh -s -- --code AB12-CD34
+```
+
+PowerShell cannot pass arguments through `iex`, so on Windows fetch the
+script into a script block and call that instead:
+
+```powershell
+& ([scriptblock]::Create((irm https://agstatus.online/install.ps1))) -Code AB12-CD34
+```
+
+`--no-focus` and `--focus` are the shell installer's own flags (last one
+wins) and are consumed before the rest is handed on. They are macOS-only, so
+`install.ps1` has no equivalent; its parameters are `-Code`, `-Url`,
+`-Secret` and `-Minimal`.
 
 ### Flags
 
@@ -70,10 +127,10 @@ via `POST /api/pair/claim` for the board's URLs. Claims are rate limited to
 ### Other commands
 
 ```bash
-npx agstatus status      # show configured URL, hook file, server reachability + session count
-npx agstatus uninstall   # remove the hook file and AgStatus settings entries (backup kept), and the Focus listener if installed
-npx agstatus listener …  # the Focus listener, see below (install | uninstall | status | doctor | plan | run)
-npx agstatus help        # usage
+agstatus status      # show configured URL, hook file, server reachability + session count
+agstatus uninstall   # remove the hook file and AgStatus settings entries (backup kept), and the Focus listener if installed
+agstatus listener …  # the Focus listener, see below (install | uninstall | status | doctor | plan | run)
+agstatus help        # usage
 ```
 
 `uninstall` removes only AgStatus's hook registrations and the
@@ -82,6 +139,22 @@ everything else in `settings.json` is left untouched. When the
 [Focus listener](#installing-the-listener-macos) is installed it runs
 `listener uninstall` too, so the LaunchAgent stops and `"focus"` is set to
 `false`.
+
+### Other ways in
+
+The [Claude Code plugin](#claude-code-plugin) is a separate, fully supported
+channel — it needs no installer and no terminal, and it is the right choice on
+a Claude Code-only machine.
+
+AgStatus used to ship through npm and a Homebrew tap. Neither gets new
+releases any more, and the installer above replaces both. Nothing was
+unpublished, though: `agstatus@1.3.0` stays resolvable on the npm registry, so
+an `npx agstatus init` in somebody's notes, a script, or a screenshot from
+last year still runs and still works — it just installs 1.3.0 rather than the
+current release. Re-run the installer to move a machine onto current: it
+writes its own copy under `~/.agstatus` and rewires the hook, leaving any
+global npm install to be removed with `npm rm -g agstatus` whenever you get
+around to it.
 
 ## Claude Code plugin
 
@@ -103,15 +176,16 @@ session you run it in appears on the board.
 `~/.agstatus.json` is also the home of the optional `"focus": true` key that
 turns on [Focus](#focus-optional-opt-in) for this machine — every install
 channel shares the file, and the hook checks that key whichever way the
-board URL arrived. `npx agstatus listener install` is the sanctioned writer
+board URL arrived. `agstatus listener install` is the sanctioned writer
 of the key; setting it by hand does nothing on its own — without the machine
 id file that installer creates, the hook adds no `host` object and writes no
 record.
 
 Don't combine the plugin with an `agstatus init` install on the same
 machine: both hooks would fire and every status would post twice. Pick one
-(`npx agstatus uninstall` removes the other). The plugin covers Claude Code
-only; for Codex, use `agstatus init`.
+(`agstatus uninstall` removes the CLI-installed hook and leaves the plugin
+alone). The plugin covers Claude Code only; for Codex, use
+[the installer](#install).
 
 ## How events map to statuses
 
@@ -282,20 +356,24 @@ file says `true`. The full protocol — what the listener may run, how it
 validates a command, which terminals get pane-level focus — is in
 [docs/design/focus-protocol.md](design/focus-protocol.md).
 
-Codex users: Codex re-checks the hooks it has been told to trust, and an
-updated hook script may need approving again — if Codex sessions stop
-reporting after an upgrade, run `/hooks` inside Codex and re-approve the
-AgStatus entries.
+Codex users: what Codex trusts is a hash of the registered command string, so
+an upgrade that changes that command leaves the stored hash stale and the hook
+unrun — silently. If Codex sessions stop reporting after an upgrade, run
+`/hooks` inside Codex and re-approve the AgStatus entries; see
+[OpenAI Codex specifics](#openai-codex-specifics).
 
 ### Installing the listener (macOS)
 
 The listener is the process on your Mac that receives a tap from the board
 and brings the right terminal to the front. It runs as a LaunchAgent under
-your user, starts at login and is restarted if it dies. Install it after
+your user, starts at login and is restarted if it dies. On macOS the
+installer sets it up for you, so usually there is nothing to do here. Run it
+yourself to give the machine a name, to turn Focus on after installing with
+`--no-focus`, or on a machine set up through the plugin — any time after
 `agstatus init` (or the plugin's `/agstatus:setup`) has configured a board:
 
 ```bash
-npx agstatus listener install --name "Studio"   # --name is the label shown on the board; default "Mac"
+agstatus listener install --name "Studio"   # --name is the label shown on the board; default "Mac"
 ```
 
 `install` is the only thing that turns Focus on. It
@@ -310,9 +388,17 @@ npx agstatus listener install --name "Studio"   # --name is the label shown on t
   [Resume](#resume) below; `--no-resume` writes `"resume": false` instead and
   writes no launcher at all;
 - writes and loads `~/Library/LaunchAgents/com.agstatus.listener.plist`,
-  which runs `agstatus listener run` with the `PATH` of the shell you
-  installed from, so the terminal tools it may call resolve the same way
-  under launchd;
+  which runs `~/.agstatus/bin/agstatus listener run`. That first argument is
+  an absolute path on purpose: launchd resolves a job's program against its
+  own `/usr/bin:/bin:/usr/sbin:/sbin` and never against the job's
+  `EnvironmentVariables.PATH` (see
+  [docs/design/focus-protocol.md](design/focus-protocol.md), "A LaunchAgent's
+  PATH"), and no nvm, fnm or Volta install of Node lives in those four
+  directories. The launcher is a small `sh` script that finds a Node ≥ 18 at
+  every start rather than baking one in, so upgrading Node does not silently
+  take Focus down. The plist still carries the `PATH` of the shell you
+  installed from, so the terminal tools the listener may call resolve the
+  same way under launchd;
 - prints the exact `host` object every status post now carries.
 
 The board URL comes from the same places the hook reads it, in this order:
@@ -323,23 +409,21 @@ the same board; the hook still follows the files, so the installer warns
 when a `--url` names a different board than `settings.json` or
 `hooks.json`). If Claude Code and Codex are configured for different boards
 the installer refuses rather than guess — re-run `agstatus init`, or pass
-`--url`. Install the CLI itself (`npm i -g agstatus`) rather than relying
-on `npx` alone: the LaunchAgent points at the CLI's files, and npm may
-clear the `npx` cache.
+`--url`.
 
 ```bash
-npx agstatus listener status               # loaded? pid, machine label + public id, board, last log lines
-npx agstatus listener doctor               # which tools resolved and which strategies that enables, config sanity
-npx agstatus listener plan <session_id>    # dry run: print what a tap on that session would execute, run nothing
-npx agstatus listener plan <id> --resume   # the same for the Resume tap: what a respawn would launch
-npx agstatus listener uninstall [--purge]  # stop and remove the agent, set "focus": false (cards clear)
+agstatus listener status               # loaded? pid, machine label + public id, board, last log lines
+agstatus listener doctor               # which tools resolved and which strategies that enables, config sanity
+agstatus listener plan <session_id>    # dry run: print what a tap on that session would execute, run nothing
+agstatus listener plan <id> --resume   # the same for the Resume tap: what a respawn would launch
+agstatus listener uninstall [--purge]  # stop and remove the agent, set "focus": false (cards clear)
 ```
 
 `uninstall` keeps the session records and the log (and `machine.json`, so a
 reinstall keeps the same id); `--purge` removes the records and the log. The
 resume launcher goes either way: nothing that can start a session is left on
 a machine whose listener has been taken down.
-`npx agstatus uninstall` — the hook uninstall — runs `listener uninstall`
+`agstatus uninstall` — the hook uninstall — runs `listener uninstall`
 as well whenever the LaunchAgent is present or `"focus": true` is still
 set, so switching AgStatus off on a machine switches Focus off with it.
 `plan` and `doctor` are the way to find out what a host can do before you
@@ -464,7 +548,7 @@ twenty taps in a minute). A refused tap starts nothing and answers
 To keep Focus but switch Resume off, so those taps come back refused:
 
 ```bash
-npx agstatus listener install --no-resume   # writes "resume": false in ~/.agstatus.json
+agstatus listener install --no-resume   # writes "resume": false in ~/.agstatus.json
 ```
 
 Setting `"resume": false` in `~/.agstatus.json` by hand does the same at any
@@ -476,7 +560,7 @@ you run `install`: it is then copied into the agent's plist. Setting it in a
 shell rc afterwards changes nothing for the running listener, and
 `status`/`doctor` say so instead of reporting an "off" that is not. Both
 commands print which switch is in force, where the launcher is, and
-`npx agstatus listener uninstall` removes it.
+`agstatus listener uninstall` removes it.
 
 ## OpenAI Codex specifics
 
@@ -491,6 +575,10 @@ commands print which switch is in force, where the launcher is, and
    right in `hooks.json`.
 3. **One-time step:** Codex requires you to trust new hooks. Run `/hooks`
    inside Codex and approve the AgStatus entries — until then they won't fire.
+   Codex trusts a hook by hashing its command, so a release that changes that
+   command invalidates the stored hash: an existing install stays silent —
+   no error anywhere — until you re-run `/hooks`. Both `agstatus init` and
+   the installer say so when they finish setting Codex up.
 
 Events wired: `SessionStart`, `PreToolUse` (matcher
 `^(Bash|apply_patch|Edit|Write)$`), `PermissionRequest`, and `Stop`, each with
@@ -515,7 +603,7 @@ a 10 s timeout (the script itself exits within ~4 s).
 > missing three that the Node hook has: **plan-usage bars** (it reports no
 > usage at all), **card removal on `SessionEnd`**, and **Codex support** (no
 > `PermissionRequest` or `apply_patch` handling). Prefer
-> [`npx agstatus init`](#npx-agstatus-init) or the
+> [the installer](#install) or the
 > [Claude Code plugin](#claude-code-plugin); keep reading only if you want a
 > hook you can read end to end in one sitting, or you would rather not have
 > Node in the loop.
@@ -613,7 +701,7 @@ card transitioning through `idle → coding → idle` as you work. If it doesn't
 
 ```bash
 # Check the CLI-installed setup end to end:
-npx agstatus status
+agstatus status
 
 # Run the Node hook manually with a fake payload (put your board URL first):
 export CLAUDE_STATUS_URL='https://agstatus.online/w/ags_yourtoken'

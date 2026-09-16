@@ -7,18 +7,34 @@ import http from 'http';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import { createApp } from '../../src/app';
-import { runInit, runUninstall } from '../src/index';
+import { runInit, runStatus, runUninstall } from '../src/index';
 import {
   CODEX_EVENTS,
+  codexConfigPath,
   codexHookCommand,
+  codexHookConfig,
   codexHookInstallPath,
   codexHooksPath,
+  codexLegacyRegistration,
   mergeCodexHooks,
+  readCodexHookConfig,
   readCodexHooks,
+  redactCodexCredentials,
   removeCodexHooks,
+  writeCodexHookConfig,
 } from '../src/codex';
+import { resolveBoardUrl, resolveSecret } from '../src/listener/config';
 
-const CMD = 'CLAUDE_STATUS_URL="https://s.example/w/ags_x" node "$HOME/.codex/hooks/agstatus-hook.js"';
+const CMD = 'node "$HOME/.codex/hooks/agstatus-hook.js"';
+
+/** What an install made before the sidecar wrote into hooks.json. */
+const LEGACY_CMD = (url: string, secret?: string): string =>
+  `CLAUDE_STATUS_URL="${url}" AGSTATUS_SOURCE=codex` +
+  `${secret ? ` CLAUDE_STATUS_SECRET='${secret}'` : ''} node "$HOME/.codex/hooks/agstatus-hook.js"`;
+
+const withCommands = (...commands: string[]): Record<string, unknown> => ({
+  hooks: { Stop: commands.map((command) => ({ hooks: [{ type: 'command', command }] })) },
+});
 
 describe('mergeCodexHooks', () => {
   it('registers all four events with matchers, timeout, and statusMessage', () => {
@@ -73,30 +89,156 @@ describe('mergeCodexHooks', () => {
   });
 });
 
+describe('redactCodexCredentials', () => {
+  it('strips the board token and the secret from our commands only', () => {
+    const ours = LEGACY_CMD('https://s.example/w/ags_tok', `it'\\''s`);
+    // Someone else's command, styled to look like ours. Not ours to rewrite:
+    // a backup exists to give foreign entries back, byte for byte.
+    const foreign = 'CLAUDE_STATUS_URL="https://s.example/w/theirs" other-tool.sh';
+    const out = redactCodexCredentials({ ...withCommands(ours, foreign), model: 'gpt-5' });
+    const stop = (out.hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>).Stop;
+
+    expect(stop[0].hooks[0].command).not.toContain('ags_tok');
+    expect(stop[0].hooks[0].command).toContain('CLAUDE_STATUS_URL="<redacted by agstatus>"');
+    expect(stop[0].hooks[0].command).toContain('CLAUDE_STATUS_SECRET="<redacted by agstatus>"');
+    // Everything that is not a credential stays, so a restored file still
+    // reads as ours and still says what it used to do.
+    expect(stop[0].hooks[0].command).toContain('AGSTATUS_SOURCE=codex');
+    expect(stop[0].hooks[0].command).toContain(CMD);
+    expect(stop[1].hooks[0].command).toBe(foreign);
+    expect(out.model).toBe('gpt-5'); // and nothing else in the file is touched
+  });
+});
+
+describe('codexLegacyRegistration', () => {
+  it('reads the registration, not the sidecar beside it', () => {
+    expect(codexLegacyRegistration(withCommands(LEGACY_CMD('https://s.example/w/x')))).toBe(true);
+    expect(codexLegacyRegistration(withCommands(CMD))).toBe(false);
+    expect(codexLegacyRegistration({})).toBe(false);
+    // Someone else's env prefix is not our legacy registration.
+    expect(codexLegacyRegistration(withCommands('AGSTATUS_SOURCE=codex other-tool.sh'))).toBe(false);
+  });
+});
+
 describe('codexHookCommand', () => {
-  it('embeds the board URL and honors minimal', () => {
-    const cmd = codexHookCommand('https://h.example/w/ags_t', true);
-    expect(cmd).toContain('CLAUDE_STATUS_URL="https://h.example/w/ags_t"');
-    expect(cmd).toContain('AGSTATUS_DETAIL=off');
-    expect(cmd).toContain('agstatus-hook.js');
-    expect(codexHookCommand('https://h.example', false)).not.toContain('AGSTATUS_DETAIL');
+  let dir: string;
+  let prev: string | undefined;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-codexcmd-'));
+    prev = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = dir;
   });
 
-  it('embeds a single-quoted secret only when provided', () => {
-    expect(codexHookCommand('https://h.example', false)).not.toContain('CLAUDE_STATUS_SECRET');
-    const cmd = codexHookCommand('https://h.example', false, "s3cr'et");
-    // Single-quoted with the embedded quote escaped as '\'' — no unquoted break-out.
-    expect(cmd).toContain(`CLAUDE_STATUS_SECRET='s3cr'\\''et'`);
+  afterEach(() => {
+    if (prev === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = prev;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('carries no configuration at all — just the interpreter and the script', () => {
+    const cmd = codexHookCommand();
+    expect(cmd).toBe(`node "${path.join(dir, 'hooks', 'agstatus-hook.js')}"`);
+    // The Windows blocker: an env-var prefix is a POSIX shell construct with
+    // no cmd.exe equivalent, so the whole line would fail to parse there and
+    // the registered hook would silently never fire.
+    expect(cmd).not.toContain('CLAUDE_STATUS_URL');
+    expect(cmd).not.toContain('AGSTATUS_SOURCE');
+    expect(cmd).not.toContain('AGSTATUS_DETAIL');
+    expect(cmd).not.toContain('CLAUDE_STATUS_SECRET');
+    expect(cmd).not.toContain('=');
+    // Still recognisable as ours, or merge and uninstall would not find it.
+    expect(cmd).toContain('agstatus-hook');
+  });
+});
+
+describe('codexHookConfig', () => {
+  it('carries the board URL, the source tag, and honors minimal', () => {
+    expect(codexHookConfig('https://h.example/w/ags_t', true)).toEqual({
+      url: 'https://h.example/w/ags_t',
+      source: 'codex',
+      detail: 'off',
+    });
+    // source is always present: ~/.agstatus.json is shared by both agents, so
+    // the sidecar is the only thing that can tag these sessions as Codex ones.
+    expect(codexHookConfig('https://h.example', false)).toEqual({
+      url: 'https://h.example',
+      source: 'codex',
+    });
+  });
+
+  it('carries a secret only when provided, verbatim — no quoting to get wrong', () => {
+    expect(codexHookConfig('https://h.example', false)).not.toHaveProperty('secret');
+    // The value that needed '\'' escaping in the old shell form now just
+    // round-trips through JSON.
+    expect(codexHookConfig('https://h.example', false, "s3cr'et").secret).toBe("s3cr'et");
   });
 
   it('refuses a URL carrying shell metacharacters (defense in depth)', () => {
-    expect(() => codexHookCommand('https://h.example/"; rm -rf ~; "', false)).toThrow(
+    // The command string no longer meets a shell, but the listener's
+    // BOARD_URL_RE refuses the same set and reads this file back, so the two
+    // must stay in step.
+    expect(() => codexHookConfig('https://h.example/"; rm -rf ~; "', false)).toThrow(
       /shell metacharacters/
     );
-    expect(() => codexHookCommand('https://h.example/$(reboot)', false)).toThrow(
+    expect(() => codexHookConfig('https://h.example/$(reboot)', false)).toThrow(
       /shell metacharacters/
     );
-    expect(() => codexHookCommand('https://h.example/`id`', false)).toThrow(/shell metacharacters/);
+    expect(() => codexHookConfig('https://h.example/`id`', false)).toThrow(/shell metacharacters/);
+  });
+});
+
+describe('the sidecar config file', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-sidecar-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('round-trips through a 0600 file, creating the hooks dir', () => {
+    const file = path.join(dir, 'hooks', 'agstatus-hook.json');
+    writeCodexHookConfig(file, codexHookConfig('https://h.example/w/ags_t', true, 's3'));
+    // It holds a webhook secret, and the board URL is itself a capability
+    // token — nobody else on the machine gets to read it.
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(readCodexHookConfig(file)).toEqual({
+      url: 'https://h.example/w/ags_t',
+      source: 'codex',
+      secret: 's3',
+      detail: 'off',
+    });
+    // No temp file left behind next to it.
+    expect(fs.readdirSync(path.dirname(file))).toEqual(['agstatus-hook.json']);
+  });
+
+  it('replaces a previous config instead of merging into it', () => {
+    const file = path.join(dir, 'agstatus-hook.json');
+    writeCodexHookConfig(file, codexHookConfig('https://old.example', true, 's3'));
+    writeCodexHookConfig(file, codexHookConfig('https://new.example', false));
+    expect(readCodexHookConfig(file)).toEqual({ url: 'https://new.example', source: 'codex' });
+  });
+
+  it('reads back null rather than throwing on anything unusable', () => {
+    const file = path.join(dir, 'agstatus-hook.json');
+    expect(readCodexHookConfig(file)).toBeNull(); // missing
+    fs.writeFileSync(file, '{ nope');
+    expect(readCodexHookConfig(file)).toBeNull(); // malformed
+    fs.writeFileSync(file, '[1,2]');
+    expect(readCodexHookConfig(file)).toBeNull(); // not an object
+    fs.writeFileSync(file, '{"source":"codex"}');
+    expect(readCodexHookConfig(file)).toBeNull(); // no url: nothing to configure
+    fs.writeFileSync(file, '{"url":"  ","secret":"s"}');
+    expect(readCodexHookConfig(file)).toBeNull(); // blank url
+  });
+
+  it('ignores a detail value that is not the off switch', () => {
+    const file = path.join(dir, 'agstatus-hook.json');
+    fs.writeFileSync(file, '{"url":"https://h.example","detail":"on"}');
+    expect(readCodexHookConfig(file)).toEqual({ url: 'https://h.example', source: 'codex' });
   });
 });
 
@@ -183,26 +325,35 @@ describe('init/uninstall with a detected Codex install', () => {
       const hookFile = codexHookInstallPath();
       expect(fs.existsSync(hookFile)).toBe(true);
 
-      // Board URL embedded in the registered command.
+      // The registered command carries nothing but the script (the shape
+      // Windows can run); the board URL lives in the sidecar beside it.
       const cmd = (hooks.hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>)
         .SessionStart[0].hooks[0].command;
-      const url = /CLAUDE_STATUS_URL="([^"]+)"/.exec(cmd)?.[1] ?? '';
+      expect(cmd).not.toContain('CLAUDE_STATUS_URL');
+      const config = readCodexHookConfig(codexConfigPath());
+      const url = config?.url ?? '';
       expect(url).toMatch(new RegExp(`^${childBase}/w/ags_`));
       // Codex sessions must be tagged so dashboards can scope limit bars.
-      expect(cmd).toContain('AGSTATUS_SOURCE=codex');
+      expect(config?.source).toBe('codex');
+      expect(fs.statSync(codexConfigPath()).mode & 0o777).toBe(0o600);
 
-      // Drive the REAL hook with Codex-shaped payloads.
+      // Drive the REAL hook with Codex-shaped payloads — and with an empty
+      // environment, exactly as Codex invokes the bare `node "<script>"` it
+      // now registers. Everything the hook needs must come from the sidecar;
+      // this is the Windows delivery path, exercised here on POSIX because
+      // the shape is the same on every platform.
       const fire = (payload: Record<string, unknown>, extraEnv: Record<string, string> = {}): string => {
+        const clean: Record<string, string | undefined> = { ...process.env };
+        for (const key of ['CLAUDE_STATUS_URL', 'CLAUDE_STATUS_SECRET', 'AGSTATUS_SOURCE', 'AGSTATUS_DETAIL']) {
+          delete clean[key];
+        }
         return execFileSync(process.execPath, [hookFile], {
           input: JSON.stringify(payload),
           // AGSTATUS_USAGE=off: the usage path would read the developer's real
           // Claude credentials and call Anthropic — never from a test.
-          // AGSTATUS_SOURCE mirrors the env prefix embedded in the real command.
           env: {
-            ...process.env,
-            CLAUDE_STATUS_URL: url,
+            ...clean,
             AGSTATUS_USAGE: 'off',
-            AGSTATUS_SOURCE: 'codex',
             // Keep the Focus record out of the developer's own state directory.
             AGSTATUS_STATE_DIR: codexDir,
             ...extraEnv,
@@ -225,6 +376,9 @@ describe('init/uninstall with a detected Codex install', () => {
       let s = await sessionsAt('codex-1');
       expect(s.status).toBe('coding');
       expect(s.message).toBe('Editing files');
+      // Proof the sidecar alone did all of it: the board URL it posted to and
+      // the source tag both came out of agstatus-hook.json, with no env var
+      // and no shell in sight.
       expect(s.source).toBe('codex');
 
       // Codex exec tools deliver the command as an argv array — the test
@@ -286,6 +440,23 @@ describe('init/uninstall with a detected Codex install', () => {
     expect(JSON.stringify(hooks)).not.toContain('agstatus-hook');
     expect(JSON.stringify(hooks)).toContain('keep.sh');
     expect(fs.existsSync(codexHookInstallPath())).toBe(false);
+    // The sidecar goes with the script it configures — it holds a board URL.
+    expect(fs.existsSync(codexConfigPath())).toBe(false);
+  });
+
+  it('re-running init rewrites the sidecar in place instead of stacking hooks', async () => {
+    await runInit({ url: base, noQr: true, log });
+    const first = readCodexHookConfig(codexConfigPath());
+    await runInit({ url: base, noQr: true, minimal: true, log });
+    const second = readCodexHookConfig(codexConfigPath());
+    expect(second?.url).not.toBe(first?.url); // a fresh board each time
+    expect(second?.detail).toBe('off'); // --minimal now in effect
+    const hooks = readCodexHooks(codexHooksPath()) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    for (const { event } of CODEX_EVENTS) {
+      expect(hooks.hooks[event].filter((e) => e.hooks[0].command.includes('agstatus-hook'))).toHaveLength(1);
+    }
   });
 
   it('warns but still finishes Claude setup when hooks.json is malformed, leaving it untouched', async () => {
@@ -298,7 +469,181 @@ describe('init/uninstall with a detected Codex install', () => {
     expect(fs.existsSync(path.join(claudeDir, 'settings.json'))).toBe(true);
     expect(fs.readFileSync(codexHooksPath(), 'utf8')).toBe('{ nope');
     expect(fs.existsSync(codexHookInstallPath())).toBe(false);
+    expect(fs.existsSync(codexConfigPath())).toBe(false);
     expect(lines.join('\n')).toMatch(/Skipped Codex setup/);
+  });
+
+  it('status flags a registration left over from the env-prefix era', async () => {
+    // What an install made before this change looks like on disk: our hook
+    // script and our command, but no sidecar. It still runs on POSIX, so
+    // nothing else in `status` would ever hint that Windows cannot run it.
+    const legacy =
+      'CLAUDE_STATUS_URL="https://s.example/w/ags_x" AGSTATUS_SOURCE=codex' +
+      ' node "$HOME/.codex/hooks/agstatus-hook.js"';
+    fs.mkdirSync(path.dirname(codexHookInstallPath()), { recursive: true });
+    fs.writeFileSync(codexHookInstallPath(), '// hook');
+    fs.writeFileSync(
+      codexHooksPath(),
+      JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: legacy }] }] } })
+    );
+    const lines: string[] = [];
+    await runStatus((l) => lines.push(l));
+    expect(lines.join('\n')).toMatch(/older env-prefix command/);
+
+    // And it is quiet once init has written the sidecar.
+    await runInit({ url: base, noQr: true, log });
+    const after: string[] = [];
+    await runStatus((l) => after.push(l));
+    expect(after.join('\n')).toContain('Codex:     configured');
+    expect(after.join('\n')).not.toMatch(/older env-prefix command/);
+  });
+
+  it('keeps flagging a legacy registration when only the sidecar write landed', async () => {
+    // setupCodex writes the sidecar, then rewrites hooks.json. When that
+    // second write throws — EACCES, a read-only ~/.codex, a full disk — init
+    // logs a warning and finishes, leaving exactly this pair on disk: a
+    // sidecar beside the env-prefix registration Windows cannot run and the
+    // current hook does not read. Inferring "legacy" from a missing sidecar
+    // would make `status` permanently silent about the one state it is for.
+    fs.mkdirSync(path.dirname(codexHookInstallPath()), { recursive: true });
+    fs.writeFileSync(codexHookInstallPath(), '// hook');
+    fs.writeFileSync(
+      codexHooksPath(),
+      JSON.stringify(withCommands(LEGACY_CMD('https://s.example/w/ags_x')))
+    );
+    writeCodexHookConfig(codexConfigPath(), codexHookConfig('https://s.example/w/ags_x', false));
+
+    const lines: string[] = [];
+    await runStatus((l) => lines.push(l));
+    expect(lines.join('\n')).toContain('Codex:     configured');
+    expect(lines.join('\n')).toMatch(/older env-prefix command/);
+  });
+
+  it('leaves no readable copy of the old board token in the backup', async () => {
+    // The upgrade path: the file backed up here is the OLD hooks.json, the one
+    // carrying the capability token and the secret on every command. Nothing
+    // ever deletes a backup, so a verbatim copy would outlive the file init
+    // just cleaned and defeat the whole point of the 0600 sidecar.
+    const token = 'https://s.example/w/ags_oldtoken';
+    fs.writeFileSync(
+      codexHooksPath(),
+      JSON.stringify(withCommands(LEGACY_CMD(token, 'sup3rs3cret'), 'keep.sh'))
+    );
+    fs.chmodSync(codexHooksPath(), 0o644); // as Codex leaves it, whatever the umask
+    await runInit({ url: base, noQr: true, log });
+
+    const backup = `${codexHooksPath()}.agstatus-backup`;
+    expect(fs.existsSync(backup)).toBe(true);
+    const text = fs.readFileSync(backup, 'utf8');
+    expect(text).not.toContain('ags_oldtoken');
+    expect(text).not.toContain('sup3rs3cret');
+    // Still a restorable hooks.json, and still carrying the foreign entry that
+    // is the only reason to keep a backup at all.
+    expect(JSON.parse(text)).toHaveProperty('hooks');
+    expect(text).toContain('keep.sh');
+    // The live file keeps the mode Codex's own file had; the backup is ours,
+    // and it is the copy that outlives the upgrade — nobody else may read it.
+    expect(fs.statSync(codexHooksPath()).mode & 0o044).not.toBe(0);
+    expect(fs.statSync(backup).mode & 0o077).toBe(0);
+    // And a second init overwrites it without inheriting the old mode.
+    fs.chmodSync(backup, 0o644);
+    await runInit({ url: base, noQr: true, log });
+    expect(fs.statSync(backup).mode & 0o077).toBe(0);
+    expect(fs.readFileSync(codexHooksPath(), 'utf8')).not.toContain('ags_oldtoken');
+  });
+
+  it('prints the sidecar path and the re-run-/hooks warning', async () => {
+    const lines: string[] = [];
+    await runInit({ url: base, noQr: true, log: (l) => lines.push(l) });
+    const out = lines.join('\n');
+    expect(out).toContain(codexConfigPath());
+    // Codex trusts a hook by hashing its command string, and this release
+    // changed that string: without re-running /hooks an upgraded install is
+    // silently dead, so the warning has to say why, not just what.
+    expect(out).toMatch(/run \/hooks inside Codex/);
+    expect(out).toMatch(/changed/);
+  });
+});
+
+/**
+ * The sidecar says what our Codex hook posts to; hooks.json says whether Codex
+ * runs it at all. The listener needs both, because this source outranks
+ * ~/.agstatus.json — a sidecar taken on its own aims the listener's stream at
+ * a board nothing posts to any more.
+ */
+describe('a leftover sidecar is not a registration', () => {
+  const KEYS = ['HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'CLAUDE_STATUS_URL', 'CLAUDE_STATUS_SECRET'];
+  const saved: Record<string, string | undefined> = {};
+  let home: string;
+
+  const stale = (secret?: string): void =>
+    writeCodexHookConfig(codexConfigPath(), codexHookConfig('https://s.example/w/stale', false, secret));
+  const register = (command: string): void => {
+    fs.mkdirSync(path.dirname(codexHooksPath()), { recursive: true });
+    fs.writeFileSync(codexHooksPath(), JSON.stringify(withCommands(command)));
+  };
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-codexreg-'));
+    for (const key of KEYS) {
+      saved[key] = process.env[key];
+      delete process.env[key];
+    }
+    // HOME too: resolveBoardUrl() reads ~/.agstatus.json, and no test may go
+    // anywhere near the developer's own.
+    process.env.HOME = home;
+    process.env.CODEX_HOME = path.join(home, '.codex');
+    process.env.CLAUDE_CONFIG_DIR = path.join(home, '.claude');
+  });
+
+  afterEach(() => {
+    for (const key of KEYS) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key] as string;
+    }
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it('is ignored until hooks.json actually registers our hook', () => {
+    // `agstatus uninstall` leaves both files behind when it cannot clean
+    // hooks.json (cli/src/index.ts), and an init whose hooks.json write failed
+    // wrote the sidecar first — both end here.
+    stale('stale-secret');
+    expect(resolveBoardUrl()).toBeNull();
+    expect(resolveSecret()).toBeNull();
+
+    register(CMD);
+    expect(resolveBoardUrl()).toEqual({ url: 'https://s.example/w/stale', source: 'codex' });
+    expect(resolveSecret()).toEqual({ secret: 'stale-secret', source: 'codex' });
+
+    // A hand-edited hooks.json that drops our entry and keeps its own.
+    register('other-tool.sh');
+    expect(resolveBoardUrl()).toBeNull();
+    expect(resolveSecret()).toBeNull();
+  });
+
+  it('falls through to ~/.agstatus.json, which it outranks, rather than winning with a stale URL', () => {
+    fs.writeFileSync(path.join(home, '.agstatus.json'), JSON.stringify({ url: 'https://s.example/w/file' }));
+    stale();
+    expect(resolveBoardUrl()).toEqual({ url: 'https://s.example/w/file', source: 'file' });
+    register(CMD);
+    expect(resolveBoardUrl()).toEqual({ url: 'https://s.example/w/stale', source: 'codex' });
+  });
+
+  it('treats a hooks.json it cannot parse as no registration, without failing the resolution', () => {
+    // Codex cannot load hooks from a file it cannot parse either, so nothing
+    // of ours is running — and this third-party file must not take down a
+    // resolution ~/.agstatus.json can still satisfy.
+    stale();
+    fs.writeFileSync(codexHooksPath(), '{ nope');
+    fs.writeFileSync(path.join(home, '.agstatus.json'), JSON.stringify({ url: 'https://s.example/w/file' }));
+    expect(resolveBoardUrl()).toEqual({ url: 'https://s.example/w/file', source: 'file' });
+  });
+
+  it('still reads a pre-sidecar install straight off the command string', () => {
+    register(LEGACY_CMD('https://s.example/w/legacy', "it'\\''s"));
+    expect(resolveBoardUrl()).toEqual({ url: 'https://s.example/w/legacy', source: 'codex' });
+    expect(resolveSecret()).toEqual({ secret: "it's", source: 'codex' });
   });
 });
 

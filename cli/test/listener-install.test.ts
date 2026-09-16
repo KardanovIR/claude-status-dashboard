@@ -47,7 +47,10 @@ const EXPECTED_PUBLIC_ID = 'fa1ac1e7c51a98ad6856f1299ad52080';
 
 const ENV_KEYS = [
   'HOME', 'AGSTATUS_STATE_DIR', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME',
-  'CLAUDE_STATUS_URL', 'CLAUDE_STATUS_SECRET', 'AGSTATUS_FOCUS', 'AGSTATUS_RESUME',
+  'CLAUDE_STATUS_URL', 'CLAUDE_STATUS_SECRET', 'AGSTATUS_FOCUS', 'AGSTATUS_RESUME', 'AGSTATUS_HOME',
+  // The installer copies this one into the plist, so a developer who has it
+  // set would otherwise change what every assertion below is reading.
+  'AGSTATUS_NODE',
 ];
 
 interface Workspace {
@@ -65,6 +68,13 @@ function writeJson(file: string, value: unknown): void {
 
 const readJson = (file: string): Record<string, unknown> => JSON.parse(fs.readFileSync(file, 'utf8'));
 
+/** A cli.js on disk where the install will point at it, so doctor has something to stat. */
+function withCliAt(file: string): string {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, '#!/usr/bin/env node\n');
+  return file;
+}
+
 function withSettingsUrl(home: string, url: string): void {
   writeJson(path.join(home, '.claude', 'settings.json'), { env: { CLAUDE_STATUS_URL: url }, model: 'opus' });
 }
@@ -75,16 +85,38 @@ function withCodexUrl(home: string, url: string, secret?: string): void {
   });
 }
 
-/** launchctl stand-in: records every call, answers success (or a canned print). */
-function recorder(print?: string): { exec: Exec; calls: string[][] } {
+/**
+ * launchctl stand-in: records every call, answers success (or a canned
+ * print). It also answers doctor's Node probe — a rendered copy of the shim,
+ * run to ask which Node the real one would pick — so no test ever executes a
+ * script or reads the developer's own Node installs. `probeEnv` keeps the
+ * environment that probe was handed, which is the only way to check that
+ * doctor asks the question under the *agent's* environment and not this
+ * process's.
+ */
+function recorder(print?: string, node: { code: number; stdout: string } = NODE_PROBE): {
+  exec: Exec;
+  calls: string[][];
+  probeEnv: () => NodeJS.ProcessEnv | undefined;
+} {
   const calls: string[][] = [];
-  const exec: Exec = async (file, args) => {
+  let probed: NodeJS.ProcessEnv | undefined;
+  const exec: Exec = async (file, args, env) => {
     calls.push([path.basename(file), ...args]);
+    if (path.basename(file) === 'agstatus') {
+      probed = env;
+      return node;
+    }
     if (args[0] === 'print') return print ? { code: 0, stdout: print } : { code: 113, stdout: '' };
     return { code: 0, stdout: '' };
   };
-  return { exec, calls };
+  return { exec, calls, probeEnv: () => probed };
 }
+
+/** What the shim's own resolution answers on a healthy machine. */
+const NODE_PROBE = { code: 0, stdout: '/usr/local/bin/node (20.9.0)\n' };
+/** `launchctl print` for a job that is up, with a clean last run. */
+const PRINTS_RUNNING = 'com.agstatus.listener = {\n\tstate = running\n\tpid = 4242\n\tlast exit code = 0\n}\n';
 
 let saved: Record<string, string | undefined>;
 let ws: Workspace;
@@ -116,10 +148,24 @@ const quiet = (): { log: (l: string) => void; out: () => string } => {
   return { log: (l) => lines.push(l), out: () => lines.join('\n') };
 };
 
+/**
+ * An installer layout inside the throwaway HOME: the CLI at
+ * `<prefix>/lib/agstatus/dist/cli.js`, so the shim lands at `<prefix>/bin/agstatus`
+ * — the prefix read back off the CLI's own location, which is what a real
+ * `curl … | sh` install looks like. `<home>/opt/agstatus` deliberately is not
+ * the default prefix (`<home>/.agstatus`), so a test that sees the shim there
+ * has proved the derivation and not the fallback.
+ */
+const prefix = (): string => path.join(ws.home, 'opt', 'agstatus');
+const cliPath = (): string => path.join(prefix(), 'lib', 'agstatus', 'dist', 'cli.js');
+const shim = (): string => path.join(prefix(), 'bin', 'agstatus');
+/** The resume launcher, which lives in the state dir rather than the prefix. */
+const launcher = (): string => path.join(ws.state, 'agstatus-resume');
+
 const darwin = (extra: Record<string, unknown> = {}) => ({
   platform: 'darwin' as const,
   uid: 501,
-  cliPath: '/opt/agstatus/dist/cli.js',
+  cliPath: cliPath(),
   nodePath: '/usr/local/bin/node',
   ...extra,
 });
@@ -174,22 +220,43 @@ describe('renderPlist', () => {
   it('escapes XML and carries the label, PATH, program arguments and both log paths', () => {
     const xml = renderPlist({
       label: LAUNCH_AGENT_LABEL,
-      nodePath: '/usr/local/bin/node',
-      cliPath: '/Users/a&b/<cli>/cli.js',
+      program: '/Users/a&b/<agstatus>/bin/agstatus',
       args: ['listener', 'run'],
       path: '/opt/homebrew/bin:/usr/bin:"q"',
       logFile: '/Users/a&b/Library/listener.log',
     });
     expect(xml).toContain(`<key>Label</key><string>${LAUNCH_AGENT_LABEL}</string>`);
-    expect(xml).toContain('<string>/Users/a&amp;b/&lt;cli&gt;/cli.js</string>');
-    expect(xml).not.toContain('<cli>');
+    expect(xml).toContain('<string>/Users/a&amp;b/&lt;agstatus&gt;/bin/agstatus</string>');
+    expect(xml).not.toContain('<agstatus>');
     expect(xml).toContain('<key>PATH</key><string>/opt/homebrew/bin:/usr/bin:&quot;q&quot;</string>');
     expect(xml).toContain('<key>StandardOutPath</key><string>/Users/a&amp;b/Library/listener.log</string>');
     expect(xml).toContain('<key>StandardErrorPath</key><string>/Users/a&amp;b/Library/listener.log</string>');
     expect(xml).toContain('<key>RunAtLoad</key><true/>');
+    // KeepAlive + ThrottleInterval is the self-heal: the shim resolves Node at
+    // every start, so a Node that vanished under the running agent costs one
+    // restart, not a reinstall.
     expect(xml).toContain('<key>KeepAlive</key><true/>');
     expect(xml).toContain('<key>ThrottleInterval</key><integer>10</integer>');
-    expect(plistProgramArguments(xml)).toEqual(['/usr/local/bin/node', '/Users/a&b/<cli>/cli.js', 'listener', 'run']);
+    expect(plistProgramArguments(xml)).toEqual(['/Users/a&b/<agstatus>/bin/agstatus', 'listener', 'run']);
+  });
+
+  it('names one program and never an interpreter', () => {
+    // launchd resolves ProgramArguments[0] against its OWN default PATH and
+    // never against EnvironmentVariables.PATH below — a bare name there exits
+    // 78 without running. So argv[0] is the shim, and nothing in the file is
+    // allowed to be `node` or a cli.js again.
+    const xml = renderPlist({
+      label: LAUNCH_AGENT_LABEL,
+      program: '/Users/demo/.agstatus/bin/agstatus',
+      args: ['listener', 'run', '--url', 'https://s.example/w/ags_x'],
+      path: '/usr/local/bin:/usr/bin',
+      logFile: '/tmp/listener.log',
+    });
+    expect(plistProgramArguments(xml)).toEqual([
+      '/Users/demo/.agstatus/bin/agstatus', 'listener', 'run', '--url', 'https://s.example/w/ags_x',
+    ]);
+    expect(xml).not.toContain('/bin/node');
+    expect(xml).not.toContain('cli.js');
   });
 });
 
@@ -222,9 +289,10 @@ describe('install', () => {
     const plist = plistPath(ws.home);
     expect(plist).toBe(path.join(ws.home, 'Library', 'LaunchAgents', 'com.agstatus.listener.plist'));
     const xml = fs.readFileSync(plist, 'utf8');
-    expect(xml).toContain('<string>/opt/agstatus/dist/cli.js</string>');
-    expect(xml).toContain('<string>listener</string>');
-    expect(xml).toContain('<string>run</string>');
+    // argv[0] is the shim under the prefix, never node and never cli.js.
+    expect(plistProgramArguments(xml)).toEqual([shim(), 'listener', 'run']);
+    expect(xml).not.toContain('cli.js');
+    expect(fs.statSync(shim()).mode & 0o777).toBe(0o700);
     expect(xml).toContain(`<key>AGSTATUS_STATE_DIR</key><string>${ws.state}</string>`);
     expect(xml).toContain(`<string>${path.join(ws.state, 'listener.log')}</string>`);
 
@@ -235,6 +303,8 @@ describe('install', () => {
 
     const expectedId = publicId(machineKey(machine.machineId as string, BOARD));
     expect(out()).toContain('This machine will appear on your board as "Studio"');
+    expect(out()).toContain(`Launcher:  ${shim()}`);
+    expect(out()).toContain(`CLI:       ${cliPath()}`);
     expect(out()).toContain(`"id": "${expectedId}"`);
     expect(out()).toContain(path.join(ws.state, 'sessions'));
     expect(out()).not.toContain(machine.machineId as string); // the raw id never leaves machine.json
@@ -292,12 +362,12 @@ describe('install', () => {
   it('keeps --url in the agent arguments, so run, status and doctor follow the board the id was printed for', async () => {
     withSettingsUrl(ws.home, BOARD);
     const other = 'https://s.example/w/ags_other';
-    const { exec } = recorder('com.agstatus.listener = {\n\tpid = 4242\n}\n');
+    const { exec } = recorder(PRINTS_RUNNING);
     const { log, out } = quiet();
     expect(await install(darwin({ exec, log, url: other }))).toBe(0);
 
     const xml = fs.readFileSync(plistPath(ws.home), 'utf8');
-    expect(plistProgramArguments(xml)).toEqual(['/usr/local/bin/node', '/opt/agstatus/dist/cli.js', 'listener', 'run', '--url', other]);
+    expect(plistProgramArguments(xml)).toEqual([shim(), 'listener', 'run', '--url', other]);
     expect(plistUrlFlag(xml)).toBe(other);
     const machine = readJson(path.join(ws.state, 'machine.json'));
     const idFor = (url: string): string => publicId(machineKey(machine.machineId as string, url));
@@ -328,15 +398,15 @@ describe('install', () => {
     const { exec } = recorder();
     const { log, out } = quiet();
     expect(await install(darwin({ exec, log, url: `${BOARD}/` }))).toBe(0);
-    expect(plistProgramArguments(fs.readFileSync(plistPath(ws.home), 'utf8')).slice(2)).toEqual(['listener', 'run', '--url', `${BOARD}/`]);
+    expect(plistProgramArguments(fs.readFileSync(plistPath(ws.home), 'utf8')).slice(1)).toEqual(['listener', 'run', '--url', `${BOARD}/`]);
     expect(out()).not.toContain('⚠ --url');
     expect(await install(darwin({ exec, log }))).toBe(0);
     const xml = fs.readFileSync(plistPath(ws.home), 'utf8');
-    expect(plistProgramArguments(xml).slice(2)).toEqual(['listener', 'run']);
+    expect(plistProgramArguments(xml).slice(1)).toEqual(['listener', 'run']);
     expect(plistUrlFlag(xml)).toBeUndefined();
     // A plist edited by hand into something that is not a board URL is not followed either.
     expect(plistUrlFlag(renderPlist({
-      label: LAUNCH_AGENT_LABEL, nodePath: '/n', cliPath: '/c', args: ['listener', 'run', '--url', 'not a url'], path: '', logFile: '/l',
+      label: LAUNCH_AGENT_LABEL, program: '/p/bin/agstatus', args: ['listener', 'run', '--url', 'not a url'], path: '', logFile: '/l',
     }))).toBeUndefined();
   });
 });
@@ -353,7 +423,10 @@ describe('a hook that predates Focus', () => {
     expect(await install(darwin({ exec, log: installed.log }))).toBe(0);
     expect(installed.out()).toContain('predates Focus');
     expect(installed.out()).toContain(hook);
-    expect(installed.out()).toContain('npx agstatus init');
+    // The documented channel, not the retired one: npm still serves 1.3.0, so
+    // `npx agstatus init` keeps working — it is simply not what we say.
+    expect(installed.out()).toContain('Run `agstatus init` to refresh it.');
+    expect(installed.out()).not.toContain('npx agstatus');
 
     const checked = quiet();
     expect(await doctor(darwin({ exec: recorder().exec, log: checked.log }))).toBe(1);
@@ -368,8 +441,6 @@ describe('a hook that predates Focus', () => {
 });
 
 describe('the resume launcher', () => {
-  const launcher = (): string => path.join(ws.state, 'agstatus-resume');
-
   it('is written 0700 with both absolute paths baked in, and doctor vouches for it', async () => {
     withSettingsUrl(ws.home, BOARD);
     const { exec } = recorder();
@@ -377,10 +448,12 @@ describe('the resume launcher', () => {
     expect(await install(darwin({ exec, log }))).toBe(0);
 
     expect(fs.statSync(launcher()).mode & 0o777).toBe(0o700);
+    // One interpolated path, and it is the shim: node and cli.js are no
+    // longer frozen into this file either.
     expect(fs.readFileSync(launcher(), 'utf8')).toBe(
       '#!/bin/sh\n' +
         '# AgStatus Focus resume launcher — written by `agstatus listener install`.\n' +
-        'exec "/usr/local/bin/node" "/opt/agstatus/dist/cli.js" listener resume-exec "$1"\n'
+        `exec "${shim()}" listener resume-exec "$1"\n`
     );
     expect(out()).toContain(launcher());
 
@@ -400,12 +473,43 @@ describe('the resume launcher', () => {
 
     const checked = quiet();
     expect(await doctor(darwin({ exec: recorder().exec, log: checked.log }))).toBe(1);
-    expect(checked.out()).toContain('is not a 0700 regular file owned by you');
+    // The mode it actually has, not a phrase that covers three unrelated faults.
+    expect(checked.out()).toContain(`✖ ${launcher()}: mode 755, expected 700`);
 
     fs.rmSync(launcher());
     const missing = quiet();
     expect(await doctor(darwin({ exec: recorder().exec, log: missing.log }))).toBe(1);
     expect(missing.out()).toContain(`✖ ${launcher()} missing`);
+  });
+
+  it('is named for what it is when it predates the shim, not called "not 0700"', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    withCliAt(cliPath());
+    expect(await install(darwin({ exec: recorder().exec, log: quiet().log }))).toBe(0);
+
+    // What every install up to 1.3.0 has on disk: node and cli.js frozen into
+    // the launcher itself — the pair the shim exists to stop freezing. The
+    // file is 0700 and ours; its shape is the only thing wrong with it, and
+    // "not a 0700 regular file owned by you" is a claim `ls -l` disproves.
+    fs.writeFileSync(
+      launcher(),
+      '#!/bin/sh\n' +
+        '# AgStatus Focus resume launcher — written by `agstatus listener install`.\n' +
+        `exec "/usr/local/bin/node" "${cliPath()}" listener resume-exec "$1"\n`
+    );
+    fs.chmodSync(launcher(), 0o700);
+
+    const checked = quiet();
+    expect(await doctor(darwin({ exec: recorder(PRINTS_RUNNING).exec, log: checked.log }))).toBe(1);
+    expect(checked.out()).toContain(
+      `✖ ${launcher()}: not the one-line launcher this version writes (it predates the launcher shim)`
+    );
+    expect(checked.out()).not.toContain('is not a 0700 regular file owned by you');
+    expect(fs.statSync(launcher()).mode & 0o777).toBe(0o700);
+
+    const shown = quiet();
+    await status(darwin({ exec: recorder(PRINTS_RUNNING).exec, log: shown.log }));
+    expect(shown.out()).toContain('it predates the launcher shim');
   });
 
   it('--no-resume writes "resume": false, and install, doctor and status all say resume is off', async () => {
@@ -505,6 +609,351 @@ describe('the resume launcher', () => {
     const checked = quiet();
     await doctor(darwin({ exec: recorder().exec, log: checked.log }));
     expect(checked.out()).toContain('AGSTATUS_RESUME=off');
+  });
+});
+
+describe('the launcher shim', () => {
+  it('is what launchd runs: an absolute path we own, with the CLI and a Node *hint* inside it', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    const { exec } = recorder();
+    expect(await install(darwin({ exec, log: quiet().log }))).toBe(0);
+
+    const text = fs.readFileSync(shim(), 'utf8');
+    expect(text.split('\n')[0]).toBe('#!/bin/sh');
+    expect(text).toContain(`CLI="${cliPath()}"`);
+    expect(text).toContain('NODE_HINT="/usr/local/bin/node"');
+    expect(fs.statSync(shim()).mode & 0o777).toBe(0o700);
+
+    // And the plist names the shim and nothing else: the node this install ran
+    // under is a hint inside a script, never a path launchd has to resolve.
+    const xml = fs.readFileSync(plistPath(ws.home), 'utf8');
+    expect(plistProgramArguments(xml)[0]).toBe(shim());
+    expect(xml).not.toContain('/usr/local/bin/node');
+    expect(xml).not.toContain('cli.js');
+    // PATH stays: §5.1 resolves agtermctl, kitten, tmux and codex inside the
+    // listener, and a LaunchAgent's own PATH is four system directories.
+    expect(plistEnv(xml).PATH).toBe(process.env.PATH ?? '');
+  });
+
+  it('falls back to ~/.agstatus for a CLI that is not in the installed layout', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    // A dev checkout: `cli/dist/cli.js` is nobody's prefix, so the shim goes
+    // to the default one. The install still works — it just cannot promise
+    // that the cli.js it points at will still be there.
+    const dev = path.join(ws.home, 'src', 'claude-status', 'cli', 'dist', 'cli.js');
+    const { exec } = recorder();
+    const { log, out } = quiet();
+    expect(await install(darwin({ exec, log, cliPath: dev }))).toBe(0);
+
+    const fallback = path.join(ws.home, '.agstatus', 'bin', 'agstatus');
+    expect(fs.existsSync(fallback)).toBe(true);
+    expect(fs.readFileSync(fallback, 'utf8')).toContain(`CLI="${dev}"`);
+    expect(plistProgramArguments(fs.readFileSync(plistPath(ws.home), 'utf8'))[0]).toBe(fallback);
+    expect(out()).not.toContain('⚠'); // a checkout is not a rotting path, just an unmanaged one
+  });
+
+  it('follows $AGSTATUS_HOME when there is no layout to read', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    process.env.AGSTATUS_HOME = path.join(ws.home, 'elsewhere');
+    const { exec } = recorder();
+    expect(await install(darwin({ exec, log: quiet().log, cliPath: path.join(ws.home, 'x', 'dist', 'cli.js') }))).toBe(0);
+    expect(fs.existsSync(path.join(ws.home, 'elsewhere', 'bin', 'agstatus'))).toBe(true);
+  });
+
+  it('refuses, before writing anything at all, a CLI path it could not quote', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    const { exec, calls } = recorder();
+    const { log, out } = quiet();
+    expect(await install(darwin({ exec, log, cliPath: '/opt/ag"status/lib/agstatus/dist/cli.js' }))).toBe(1);
+    expect(out()).toMatch(/cannot quote/);
+    expect(fs.existsSync(path.join(ws.state, 'machine.json'))).toBe(false);
+    expect(fs.existsSync(path.join(ws.home, '.agstatus.json'))).toBe(false);
+    expect(fs.existsSync(plistPath(ws.home))).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  it('warns about a version-stamped prefix without refusing it, and never says `npm i -g`', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    const cases: Array<[string, RegExp]> = [
+      [path.join(ws.home, '.npm', '_npx', 'a1b2', 'node_modules', 'agstatus', 'dist', 'cli.js'), /the npx cache/],
+      // The old advice was `npm i -g agstatus`, which on an nvm machine moves
+      // the CLI from one version-stamped directory into another one.
+      [path.join(ws.home, '.nvm', 'versions', 'node', 'v20.9.0', 'lib', 'node_modules', 'agstatus', 'dist', 'cli.js'),
+        /a Node version directory \(node\/v20\.9\.0\)/],
+      ['/opt/homebrew/Cellar/agstatus/1.3.0/libexec/dist/cli.js', /a Homebrew cellar \(agstatus\/1\.3\.0\)/],
+    ];
+    for (const [cli, why] of cases) {
+      const { log, out } = quiet();
+      expect(await install(darwin({ exec: recorder().exec, log, cliPath: cli }))).toBe(0);
+      expect(out()).toMatch(why);
+      expect(out()).toContain('curl -fsSL https://agstatus.online/install.sh | sh');
+      expect(out()).not.toContain('npm i -g');
+    }
+  });
+});
+
+describe('doctor and the agent', () => {
+  /** A healthy install: the layout on disk, the CLI present, launchd answering. */
+  const healthy = async (): Promise<void> => {
+    withSettingsUrl(ws.home, BOARD);
+    withCliAt(cliPath());
+    expect(await install(darwin({ exec: recorder().exec, log: quiet().log }))).toBe(0);
+  };
+
+  it('passes a healthy install, and never reads "listener" as the entry point', async () => {
+    await healthy();
+    const { log, out } = quiet();
+    expect(await doctor(darwin({ exec: recorder(PRINTS_RUNNING).exec, log }))).toBe(0);
+
+    // The regression this whole change would otherwise have caused: argv[1]
+    // is the subcommand now, so reading it as a path reported a healthy
+    // install as broken.
+    expect(out()).not.toContain('entry point listener');
+    expect(out()).toContain(`✔ launcher ${shim()} (0700, yours)`);
+    expect(out()).toContain(`✔ entry point ${cliPath()}`);
+    expect(out()).toContain('✔ Node /usr/local/bin/node (20.9.0)');
+    expect(out()).toContain('✔ running, pid 4242');
+    expect(out()).toContain('Everything looks fine.');
+  });
+
+  it('checks the program launchd would exec, not just that a plist exists', async () => {
+    await healthy();
+
+    fs.chmodSync(shim(), 0o755);
+    const loose = quiet();
+    expect(await doctor(darwin({ exec: recorder(PRINTS_RUNNING).exec, log: loose.log }))).toBe(1);
+    expect(loose.out()).toContain(`✖ launcher ${shim()}: mode 755, expected 700`);
+
+    fs.rmSync(shim());
+    const gone = quiet();
+    expect(await doctor(darwin({ exec: recorder(PRINTS_RUNNING).exec, log: gone.log }))).toBe(1);
+    expect(gone.out()).toContain(`✖ launcher ${shim()}: missing`);
+    // …and with no shim there is no resume either: the launcher delegates to
+    // it. The resume launcher itself is untouched — still 0700, still ours —
+    // so saying it is not is a claim the reader can disprove with `ls -l`.
+    expect(gone.out()).toContain(`✖ ${launcher()}: its shim ${shim()} is missing`);
+    expect(gone.out()).not.toContain('is not a 0700 regular file owned by you');
+  });
+
+  it('stats the entry point the prefix names, and says when it is gone', async () => {
+    await healthy();
+    fs.rmSync(cliPath());
+    const { log, out } = quiet();
+    expect(await doctor(darwin({ exec: recorder(PRINTS_RUNNING).exec, log }))).toBe(1);
+    expect(out()).toContain(`✖ entry point ${cliPath()} no longer exists`);
+  });
+
+  it('explains a 127 from the launcher, and a 78 from launchd', async () => {
+    await healthy();
+
+    // 127 is the shim's own "no Node >=18" exit. A KeepAlive job that never
+    // execs writes nothing to the log, so this is the only evidence there is.
+    const dead = 'com.agstatus.listener = {\n\tstate = not running\n\tlast exit code = 127\n}\n';
+    const noNode = quiet();
+    expect(await doctor(darwin({ exec: recorder(dead).exec, log: noNode.log }))).toBe(1);
+    expect(noNode.out()).toContain('✖ its last run exited 127 — the launcher found no Node >=18');
+    expect(noNode.out()).toContain('AGSTATUS_NODE=/absolute/path/to/node');
+
+    // 78 is EX_CONFIG: launchd could not exec argv[0] at all — the failure the
+    // old plist produced whenever node moved, and the reason argv[0] must be
+    // an absolute path we own.
+    const misconfigured = 'com.agstatus.listener = {\n\tlast exit code = 78\n}\n';
+    const config = quiet();
+    expect(await doctor(darwin({ exec: recorder(misconfigured).exec, log: config.log }))).toBe(1);
+    expect(config.out()).toContain('✖ its last run exited 78 (EX_CONFIG)');
+    expect(config.out()).toContain(shim());
+
+    // Anything else is a note, not a verdict: the log says why.
+    const crashed = 'com.agstatus.listener = {\n\tpid = 4242\n\tlast exit status = 1\n}\n';
+    const other = quiet();
+    expect(await doctor(darwin({ exec: recorder(crashed).exec, log: other.log }))).toBe(0);
+    expect(other.out()).toContain('⚠ its last run exited 1');
+  });
+
+  it('says so when launchd has never been handed the agent', async () => {
+    await healthy();
+    const { log, out } = quiet();
+    expect(await doctor(darwin({ exec: recorder().exec, log }))).toBe(1); // print exits 113
+    expect(out()).toContain('✖ launchctl has no job gui/501/com.agstatus.listener');
+    expect(out()).toContain('launchctl bootstrap gui/501');
+  });
+
+  it('runs the shim\'s own resolution rather than guessing, and reports a 127 from it', async () => {
+    await healthy();
+    const { log, out } = quiet();
+    // The probe is a copy of the shim pointed at a two-line script; the same
+    // find_node(), so the answer cannot drift from what launchd will get.
+    expect(await doctor(darwin({ exec: recorder(PRINTS_RUNNING, { code: 127, stdout: '' }).exec, log }))).toBe(1);
+    expect(out()).toContain('✖ the launcher finds no Node >=18 on this machine');
+  });
+
+  it('survives a shim whose NODE_HINT cannot be quoted, and names that hint', async () => {
+    await healthy();
+    // A shim edited by hand into something renderShim refuses. doctor renders
+    // a copy of it to ask which Node it would pick, so this threw straight
+    // out of doctor — no report at all — and the message blamed "the cli.js
+    // path", which is neither the offending path nor anything the reader has.
+    fs.writeFileSync(
+      shim(),
+      fs.readFileSync(shim(), 'utf8').replace(/^NODE_HINT=.*$/m, 'NODE_HINT="/opt/$(id -u)/node"')
+    );
+    fs.chmodSync(shim(), 0o700);
+
+    const { log, out } = quiet();
+    expect(await doctor(darwin({ exec: recorder(PRINTS_RUNNING).exec, log }))).toBe(1);
+    expect(out()).toContain(`the NODE_HINT in ${shim()} ("/opt/$(id -u)/node")`);
+    expect(out()).not.toContain('cli.js path');
+    // And the report goes on: the entry point, launchd's verdict, the footer.
+    expect(out()).toContain(`✔ entry point ${cliPath()}`);
+    expect(out()).toContain('✔ running, pid 4242');
+    expect(out()).toContain('1 problem found.');
+  });
+
+  it('warns that the entry point sits in a version-stamped directory, from the shim it named', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    const npx = withCliAt(path.join(ws.home, '.npm', '_npx', 'a1b2', 'node_modules', 'agstatus', 'dist', 'cli.js'));
+    expect(await install(darwin({ exec: recorder().exec, log: quiet().log, cliPath: npx }))).toBe(0);
+
+    const { log, out } = quiet();
+    expect(await doctor(darwin({ exec: recorder(PRINTS_RUNNING).exec, log }))).toBe(0);
+    // No layout under the fallback prefix, so doctor reads the entry point
+    // back out of the shim itself — and still stats it.
+    expect(out()).toContain(`✔ entry point ${npx}`);
+    expect(out()).toContain('⚠ it lives in the npx cache');
+    expect(out()).toContain('curl -fsSL https://agstatus.online/install.sh | sh');
+  });
+});
+
+describe('a plist from before the launcher shim', () => {
+  /** What 1.3.0 registered: `[<node>, <cli.js>, "listener", "run"]`, node first. */
+  const legacyPlist = (node: string): void => {
+    fs.writeFileSync(
+      plistPath(ws.home),
+      renderPlist({
+        label: LAUNCH_AGENT_LABEL,
+        program: node,
+        args: [cliPath(), 'listener', 'run'],
+        path: '/usr/local/bin:/usr/bin',
+        logFile: path.join(ws.state, 'listener.log'),
+      })
+    );
+  };
+
+  /**
+   * A stand-in for the Node such a plist named. Deliberately not a file called
+   * `node`: nothing in this suite may look like a toolchain binary, and doctor
+   * only ever `stat`s this path.
+   */
+  const oldNode = (version: string): string => path.join(ws.home, 'old-toolchain', `node-${version}`);
+
+  it('is diagnosed as itself, on an install that is running perfectly', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    withCliAt(cliPath());
+    expect(await install(darwin({ exec: recorder().exec, log: quiet().log }))).toBe(0);
+    const node = oldNode('v20.9.0');
+    fs.mkdirSync(path.dirname(node), { recursive: true });
+    fs.writeFileSync(node, '');
+    legacyPlist(node);
+
+    const { log, out } = quiet();
+    expect(await doctor(darwin({ exec: recorder(PRINTS_RUNNING).exec, log }))).toBe(1);
+    expect(out()).toContain('✖ this plist predates the launcher shim; re-run the installer to upgrade it');
+    expect(out()).toContain('curl -fsSL https://agstatus.online/install.sh | sh');
+    // Not one of the shim-era verdicts, every one of which would have been
+    // aimed at the user's node binary on a machine with nothing wrong with it.
+    expect(out()).not.toContain(`launcher ${node}`);
+    expect(out()).not.toContain('no entry point');
+    expect(out()).not.toContain('is already gone');
+    // …and the rest of the report still prints, ending on that one problem.
+    expect(out()).toContain('✔ running, pid 4242');
+    expect(out()).toContain('1 problem found.');
+  });
+
+  it('says the frozen Node is gone when it is, and reads 78 and 127 in its own terms', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    withCliAt(cliPath());
+    expect(await install(darwin({ exec: recorder().exec, log: quiet().log }))).toBe(0);
+    const node = oldNode('v18.20.0');
+    legacyPlist(node);
+
+    // 78 (EX_CONFIG) is what launchd reports when it cannot exec argv[0] —
+    // the failure mode a frozen node path has been waiting to hit all along.
+    const misconfigured = 'com.agstatus.listener = {\n\tlast exit code = 78\n}\n';
+    const { log, out } = quiet();
+    expect(await doctor(darwin({ exec: recorder(misconfigured).exec, log }))).toBe(1);
+    expect(out()).toContain(`${node} is already gone`);
+    expect(out()).toContain('✖ its last run exited 78 (EX_CONFIG)');
+    expect(out()).toContain('cannot be re-pointed in place');
+
+    // A 127 here is that node failing to run the CLI, not a shim that found
+    // no Node — and AGSTATUS_NODE, which only the shim reads, would do nothing.
+    const dead = 'com.agstatus.listener = {\n\tlast exit code = 127\n}\n';
+    const other = quiet();
+    expect(await doctor(darwin({ exec: recorder(dead).exec, log: other.log }))).toBe(1);
+    expect(other.out()).toContain('✖ its last run exited 127 — the node in this plist could not run the CLI');
+    expect(other.out()).not.toContain('AGSTATUS_NODE');
+  });
+});
+
+describe('AGSTATUS_NODE', () => {
+  it('travels into the agent, and doctor probes with the agent environment', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    withCliAt(cliPath());
+    const chosen = path.join(ws.home, 'old-toolchain', 'node-v22.0.0');
+    process.env.AGSTATUS_NODE = chosen;
+    const { log, out } = quiet();
+    expect(await install(darwin({ exec: recorder().exec, log }))).toBe(0);
+    // The plist is the listener's whole environment (design §11): the shim
+    // tries $AGSTATUS_NODE first, and this is the only way it ever gets one.
+    expect(plistEnv(fs.readFileSync(plistPath(ws.home), 'utf8')).AGSTATUS_NODE).toBe(chosen);
+    expect(out()).toContain(`Node:      ${chosen}`);
+
+    const r = recorder(PRINTS_RUNNING);
+    const checked = quiet();
+    expect(await doctor(darwin({ exec: r.exec, log: checked.log }))).toBe(0);
+    expect(r.probeEnv()?.AGSTATUS_NODE).toBe(chosen);
+    expect(checked.out()).not.toContain('is set in this shell');
+  });
+
+  it('is called out when only this shell has it, because launchd never will', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    withCliAt(cliPath());
+    expect(await install(darwin({ exec: recorder().exec, log: quiet().log }))).toBe(0);
+    // doctor's old advice, followed to the letter: it turned the probe green
+    // while launchd went on exiting 127, because the probe inherited this
+    // environment and the agent never did.
+    process.env.AGSTATUS_NODE = path.join(ws.home, 'old-toolchain', 'node-v22.0.0');
+
+    const r = recorder(PRINTS_RUNNING);
+    const checked = quiet();
+    expect(await doctor(darwin({ exec: r.exec, log: checked.log }))).toBe(0);
+    expect(r.probeEnv()?.AGSTATUS_NODE).toBeUndefined();
+    expect(checked.out()).toContain("is set in this shell, but the agent's environment");
+    expect(checked.out()).toContain('AGSTATUS_NODE=/absolute/path/to/node agstatus listener install');
+  });
+});
+
+describe('what these commands tell people to run', () => {
+  it('names the installer and a bare `agstatus`, never the retired npx channel', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    const hook = path.join(ws.home, '.claude', 'hooks', 'agstatus-hook.js');
+    fs.mkdirSync(path.dirname(hook), { recursive: true });
+    fs.writeFileSync(hook, '// agstatus 1.3.0 — reports status, knows nothing about Focus\n');
+    const { log, out } = quiet();
+    // One run of each command, over the states that print advice: a stale
+    // hook, a --url that disagrees, then a shim and a CLI that are gone.
+    expect(await install(darwin({ exec: recorder().exec, log, url: 'https://s.example/w/ags_other' }))).toBe(0);
+    await status(darwin({ exec: recorder().exec, log }));
+    fs.rmSync(shim());
+    expect(await doctor(darwin({ exec: recorder().exec, log }))).toBe(1);
+
+    // npm still serves 1.3.0 forever, so an `npx agstatus init` in somebody's
+    // notes keeps working — it is simply not a channel this output points
+    // anybody at any more.
+    expect(out()).not.toContain('npx agstatus');
+    expect(out()).toContain('curl -fsSL https://agstatus.online/install.sh | sh');
+    expect(out()).toContain('`agstatus init`');
+    expect(out()).toContain('`agstatus listener install`');
   });
 });
 
@@ -615,7 +1064,7 @@ describe('agstatus uninstall', () => {
 describe('status', () => {
   it('reports the agent pid, the machine, the board and the log tail', async () => {
     withSettingsUrl(ws.home, BOARD);
-    const { exec } = recorder('com.agstatus.listener = {\n\tstate = running\n\tpid = 4242\n}\n');
+    const { exec } = recorder(PRINTS_RUNNING);
     const { log, out } = quiet();
     expect(await install(darwin({ exec, log }))).toBe(0);
     fs.writeFileSync(path.join(ws.state, 'listener.log'), Array.from({ length: 12 }, (_, i) => `line ${i}`).join('\n') + '\n');

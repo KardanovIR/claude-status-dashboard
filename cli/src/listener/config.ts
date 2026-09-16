@@ -3,7 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { HOOK_MARKER, readSettings, settingsPath } from '../settings';
-import { codexHooksPath, readCodexHooks } from '../codex';
+import { codexHasOurHooks, codexHooksPath, readCodexHookConfig, readCodexHooks } from '../codex';
 import type { ListenerConfig, MachineState } from './types';
 
 /**
@@ -166,9 +166,46 @@ export function readAgstatusJson(file: string = agstatusJsonPath()): Record<stri
   }
 }
 
-/** The `CLAUDE_STATUS_URL="…"` / `CLAUDE_STATUS_SECRET='…'` prefix of our Codex hook command, if registered. */
+/**
+ * What our Codex hook is configured with, if it is installed at all.
+ *
+ * "Installed" means registered: hooks.json is asked first, every time. A
+ * sidecar on its own is not a registration, and three ordinary paths leave one
+ * behind — `agstatus uninstall` deliberately keeps both files when it cannot
+ * clean hooks.json (cli/src/index.ts), an init whose hooks.json write failed
+ * wrote the sidecar first, and a hooks.json can always be hand-edited. Since
+ * this source outranks ~/.agstatus.json in boardUrlCandidates(), a leftover
+ * sidecar would otherwise point the listener at a board Codex no longer posts
+ * to — and the listener would open its stream against that one.
+ *
+ * Given a registration, the URL comes from the agstatus-hook.json sidecar
+ * beside the hook script, which is where current installs keep it. Older ones
+ * carried it as a `CLAUDE_STATUS_URL="…"` / `CLAUDE_STATUS_SECRET='…'` env
+ * prefix on the registered command — that form was dropped because it cannot
+ * run on Windows (see cli/src/codex.ts), but scanning for it stays as a
+ * fallback so `listener install` still finds the board on a machine that has
+ * not re-run `agstatus init` since upgrading.
+ */
 function codexPrefix(): { url?: string; secret?: string } | null {
-  const hooks = readCodexHooks(codexHooksPath());
+  let hooks: Record<string, unknown>;
+  try {
+    hooks = readCodexHooks(codexHooksPath());
+  } catch {
+    // A hooks.json Codex itself cannot parse registers nothing. Swallowed
+    // rather than propagated: unlike ~/.claude/settings.json or
+    // ~/.agstatus.json this is a third-party file we only read, and it must
+    // not fail a resolution that either of those could still satisfy.
+    return null;
+  }
+  if (!codexHasOurHooks(hooks)) return null;
+
+  const sidecar = readCodexHookConfig();
+  if (sidecar) {
+    const out: { url?: string; secret?: string } = { url: sidecar.url };
+    if (sidecar.secret) out.secret = sidecar.secret;
+    return out;
+  }
+
   if (!isPlainObject(hooks.hooks)) return null;
   for (const entries of Object.values(hooks.hooks)) {
     if (!Array.isArray(entries)) continue;
@@ -196,8 +233,8 @@ function settingsEnv(): Record<string, unknown> {
 
 /**
  * Every place a board URL can be configured, in precedence order: the
- * process environment, ~/.claude/settings.json env, the Codex hook command's
- * env prefix, ~/.agstatus.json. Throws when a file exists but is unreadable.
+ * process environment, ~/.claude/settings.json env, a registered Codex hook's
+ * configuration, ~/.agstatus.json. Throws when a file exists but is unreadable.
  */
 export function boardUrlCandidates(): ResolvedValue[] {
   const out: ResolvedValue[] = [];
@@ -331,7 +368,7 @@ export function resolveListenerConfig(opts: ResolveOptions = {}): ListenerConfig
       return { error: (err as Error).message };
     }
     if (!resolved) {
-      return { error: 'No board URL configured — run `npx agstatus init` first (or pass --url <board>).' };
+      return { error: 'No board URL configured — run `agstatus init` first (or pass --url <board>).' };
     }
     url = resolved.url;
   }
@@ -342,7 +379,7 @@ export function resolveListenerConfig(opts: ResolveOptions = {}): ListenerConfig
   const stateDir = str(opts.stateDir) || defaultStateDir();
   const machine = readMachine(stateDir);
   if (!machine) {
-    return { error: `No usable machine.json in ${stateDir} — run \`npx agstatus listener install\`.` };
+    return { error: `No usable machine.json in ${stateDir} — run \`agstatus listener install\`.` };
   }
   const key = machineKey(machine.machineId, base);
   let secret: string | undefined;

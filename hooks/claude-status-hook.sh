@@ -3,7 +3,8 @@
 #
 # DEPRECATED: still supported, but no longer where new features land. It has no
 # plan-usage bars, no card removal on SessionEnd, and no Codex support. Prefer
-# `npx agstatus init`, which installs the Node hook. See docs/hooks.md.
+# `curl -fsSL https://agstatus.online/install.sh | sh`, which installs the Node
+# hook (on Windows: `irm https://agstatus.online/install.ps1 | iex`). See docs/hooks.md.
 #
 # Wired to SessionStart, UserPromptSubmit, PreToolUse, Stop, Notification, SessionEnd.
 # Requires: curl, jq. Requires env: CLAUDE_STATUS_URL. Optional: CLAUDE_STATUS_SECRET.

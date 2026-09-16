@@ -229,10 +229,20 @@ function writeRecord(fx: Fixture, session: string, over: Record<string, unknown>
 /**
  * The resume launcher exactly as `agstatus listener install` writes it —
  * the installer's own function, so these tests break if its bytes, its mode
- * or the name ever drift.
+ * or the name ever drift. The launcher now names one path, the `<prefix>/bin`
+ * shim, and usableLauncher() applies the same 0700-and-ours checks to it, so
+ * the fixture has to put a real shim there rather than borrow a system binary.
  */
+function installShim(fx: Fixture): string {
+  const shim = path.join(fx.root, 'bin', 'agstatus');
+  fs.mkdirSync(path.dirname(shim), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(shim, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+  fs.chmodSync(shim, 0o700);
+  return shim;
+}
+
 function installLauncher(fx: Fixture): string {
-  return writeLauncher(fx.stateDir, process.execPath, path.join(fx.root, 'cli.js'));
+  return writeLauncher(fx.stateDir, installShim(fx));
 }
 
 /**

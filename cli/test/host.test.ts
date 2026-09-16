@@ -119,15 +119,20 @@ afterAll(() => {
   server?.kill();
 });
 
-/** Fires the hook with the given payload fields and returns what it posted. */
+/**
+ * Fires the hook with the given payload fields and returns what it posted.
+ * `hook` points at a copy of the script when a test needs its own __dirname —
+ * the sidecar config is resolved relative to the script, not to a fixed path.
+ */
 function fireEvent(
   payload: Record<string, unknown>,
   extraEnv: Record<string, string> = {},
+  hook: string = HOOK,
 ): Posted | undefined {
   fs.writeFileSync(capturePath, '');
   const env: Record<string, string | undefined> = { ...process.env };
   for (const key of SCRUBBED_ENV) delete env[key];
-  execFileSync(process.execPath, ['-e', LAUNCHER, HOOK], {
+  execFileSync(process.execPath, ['-e', LAUNCHER, hook], {
     input: JSON.stringify({
       session_id: 'msg-test',
       cwd: '/tmp/demo-project',
@@ -570,5 +575,104 @@ describe('focus host summary', () => {
     expect(posted).not.toHaveProperty('host');
     expect(stateFiles(ws.state)).toEqual(['machine.json']);
     expect(fs.existsSync(path.join(ws.state, 'evil'))).toBe(false);
+  });
+});
+
+/**
+ * The sidecar config the installer writes next to the hook script
+ * (cli/src/codex.ts). This is the only channel a Windows install has — the
+ * env-var prefix the Codex command used to carry is a POSIX shell construct
+ * that cmd.exe cannot parse — so the hook is driven here exactly as Codex
+ * will drive it there: `node "<script>"` and nothing else, no env, no shell.
+ * The delivery is identical on every platform, which is what makes a POSIX
+ * run real coverage of the Windows one.
+ */
+describe('sidecar hook config', () => {
+  /** A private copy of the hook, so its __dirname holds only this test's config. */
+  function installedHook(config: Record<string, unknown> | null): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-hookdir-'));
+    const hook = path.join(dir, 'agstatus-hook.js');
+    fs.copyFileSync(HOOK, hook);
+    if (config) {
+      fs.writeFileSync(path.join(dir, 'agstatus-hook.json'), JSON.stringify(config, null, 2) + '\n');
+    }
+    return hook;
+  }
+
+  // '' rather than an absent key: fireEvent always sets CLAUDE_STATUS_URL, and
+  // an empty value is what "nothing in the environment" looks like to the hook.
+  const NO_ENV_URL = { CLAUDE_STATUS_URL: '' };
+
+  it('takes the board URL and the source tag from the file beside the script', () => {
+    const ws = workspace(null, null);
+    const hook = installedHook({ url: base, source: 'codex' });
+    const posted = fireEvent(
+      { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'rm -rf ./dist' } },
+      { ...ws.env, ...NO_ENV_URL },
+      hook,
+    );
+    expect(posted?.source).toBe('codex');
+    expect(posted?.status).toBe('coding');
+    expect(posted?.message).toBe('rm -rf ./dist');
+  });
+
+  it('honors "detail":"off" from the file, with no AGSTATUS_DETAIL anywhere', () => {
+    const ws = workspace(null, null);
+    const hook = installedHook({ url: base, source: 'codex', detail: 'off' });
+    const posted = fireEvent(
+      { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'rm -rf ./dist' } },
+      { ...ws.env, ...NO_ENV_URL },
+      hook,
+    );
+    expect(posted?.message).toBe('Bash');
+    expect(JSON.stringify(posted)).not.toContain('rm -rf');
+    // PermissionRequest text is the other thing the switch has to suppress.
+    const blocked = fireEvent(
+      { hook_event_name: 'PermissionRequest', message: 'Codex wants to run rm -rf ./dist' },
+      { ...ws.env, ...NO_ENV_URL },
+      hook,
+    );
+    expect(blocked?.message).toBe('Needs approval');
+  });
+
+  it('lets the environment override the file, key by key', () => {
+    const ws = workspace(null, null);
+    const hook = installedHook({ url: base, source: 'codex', detail: 'off' });
+    const posted = fireEvent(
+      { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' } },
+      { ...ws.env, ...NO_ENV_URL, AGSTATUS_SOURCE: 'claude', AGSTATUS_DETAIL: 'on' },
+      hook,
+    );
+    // AGSTATUS_DETAIL is set but not 'off' — an explicit override, not a miss.
+    expect(posted?.source).toBe('claude');
+    expect(posted?.status).toBe('testing');
+    expect(posted?.message).toBe('npm test');
+  });
+
+  it('never takes "source" from ~/.agstatus.json — both agents share that file', () => {
+    // A machine runs one board and one ~/.agstatus.json, but two hook copies.
+    // Honoring `source` there would tag every Claude Code session as Codex.
+    const ws = workspace({ source: 'codex' }, null);
+    const posted = fireEvent({ hook_event_name: 'Stop' }, { ...ws.env, ...NO_ENV_URL }, installedHook(null));
+    expect(posted?.source).toBe('claude');
+    expect(posted?.status).toBe('idle');
+  });
+
+  it('falls through to ~/.agstatus.json for url and secret when there is no sidecar', () => {
+    // The plugin install path: no sidecar at all, config in the home dotfile.
+    const ws = workspace({});
+    const posted = fireEvent({ hook_event_name: 'Stop' }, { ...ws.env, ...NO_ENV_URL }, installedHook(null));
+    expect(posted?.session_id).toBe('msg-test');
+    expect(posted?.status).toBe('idle');
+  });
+
+  it('stays silent when a malformed sidecar is the only configuration', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-hookdir-'));
+    const hook = path.join(dir, 'agstatus-hook.js');
+    fs.copyFileSync(HOOK, hook);
+    fs.writeFileSync(path.join(dir, 'agstatus-hook.json'), '{ nope');
+    const ws = workspace(null, null);
+    // Unreadable config is "not configured", never a crash and never a post.
+    expect(fireEvent({ hook_event_name: 'Stop' }, { ...ws.env, ...NO_ENV_URL }, hook)).toBeUndefined();
   });
 });

@@ -6,6 +6,7 @@ import {
   HOOK_EVENTS,
   configDir,
   hookCommand,
+  hookCommandFor,
   mergeSettings,
   readSettings,
   removeAgstatus,
@@ -83,6 +84,62 @@ describe('mergeSettings', () => {
     expect(() => mergeSettings({ hooks: { Stop: { my: 'data' } } }, OPTS)).toThrow(/"hooks\.Stop"/);
     // Non-agstatus events with odd shapes are none of our business.
     expect(() => mergeSettings({ hooks: { PostToolUse: { odd: true } } }, OPTS)).not.toThrow();
+  });
+});
+
+/**
+ * There is no Windows runner in CI, and a hook command that Windows cannot
+ * parse fails silently — registered, never fired, no error anywhere. These
+ * pure-function cases are the only coverage the win32 form will ever get, so
+ * they pin the exact string rather than a property of it.
+ */
+describe('hookCommandFor', () => {
+  it('keeps $HOME on POSIX — byte-identical to what existing installs carry', () => {
+    expect(hookCommandFor('/Users/ada/.claude/hooks/agstatus-hook.js', '/Users/ada', 'darwin')).toBe(
+      'node "$HOME/.claude/hooks/agstatus-hook.js"'
+    );
+    expect(hookCommandFor('/home/ada/.claude/hooks/agstatus-hook.js', '/home/ada', 'linux')).toBe(
+      'node "$HOME/.claude/hooks/agstatus-hook.js"'
+    );
+  });
+
+  it('falls back to the literal path when the hook lives outside the home dir', () => {
+    // CLAUDE_CONFIG_DIR pointing somewhere else, and the near-miss prefix
+    // (/home/ada2 starts with /home/ada) that a plain startsWith would eat.
+    expect(hookCommandFor('/opt/agstatus/agstatus-hook.js', '/home/ada', 'linux')).toBe(
+      'node "/opt/agstatus/agstatus-hook.js"'
+    );
+    expect(hookCommandFor('/home/ada2/hooks/agstatus-hook.js', '/home/ada', 'linux')).toBe(
+      'node "/home/ada2/hooks/agstatus-hook.js"'
+    );
+  });
+
+  it('bakes an absolute forward-slashed path on win32, and never emits $HOME', () => {
+    const cmd = hookCommandFor(
+      'C:\\Users\\Ada\\AppData\\Local\\AgStatus\\hooks\\agstatus-hook.js',
+      'C:\\Users\\Ada',
+      'win32'
+    );
+    // Forward slashes: node accepts them on Windows, and unlike "\" they
+    // survive JSON.stringify into settings.json without doubling.
+    expect(cmd).toBe('node "C:/Users/Ada/AppData/Local/AgStatus/hooks/agstatus-hook.js"');
+    // The defect this branch exists for: neither cmd.exe nor PowerShell
+    // expands a POSIX $HOME, so the command would resolve to nothing.
+    expect(cmd).not.toContain('$HOME');
+    expect(cmd).not.toContain('\\');
+    expect(JSON.parse(JSON.stringify({ command: cmd })).command).toBe(cmd);
+  });
+
+  it('still marks the command as ours, so merge and uninstall find it', () => {
+    // Both branches must carry HOOK_MARKER or removeAgstatus() would orphan
+    // the registration on the platform it does not cover.
+    for (const cmd of [
+      hookCommandFor('/home/ada/.claude/hooks/agstatus-hook.js', '/home/ada', 'linux'),
+      hookCommandFor('C:\\Users\\Ada\\AgStatus\\agstatus-hook.js', 'C:\\Users\\Ada', 'win32'),
+    ]) {
+      const { removed } = removeAgstatus(mergeSettings({}, { ...OPTS, hookCommand: cmd }));
+      expect(removed).toContain('hooks.SessionStart');
+    }
   });
 });
 

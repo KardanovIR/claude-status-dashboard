@@ -247,7 +247,7 @@ async function acquireLock(file: string, exec: ExecFile, platform: NodeJS.Platfo
     if (holder !== null) {
       throw new Error(
         `Another listener (pid ${holder}) already holds ${file}. ` +
-          'Stop it first: `npx agstatus listener uninstall`, or `launchctl bootout gui/$UID/com.agstatus.listener`.'
+          'Stop it first: `agstatus listener uninstall`, or `launchctl bootout gui/$UID/com.agstatus.listener`.'
       );
     }
     fs.rmSync(file, { force: true });
@@ -1152,7 +1152,7 @@ export async function runPlanCommand(sessionId: string, log: Log, deps: PlanComm
   log(`Session ${sessionId}: ${records.length} record(s)${rejected ? `, ${rejected} refused (mode, owner or shape)` : ''}`);
   const chosen = await chooseRecord(records, exec, platform);
   if (!chosen) {
-    log('  No local record — the hook writes one only while Focus is on (`npx agstatus listener install`).');
+    log('  No local record — the hook writes one only while Focus is on (`agstatus listener install`).');
     return 1;
   }
   const { alive } = chosen;

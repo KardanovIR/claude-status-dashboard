@@ -4,14 +4,44 @@ on:
   push:
     tags: ['v*']
 
+# Least privilege by default; each job widens only what it needs.
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
+  # The tag IS the version as far as install.sh and install.ps1 are concerned:
+  # both resolve the newest release through the 302 on
+  # https://github.com/KardanovIR/claude-status-dashboard/releases/latest and
+  # then build the asset name from the vX.Y.Z they land on. So a tag that
+  # disagrees with cli/package.json ships an artifact whose directory name and
+  # whose `agstatus --version` do not match what the installer asked for.
+  # Nothing checked that before; check it first, and cheaply, so a mistagged
+  # release dies in seconds instead of after the 45-minute QEMU image build.
+  version-guard:
+    name: Tag matches cli/package.json
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare the tag against the manifest
+        run: |
+          set -eu
+          TAG="${GITHUB_REF_NAME#v}"
+          # node is preinstalled on the runner image, so this needs no setup step.
+          PKG=$(node -p "require('./cli/package.json').version")
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} declares version ${TAG}, but cli/package.json says ${PKG}"
+            exit 1
+          fi
+          echo "tag ${GITHUB_REF_NAME} matches cli/package.json (${PKG})"
+
   docker:
     name: Docker image → ghcr
     runs-on: ubuntu-latest
+    needs: [version-guard]
+    permissions:
+      contents: read
+      packages: write
     # The arm64 half builds under QEMU; a wedge must fail, not hang for hours.
     timeout-minutes: 45
     steps:
@@ -39,71 +69,148 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  npm:
-    name: Publish CLI to npm
+  # The GitHub Release is now the ONLY distribution channel for the CLI: npm,
+  # npx and the Homebrew tap are retired, so nothing downstream of this job runs
+  # `npm install` on the user's machine. That is why the artifact has to carry
+  # its one runtime dependency itself.
+  github-release:
+    name: GitHub release
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    # Authenticates via OIDC trusted publishing — no NPM_TOKEN secret.
-    # Requires the trusted publisher to be configured in the package's
-    # settings on npmjs.com (repo + this workflow filename).
+    timeout-minutes: 15
+    needs: [version-guard, docker]
     permissions:
-      contents: read
-      id-token: write
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org
-      # Trusted publishing needs npm >= 11.5.1.
-      - run: npm install -g npm@latest
-      - name: Publish agstatus
+          # 20, matching the version CI builds and tests the CLI under.
+          node-version: 20
+          cache: npm
+          cache-dependency-path: cli/package-lock.json
+
+      - name: Build the CLI
         working-directory: cli
         run: |
-          npm ci
-          npm publish --access public
+          set -eu
+          npm ci          # devDependencies included — tsc lives there
+          npm run build   # src/**.ts -> dist/**.js
+          # Re-resolve the tree with dev dependencies dropped. `npm ci` wipes
+          # node_modules and reinstalls, but leaves dist/ alone, so what remains
+          # is exactly the runtime closure plus the build output.
+          npm ci --omit=dev
 
-  brew:
-    name: Bump Homebrew formula
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: [npm]
-    steps:
-      - name: Set up SSH for the tap deploy key
+      - name: Assemble the artifact
+        id: assemble
         run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.TAP_SSH_KEY }}" > ~/.ssh/tap_key
-          chmod 600 ~/.ssh/tap_key
-          ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
-
-      - name: Update Formula/agstatus.rb
-        run: |
-          set -euo pipefail
+          set -eu
           VERSION="${GITHUB_REF_NAME#v}"
-          URL="https://registry.npmjs.org/agstatus/-/agstatus-${VERSION}.tgz"
-          # npm publish just ran; give the registry CDN a moment to propagate.
-          for i in $(seq 1 12); do
-            curl -fsSL -o agstatus.tgz "$URL" && break
-            sleep 10
-          done
-          SHA=$(sha256sum agstatus.tgz | cut -d' ' -f1)
-          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes"
-          git clone --depth 1 git@github.com:KardanovIR/homebrew-tap.git tap
-          cd tap
-          sed -i -E "s|url \".*\"|url \"$URL\"|" Formula/agstatus.rb
-          sed -i -E "s|sha256 \".*\"|sha256 \"$SHA\"|" Formula/agstatus.rb
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit -am "agstatus ${VERSION}"
-          git push
+          STAGE="$RUNNER_TEMP/stage"
+          ROOT="$STAGE/agstatus-$VERSION"
+          OUT="$RUNNER_TEMP/assets"
+          rm -rf "$STAGE" "$OUT"
+          mkdir -p "$ROOT/lib/agstatus" "$ROOT/lib/node_modules" "$OUT"
 
-  github-release:
-    name: GitHub release
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: [docker]
-    steps:
-      - uses: actions/checkout@v4
+          # This tree IS the install prefix ($AGSTATUS_HOME, default
+          # ~/.agstatus; %LOCALAPPDATA%\AgStatus on Windows). install.sh and
+          # install.ps1 drop it in whole and then render bin/agstatus
+          # themselves — the launcher shim has to bake in absolute paths that
+          # only the installing machine knows, so it cannot be prebuilt here.
+          cp -R cli/dist "$ROOT/lib/agstatus/dist"
+          cp -R cli/assets "$ROOT/lib/agstatus/assets"
+          cp cli/package.json "$ROOT/lib/agstatus/package.json"
+          cp LICENSE "$ROOT/LICENSE"
+
+          # node resolves `require('qrcode-terminal')` from
+          # lib/agstatus/dist/cli.js by walking up to lib/node_modules — which
+          # is why the contract puts the dependency there and not beside the
+          # package. Copy the whole pruned prod tree rather than naming
+          # qrcode-terminal: if a runtime dependency is ever added it ships
+          # instead of being silently left out of the artifact.
+          cp -R cli/node_modules/. "$ROOT/lib/node_modules/"
+          # .bin holds npm's console-script symlinks. Nothing here execs them,
+          # and a symlink member is the one thing PowerShell 5.1's
+          # Expand-Archive cannot reproduce, so the tree must stay symlink-free
+          # for the .zip half of the release to install correctly.
+          rm -rf "$ROOT/lib/node_modules/.bin" "$ROOT/lib/node_modules/.package-lock.json"
+
+          # Sourcemaps triple the size of dist/ and point at .ts files the user
+          # will never have. Drop the maps, then drop the now-dangling
+          # //# sourceMappingURL= footer tsc appended to each emitted file.
+          # (Written without `sed -i`, whose spelling differs between GNU and
+          # BSD sed, so this block runs identically wherever it is tested.)
+          find "$ROOT/lib/agstatus/dist" -name '*.js.map' -delete
+          find "$ROOT/lib/agstatus/dist" -name '*.js' -print | while IFS= read -r f; do
+            sed -e '/^\/\/# sourceMappingURL=/d' "$f" > "$f.tmp"
+            mv "$f.tmp" "$f"
+          done
+
+          # The three paths the layout contract pins, plus the symlink ban.
+          test -f "$ROOT/lib/agstatus/dist/cli.js"
+          test -f "$ROOT/lib/agstatus/assets/agstatus-hook.js"
+          test -f "$ROOT/lib/node_modules/qrcode-terminal/package.json"
+          if [ -n "$(find "$ROOT" -type l)" ]; then
+            echo "::error::artifact contains symlinks; the .zip half would not survive extraction"
+            find "$ROOT" -type l
+            exit 1
+          fi
+
+          # Both formats, because the installers cannot share one: `tar` is
+          # everywhere on macOS and Linux, while PowerShell 5.1's
+          # Expand-Archive reads zip and nothing else.
+          ( cd "$STAGE" && tar -czf "$OUT/agstatus-$VERSION.tgz" "agstatus-$VERSION" )
+          ( cd "$STAGE" && zip -qrX "$OUT/agstatus-$VERSION.zip" "agstatus-$VERSION" )
+          # Plain SHA256SUMS, deliberately unsigned. A cosign or minisign
+          # signature needs a verifier binary on the user's machine, and the
+          # whole point of `curl … | sh` is that it assumes nothing beyond a
+          # shell — so the installer could not check the signature, and a
+          # signature nobody in the install path verifies protects nobody.
+          # What this file does buy is a checksum the installer can compare
+          # against the bytes it just downloaded, catching a truncated or
+          # corrupted transfer.
+          ( cd "$OUT" && sha256sum "agstatus-$VERSION.tgz" "agstatus-$VERSION.zip" > SHA256SUMS )
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          ls -l "$OUT"
+          cat "$OUT/SHA256SUMS"
+
+      - name: Prove the artifact runs standalone
+        run: |
+          set -eu
+          VERSION="${{ steps.assemble.outputs.version }}"
+          SMOKE="$RUNNER_TEMP/smoke"
+          rm -rf "$SMOKE"; mkdir -p "$SMOKE"
+          # Extract outside the checkout: the user's machine has no repo and no
+          # node_modules anywhere above the install prefix, and if the artifact
+          # only worked because of an ancestor node_modules the installer would
+          # ship broken.
+          tar -xzf "$RUNNER_TEMP/assets/agstatus-$VERSION.tgz" -C "$SMOKE"
+          TREE="$SMOKE/agstatus-$VERSION"
+          # A probe next to cli.js resolves exactly as cli.js does. It asserts
+          # the vendored dependency is the one that got loaded, then renders a
+          # QR — the one code path that would fail if node_modules were missing.
+          cat > "$TREE/lib/agstatus/dist/_smoke.js" <<'PROBE'
+          const resolved = require.resolve('qrcode-terminal');
+          if (!resolved.startsWith(process.env.TREE)) {
+            throw new Error(`qrcode-terminal resolved outside the artifact: ${resolved}`);
+          }
+          require('qrcode-terminal').generate('https://agstatus.online/', { small: true }, (qr) => {
+            if (qr.split('\n').length < 10) throw new Error('QR render looks empty');
+            console.log(qr);
+          });
+          PROBE
+          TREE="$TREE" node "$TREE/lib/agstatus/dist/_smoke.js"
+          rm "$TREE/lib/agstatus/dist/_smoke.js"
+          node "$TREE/lib/agstatus/dist/cli.js" help > /dev/null
+          echo "standalone tree OK"
+
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          # Without this a missing asset publishes a release the installer
+          # cannot install from, and nothing fails.
+          fail_on_unmatched_files: true
+          files: |
+            ${{ runner.temp }}/assets/agstatus-${{ steps.assemble.outputs.version }}.tgz
+            ${{ runner.temp }}/assets/agstatus-${{ steps.assemble.outputs.version }}.zip
+            ${{ runner.temp }}/assets/SHA256SUMS

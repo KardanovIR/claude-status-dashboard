@@ -557,9 +557,22 @@ data class PairCode(
     val code: String,
     val expiresInSeconds: Int = 0,
 ) {
-    /** The terminal command a user runs to wire their machine to the board. */
+    /**
+     * The terminal command a user runs to wire their machine to the board.
+     *
+     * The documented install path is the one-liner from agstatus.online, and
+     * `sh -s --` is how arguments reach a script that arrived on stdin. The
+     * script URL stays on the default server even when the board is
+     * self-hosted: the board hands out `--url`, but the installer itself
+     * still has to be fetched from somewhere the phone knows is current.
+     *
+     * PairSheet renders this in a wrapping Text with no maxLines, so the
+     * extra length costs a second line on a phone and nothing else.
+     */
     fun command(board: Board): String = buildString {
-        append("npx agstatus init --code ")
+        append("curl -fsSL ")
+        append(Board.DEFAULT_SERVER)
+        append("/install.sh | sh -s -- --code ")
         append(code)
         if (!board.isDefaultServer) {
             append(" --url ")

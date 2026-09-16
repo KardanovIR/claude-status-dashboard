@@ -64,6 +64,10 @@ const INDEX_HTML = path.join(PUBLIC_DIR, 'index.html');
 const LANDING_HTML = path.join(PUBLIC_DIR, 'landing.html');
 const PRIVACY_HTML = path.join(PUBLIC_DIR, 'privacy.html');
 const DOCS_HTML = path.join(PUBLIC_DIR, 'docs.html');
+// The two install scripts. They are checked in under public/, so every board —
+// hosted or self-hosted — hands out the same one-liner install path.
+const INSTALL_SH = path.join(PUBLIC_DIR, 'install.sh');
+const INSTALL_PS1 = path.join(PUBLIC_DIR, 'install.ps1');
 
 const isStatus = (s: unknown): s is Status =>
   typeof s === 'string' && (STATUSES as readonly string[]).includes(s);
@@ -291,6 +295,33 @@ export function createApp(cfg: AppConfig): CreatedApp {
   app.get('/privacy', (_req, res) => res.sendFile(PRIVACY_HTML));
   // Docs page, generated from docs/*.md by scripts/build-docs.js.
   app.get('/docs', (_req, res) => res.sendFile(DOCS_HTML));
+
+  // The one documented install path:
+  //   curl -fsSL https://agstatus.online/install.sh | sh
+  //   irm https://agstatus.online/install.ps1 | iex
+  //
+  // Served as text/plain, not text/x-shellscript, on purpose. Neither `sh` nor
+  // PowerShell's Invoke-RestMethod looks at the type — but a person who pastes
+  // the URL into a browser to read the script before piping it into a shell
+  // very much does, and Chrome and Safari download an x-shellscript body
+  // instead of rendering it. A pipe-to-shell one-liner is only trustworthy if
+  // reading it first is one click away, so the type that renders wins.
+  // (Invoke-RestMethod is happier as well: on text/* it hands back a string,
+  // where an unfamiliar type can send it looking for a deserializer.)
+  //
+  // Five minutes of caching: long enough that a link doing the rounds does not
+  // hit the origin on every click, short enough that a bad release can be
+  // corrected the same afternoon. sendFile still adds an ETag, so a
+  // revalidation after that costs a 304 and no body.
+  const sendScript = (res: Response, file: string): void => {
+    res.type('text/plain; charset=utf-8');
+    res.set('Cache-Control', 'public, max-age=300');
+    res.sendFile(file);
+  };
+  // Registered ahead of express.static, which would otherwise answer with
+  // application/x-sh (and application/octet-stream for the .ps1).
+  app.get('/install.sh', (_req, res) => sendScript(res, INSTALL_SH));
+  app.get('/install.ps1', (_req, res) => sendScript(res, INSTALL_PS1));
 
   app.use(express.static(PUBLIC_DIR, { maxAge: 0, etag: true }));
 

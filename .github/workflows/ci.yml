@@ -64,6 +64,82 @@ jobs:
       - uses: actions/checkout@v4
       - run: shellcheck hooks/claude-status-hook.sh deploy/bootstrap-droplet.sh scripts/*.sh
 
+  # public/install.sh and public/install.ps1 are the only documented way to
+  # install AgStatus, and they are served straight off the board at
+  # agstatus.online/install.sh and /install.ps1. Nobody reviews them in a shell
+  # before `| sh` or `| iex` runs them, and a syntax error there is a broken
+  # install for everyone until the next deploy — so they get parsed on every
+  # push. The steps require both files to exist; that is deliberate, so a
+  # renamed or deleted installer shows up as a red build rather than as a check
+  # that silently stopped checking anything.
+  installers:
+    name: Installers (shell syntax)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh parses as POSIX sh
+        run: |
+          set -eu
+          test -f public/install.sh || { echo "::error::public/install.sh is missing"; exit 1; }
+          # The script is piped into `sh`, so it must be POSIX sh and not bash.
+          # On the runner /bin/sh IS dash, which makes these first two the same
+          # parser today; dash is named explicitly so the check keeps its
+          # meaning if the image's /bin/sh ever changes.
+          sh -n public/install.sh
+          if command -v dash > /dev/null 2>&1; then dash -n public/install.sh; fi
+          # macOS ships bash 3.2 as /bin/sh, so that is the other interpreter
+          # `curl … | sh` actually lands on in the wild.
+          bash -n public/install.sh
+          echo "public/install.sh parses under sh, dash and bash"
+      - name: install.ps1 parses
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'public/install.ps1')) {
+            Write-Host '::error::public/install.ps1 is missing'
+            exit 1
+          }
+          # PowerShell 7.x is preinstalled on the ubuntu runner image, so this
+          # is free. It catches gross syntax errors early, but it CANNOT catch
+          # the 5.1 incompatibilities the installer is written to avoid (??, ?:,
+          # && and || all parse happily under 7) — the windows-powershell job
+          # below is the one that enforces those.
+          $path = (Resolve-Path 'public/install.ps1').Path
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+          if ($errors) {
+            $errors | ForEach-Object { Write-Host "::error::$_" }
+            exit 1
+          }
+          Write-Host "public/install.ps1 parses under PowerShell $($PSVersionTable.PSVersion)"
+
+  # Windows PowerShell 5.1 is what `irm … | iex` hits on a stock Windows box —
+  # it is the version in the OS, and it is strictly older than the pwsh 7 on the
+  # Linux runners. Only 5.1 itself will reject the 7-only syntax (??, ?:, &&,
+  # ||) that would otherwise ship and fail on every un-upgraded machine.
+  # `shell: powershell` is GitHub's mapping for powershell.exe, i.e. Desktop 5.1.
+  windows-powershell:
+    name: install.ps1 (Windows PowerShell 5.1)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.ps1 parses under 5.1
+        shell: powershell
+        run: |
+          if (-not (Test-Path 'public/install.ps1')) {
+            Write-Host '::error::public/install.ps1 is missing'
+            exit 1
+          }
+          $path = (Resolve-Path 'public/install.ps1').Path
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+          if ($errors) {
+            $errors | ForEach-Object { Write-Host "::error::$_" }
+            exit 1
+          }
+          Write-Host "public/install.ps1 parses under Windows PowerShell $($PSVersionTable.PSVersion)"
+
   docker:
     name: Docker image (build only)
     runs-on: ubuntu-latest

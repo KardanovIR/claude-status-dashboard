@@ -1,19 +1,30 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import {
   LAUNCHER_NAME,
+  SHIM_NAME,
+  defaultPrefix,
+  installPrefix,
   launcherPath,
   launcherResolves,
   launcherStateDir,
+  launcherTarget,
+  layoutCliPath,
+  readShim,
   removeLauncher,
   renderLauncher,
+  renderShim,
   resolveResumeCwd,
   resumeArgv,
   runResumeExec,
+  scriptProblem,
+  shimPath,
   usableLauncher,
   writeLauncher,
+  writeShim,
   type ResumeExec,
 } from '../src/listener/resume';
 import { resumeEnabled } from '../src/listener/config';
@@ -30,7 +41,7 @@ import type { LocalRecord } from '../src/listener/types';
  */
 
 const SESSION = 'd916b7fe-6047-4fed-b87e-8fb52b3cd91e';
-const ENV_KEYS = ['HOME', 'AGSTATUS_STATE_DIR', 'CLAUDE_CONFIG_DIR', 'AGSTATUS_RESUME'];
+const ENV_KEYS = ['HOME', 'AGSTATUS_STATE_DIR', 'CLAUDE_CONFIG_DIR', 'AGSTATUS_RESUME', 'AGSTATUS_HOME', 'LOCALAPPDATA'];
 
 let saved: Record<string, string | undefined>;
 let home: string;
@@ -80,6 +91,16 @@ const claudeRecord = (over: Partial<LocalRecord> = {}): LocalRecord => ({
 
 const codexRecord = (over: Partial<LocalRecord> = {}): LocalRecord =>
   claudeRecord({ agent: 'codex', agent_comm: '/Applications/ChatGPT.app/Contents/Resources/codex', ...over });
+
+/**
+ * A launcher shim exactly as `agstatus listener install` writes it, under a
+ * prefix of its own: 0700, ours, in a directory nobody else can write. The
+ * resume launcher delegates to one of these, so almost every test here needs
+ * one to exist before the launcher counts as usable.
+ */
+function installShim(cli = '/opt/agstatus/lib/agstatus/dist/cli.js'): string {
+  return writeShim(mkdtemp('rprefix'), cli, '/usr/local/bin/node');
+}
 
 /** An executable file the resolver will accept as an agent binary (0755, ours, in a 0700 dir). */
 function fakeBin(name: string): string {
@@ -132,68 +153,281 @@ const quiet = (): { log: (l: string) => void; out: () => string } => {
 };
 
 describe('renderLauncher', () => {
-  it('is the three fixed lines, with both absolute paths quoted and only "$1" left to the shell', () => {
-    expect(renderLauncher('/usr/local/bin/node', '/opt/agstatus/dist/cli.js')).toBe(
+  it('is the three fixed lines, with ONE path quoted and only "$1" left to the shell', () => {
+    // One path, not two: node and cli.js used to be baked in here as well,
+    // which made this file a second frozen snapshot of a pair that rots on
+    // the next `nvm install`. It delegates to the shim, which resolves Node
+    // at every start.
+    expect(renderLauncher('/Users/demo/.agstatus/bin/agstatus')).toBe(
       '#!/bin/sh\n' +
         '# AgStatus Focus resume launcher — written by `agstatus listener install`.\n' +
-        'exec "/usr/local/bin/node" "/opt/agstatus/dist/cli.js" listener resume-exec "$1"\n'
+        'exec "/Users/demo/.agstatus/bin/agstatus" listener resume-exec "$1"\n'
     );
+    expect(renderLauncher('/Users/demo/.agstatus/bin/agstatus')).not.toContain('node');
   });
 
   it('interpolates nothing else: a space in a path stays inside the quotes', () => {
-    const text = renderLauncher('/Users/demo/My Tools/node', '/Users/demo/My Tools/cli.js');
-    expect(text.split('\n')[2]).toBe(
-      'exec "/Users/demo/My Tools/node" "/Users/demo/My Tools/cli.js" listener resume-exec "$1"'
-    );
+    const text = renderLauncher('/Users/demo/My Tools/bin/agstatus');
+    expect(text.split('\n')[2]).toBe('exec "/Users/demo/My Tools/bin/agstatus" listener resume-exec "$1"');
     expect(text.split('\n')).toHaveLength(4); // three lines and the trailing newline
   });
 
   it('throws on a relative path, and on anything that would escape the quotes', () => {
-    expect(() => renderLauncher('node', '/opt/agstatus/dist/cli.js')).toThrow(/absolute/);
-    expect(() => renderLauncher('/usr/local/bin/node', 'dist/cli.js')).toThrow(/absolute/);
-    expect(() => renderLauncher('/usr/local/bin/node', '')).toThrow(/absolute/);
-    for (const bad of ['/tmp/no"de', '/tmp/no$de', '/tmp/no`de', '/tmp/no\\de', '/tmp/no\nde']) {
-      expect(() => renderLauncher(bad, '/opt/agstatus/dist/cli.js')).toThrow(/cannot quote/);
-      expect(() => renderLauncher('/usr/local/bin/node', bad)).toThrow(/cannot quote/);
+    expect(() => renderLauncher('agstatus')).toThrow(/absolute/);
+    expect(() => renderLauncher('bin/agstatus')).toThrow(/absolute/);
+    expect(() => renderLauncher('')).toThrow(/absolute/);
+    for (const bad of ['/tmp/ag"status', '/tmp/ag$status', '/tmp/ag`status', '/tmp/ag\\status', '/tmp/ag\nstatus']) {
+      expect(() => renderLauncher(bad)).toThrow(/cannot quote/);
     }
+  });
+});
+
+describe('renderShim', () => {
+  const CLI = '/Users/demo/.agstatus/lib/agstatus/dist/cli.js';
+
+  it('substitutes exactly CLI and NODE_HINT, and ends by exec-ing the Node it resolved', () => {
+    const text = renderShim(CLI, '/usr/local/bin/node');
+    expect(text.split('\n')[0]).toBe('#!/bin/sh');
+    expect(text).toContain(`CLI="${CLI}"`);
+    expect(text).toContain('NODE_HINT="/usr/local/bin/node"');
+    expect(text).not.toContain('__CLI__');
+    expect(text).not.toContain('__NODE__');
+    expect(text.endsWith('exec "$NODE" "$CLI" "$@"\n')).toBe(true);
+    // The hint is a hint: AGSTATUS_NODE is tried first, and the search
+    // continues past it into every manager's layout.
+    expect(text).toContain('"${AGSTATUS_NODE:-}" "$NODE_HINT"');
+    expect(text).toContain('${NVM_DIR:-$HOME/.nvm}"/versions/node/*/bin/node');
+    expect(text).toContain('exit 127'); // what "no Node >=18" looks like to launchd
+  });
+
+  it('is valid POSIX sh that /bin/sh itself will parse', () => {
+    // It is run by `| sh`-grade shells and by launchd, never by bash: a
+    // syntax error here is a LaunchAgent that exits before it says anything.
+    const file = path.join(mkdtemp('rshim'), 'agstatus');
+    fs.writeFileSync(file, renderShim(CLI, '/usr/local/bin/node'));
+    const { status } = spawnSync('/bin/sh', ['-n', file], { encoding: 'utf8' });
+    expect(status).toBe(0);
+  });
+
+  it('takes no hint at all, and refuses a path it could not quote', () => {
+    expect(renderShim(CLI)).toContain('NODE_HINT=""');
+    expect(() => renderShim('dist/cli.js')).toThrow(/absolute/);
+    expect(() => renderShim(CLI, 'node')).toThrow(/absolute/);
+    for (const bad of ['/tmp/cl"i.js', '/tmp/cl$i.js', '/tmp/cl`i.js', '/tmp/cl\\i.js', '/tmp/cl\ni.js']) {
+      expect(() => renderShim(bad)).toThrow(/cannot quote/);
+      expect(() => renderShim(CLI, bad)).toThrow(/cannot quote/);
+    }
+  });
+
+  it('really runs, under launchd\'s own PATH, and execs the CLI with the Node hint', () => {
+    // The resolution a LaunchAgent depends on, run for real: launchd's four
+    // system directories are the whole PATH, and HOME is a throwaway so no
+    // part of this reads the developer's own Node installs.
+    const prefix = mkdtemp('rprefix');
+    const fakeHome = mkdtemp('rfakehome');
+    const probe = path.join(prefix, 'probe.js');
+    fs.writeFileSync(probe, "process.stdout.write(process.execPath + ' ' + process.argv.slice(2).join(','));\n");
+    const shim = writeShim(prefix, probe, process.execPath);
+
+    const ran = spawnSync(shim, ['listener', 'resume-exec'], {
+      encoding: 'utf8',
+      env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: fakeHome },
+    });
+    expect(ran.status).toBe(0);
+    // The hint won (it is tried before the fixed locations), and every
+    // argument reached the CLI untouched.
+    expect(ran.stdout).toBe(`${process.execPath} listener,resume-exec`);
+
+    // AGSTATUS_NODE outranks the hint — the documented escape hatch.
+    const override = spawnSync(shim, [], {
+      encoding: 'utf8',
+      env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: fakeHome, AGSTATUS_NODE: process.execPath },
+    });
+    expect(override.status).toBe(0);
+  });
+
+  it('exits 127 with a way out when there is no Node it can find', () => {
+    const fakeHome = mkdtemp('rfakehome');
+    // The shim looks in these by absolute path, so no environment can hide
+    // one from it: where the machine running the tests has a system Node,
+    // find_node() legitimately succeeds and there is no 127 to observe. The
+    // explanation of a 127 is asserted in doctor's own tests, which inject it.
+    const fixed = ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node', '/opt/local/bin/node'];
+    if (fixed.some((f) => fs.existsSync(f))) return;
+
+    const blind = writeShim(mkdtemp('rprefix'), path.join(fakeHome, 'cli.js'));
+    const none = spawnSync(blind, [], {
+      encoding: 'utf8',
+      env: { PATH: path.join(fakeHome, 'nowhere'), HOME: fakeHome },
+    });
+    expect(none.status).toBe(127);
+    expect(none.stderr).toContain('no Node.js >=18 found');
+    expect(none.stderr).toContain('AGSTATUS_NODE=');
+  });
+
+  it('picks the newest version that passes the >=18 gate, not the lexically last', () => {
+    // newest() is the subtle half of find_node: sh has no arrays, so it
+    // reverses its own argument list to walk a glob backwards. The fixed
+    // candidates ahead of it are absolute and may exist on this machine, so
+    // the function is exercised on its own — the definitions exactly as
+    // rendered, with only the tail that calls find_node() replaced.
+    const [defs, tail] = renderShim('/opt/a/dist/cli.js').split('NODE=$(find_node) || {');
+    expect(tail).toBeDefined();
+
+    const nvm = mkdtemp('rnvm');
+    // Stand-ins for Node: they answer the `-e` version gate the way a real
+    // Node of that major would, and print their own version otherwise. They
+    // live only in this temp tree and are never put on any PATH.
+    for (const [version, major] of [['v3.1.0', 3], ['v16.14.0', 16], ['v18.15.0', 18], ['v20.9.0', 20]] as const) {
+      const dir = path.join(nvm, 'versions', 'node', version, 'bin');
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, 'node');
+      fs.writeFileSync(file, `#!/bin/sh\n[ "$1" = "-e" ] && exit ${major >= 18 ? 0 : 1}\nprintf '%s' "${version}"\n`, {
+        mode: 0o755,
+      });
+      fs.chmodSync(file, 0o755);
+    }
+
+    const harness = path.join(mkdtemp('rharness'), 'newest.sh');
+    fs.writeFileSync(`${harness}`, `${defs}newest "$1"/versions/node/*/bin/node\n`, { mode: 0o700 });
+    const picked = spawnSync('/bin/sh', [harness, nvm], { encoding: 'utf8' });
+    expect(picked.status).toBe(0);
+    expect(picked.stdout.trim()).toBe(path.join(nvm, 'versions', 'node', 'v20.9.0', 'bin', 'node'));
+
+    // An unmatched glob is not a candidate: newest() fails rather than hand
+    // back the literal `*` path.
+    const empty = spawnSync('/bin/sh', [harness, path.join(nvm, 'nothing-here')], { encoding: 'utf8' });
+    expect(empty.status).toBe(1);
+    expect(empty.stdout).toBe('');
+  });
+});
+
+describe('the install prefix', () => {
+  it('is read off an installer layout, and defaulted for everything else', () => {
+    // <prefix>/lib/agstatus/dist/cli.js — the one layout install.sh lays down.
+    expect(installPrefix('/Users/demo/.agstatus/lib/agstatus/dist/cli.js', 'darwin', home)).toBe(
+      '/Users/demo/.agstatus'
+    );
+    expect(layoutCliPath('/Users/demo/.agstatus')).toBe('/Users/demo/.agstatus/lib/agstatus/dist/cli.js');
+    expect(shimPath('/Users/demo/.agstatus')).toBe('/Users/demo/.agstatus/bin/agstatus');
+    expect(SHIM_NAME).toBe('agstatus');
+
+    // A dev checkout, an npx cache and a global npm root are not the layout:
+    // they still get a shim, in the default prefix, just not the durability.
+    const dflt = path.join(home, '.agstatus');
+    for (const cli of [
+      '/Users/demo/src/claude-status/cli/dist/cli.js',
+      '/Users/demo/.npm/_npx/2f3a/node_modules/agstatus/dist/cli.js',
+      '/Users/demo/.nvm/versions/node/v20.9.0/lib/node_modules/agstatus/dist/cli.js',
+    ]) {
+      expect(installPrefix(cli, 'darwin', home)).toBe(dflt);
+    }
+  });
+
+  it('follows $AGSTATUS_HOME, and is %LOCALAPPDATA%\\AgStatus on Windows', () => {
+    expect(defaultPrefix('darwin', home)).toBe(path.join(home, '.agstatus'));
+    process.env.LOCALAPPDATA = 'C:\\Users\\demo\\AppData\\Local';
+    expect(defaultPrefix('win32', home)).toBe(path.join('C:\\Users\\demo\\AppData\\Local', 'AgStatus'));
+    delete process.env.LOCALAPPDATA;
+
+    process.env.AGSTATUS_HOME = path.join(home, 'elsewhere');
+    expect(defaultPrefix('darwin', home)).toBe(path.join(home, 'elsewhere'));
+    expect(installPrefix('/Users/demo/src/cli/dist/cli.js', 'darwin', home)).toBe(path.join(home, 'elsewhere'));
+  });
+});
+
+describe('writeShim', () => {
+  it('writes <prefix>/bin/agstatus 0700, in a directory it creates 0700, and reads back', () => {
+    const prefix = path.join(mkdtemp('rprefix'), 'fresh');
+    const file = writeShim(prefix, '/opt/a/dist/cli.js', '/usr/local/bin/node');
+    expect(file).toBe(shimPath(prefix));
+    expect(fs.statSync(file).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(path.dirname(file)).mode & 0o777).toBe(0o700);
+    expect(fs.readdirSync(path.dirname(file))).toEqual([SHIM_NAME]); // no temp file left behind
+    expect(readShim(file)).toEqual({ cli: '/opt/a/dist/cli.js', nodeHint: '/usr/local/bin/node' });
+    expect(scriptProblem(file)).toBeUndefined();
+
+    // Rewritten in place by a second install, with the new paths.
+    writeShim(prefix, '/opt/b/dist/cli.js', '/opt/homebrew/bin/node');
+    expect(readShim(file)?.cli).toBe('/opt/b/dist/cli.js');
+    expect(fs.readdirSync(path.dirname(file))).toEqual([SHIM_NAME]);
+  });
+
+  it('writes nothing at all when a path could not be quoted', () => {
+    const prefix = mkdtemp('rprefix');
+    expect(() => writeShim(prefix, 'dist/cli.js')).toThrow(/absolute/);
+    expect(fs.existsSync(shimPath(prefix))).toBe(false);
+    expect(readShim(shimPath(prefix))).toBeUndefined();
+  });
+});
+
+describe('scriptProblem', () => {
+  it('names what is wrong with a script we would otherwise run', () => {
+    const shim = installShim();
+    expect(scriptProblem(shim)).toBeUndefined();
+
+    fs.chmodSync(shim, 0o755);
+    expect(scriptProblem(shim)).toBe('mode 755, expected 700');
+    fs.chmodSync(shim, 0o700);
+
+    const me = uid();
+    if (me !== undefined) expect(scriptProblem(shim, me + 1)).toBe(`owned by uid ${me}, not by you`);
+
+    expect(scriptProblem(path.join(path.dirname(shim), 'gone'))).toBe('missing');
+
+    const link = path.join(path.dirname(shim), 'linked');
+    fs.symlinkSync(shim, link);
+    expect(scriptProblem(link)).toBe('a symlink, not a file of ours');
+
+    const loose = mkdtemp('rloose');
+    fs.chmodSync(loose, 0o777);
+    const inLoose = path.join(loose, 'agstatus');
+    fs.writeFileSync(inLoose, '#!/bin/sh\n', { mode: 0o700 });
+    fs.chmodSync(inLoose, 0o700);
+    expect(scriptProblem(inLoose)).toContain('which others may write to');
   });
 });
 
 describe('writeLauncher', () => {
   it('writes a 0700 script at <stateDir>/agstatus-resume and leaves no temp file behind', () => {
-    const file = writeLauncher(state, '/usr/local/bin/node', '/opt/agstatus/dist/cli.js');
+    const shim = installShim();
+    const file = writeLauncher(state, shim);
     expect(file).toBe(path.join(state, LAUNCHER_NAME));
     expect(file).toBe(launcherPath(state));
     expect(fs.statSync(file).mode & 0o777).toBe(0o700);
-    expect(fs.readFileSync(file, 'utf8')).toBe(renderLauncher('/usr/local/bin/node', '/opt/agstatus/dist/cli.js'));
+    expect(fs.readFileSync(file, 'utf8')).toBe(renderLauncher(shim));
     expect(fs.readdirSync(state)).toEqual([LAUNCHER_NAME]);
+    expect(launcherTarget(state)).toBe(shim);
   });
 
   it('creates the state dir 0700, and rewrites an existing launcher in place', () => {
     const fresh = path.join(state, 'nested');
-    writeLauncher(fresh, '/usr/local/bin/node', '/opt/a/cli.js');
+    writeLauncher(fresh, '/opt/a/bin/agstatus');
     expect(fs.statSync(fresh).mode & 0o777).toBe(0o700);
-    writeLauncher(fresh, '/usr/local/bin/node', '/opt/b/cli.js');
-    expect(fs.readFileSync(launcherPath(fresh), 'utf8')).toContain('/opt/b/cli.js');
+    writeLauncher(fresh, '/opt/b/bin/agstatus');
+    expect(launcherTarget(fresh)).toBe('/opt/b/bin/agstatus');
     expect(fs.readdirSync(fresh)).toEqual([LAUNCHER_NAME]);
   });
 
-  it('writes nothing at all when a path is not absolute', () => {
-    expect(() => writeLauncher(state, '/usr/local/bin/node', 'cli.js')).toThrow(/absolute/);
+  it('writes nothing at all when the path is not absolute', () => {
+    expect(() => writeLauncher(state, 'bin/agstatus')).toThrow(/absolute/);
     expect(fs.existsSync(launcherPath(state))).toBe(false);
+    expect(launcherTarget(state)).toBeUndefined();
   });
 });
 
 describe('usableLauncher', () => {
-  it('accepts the 0700 file it wrote', () => {
-    const file = writeLauncher(state, '/usr/local/bin/node', '/opt/agstatus/dist/cli.js');
+  it('accepts the 0700 file it wrote, delegating to a shim that is also 0700 and ours', () => {
+    const shim = installShim();
+    const file = writeLauncher(state, shim);
     expect(usableLauncher(state)).toBe(file);
   });
 
   it('refuses a missing file, a loosened mode, a directory, a symlink and another user’s file', () => {
     expect(usableLauncher(state)).toBeUndefined();
 
-    const file = writeLauncher(state, '/usr/local/bin/node', '/opt/agstatus/dist/cli.js');
+    const shim = installShim();
+    const file = writeLauncher(state, shim);
     for (const mode of [0o755, 0o770, 0o701, 0o600]) {
       fs.chmodSync(file, mode);
       expect(usableLauncher(state)).toBeUndefined();
@@ -213,6 +447,31 @@ describe('usableLauncher', () => {
     fs.rmSync(file);
 
     fs.mkdirSync(file, { mode: 0o700 });
+    expect(usableLauncher(state)).toBeUndefined();
+  });
+
+  it('refuses a launcher whose shim is missing, loosened, or named nowhere at all', () => {
+    // The launcher does nothing but exec the shim, so checking only the
+    // launcher would move the "0700 and yours" guarantee onto a file nobody
+    // ever looked at — and `MachineFacts.launcher` is what makes the board
+    // offer Resume at all.
+    const shim = installShim();
+    const file = writeLauncher(state, shim);
+    expect(usableLauncher(state)).toBe(file);
+
+    fs.chmodSync(shim, 0o755);
+    expect(usableLauncher(state)).toBeUndefined();
+    fs.chmodSync(shim, 0o700);
+    expect(usableLauncher(state)).toBe(file);
+
+    fs.rmSync(shim);
+    expect(usableLauncher(state)).toBeUndefined();
+
+    // A launcher edited into something that is not our one command names no
+    // shim, and is therefore not usable either.
+    fs.writeFileSync(file, '#!/bin/sh\nexec /bin/echo hello\n', { mode: 0o700 });
+    fs.chmodSync(file, 0o700);
+    expect(launcherTarget(state)).toBeUndefined();
     expect(usableLauncher(state)).toBeUndefined();
   });
 });
@@ -545,7 +804,7 @@ describe('where the launcher can be used at all', () => {
 
   it('removeLauncher takes the file away and says whether there was one', () => {
     expect(removeLauncher(state)).toBe(false);
-    writeLauncher(state, '/usr/local/bin/node', '/opt/agstatus/dist/cli.js');
+    writeLauncher(state, installShim());
     expect(removeLauncher(state)).toBe(true);
     expect(fs.existsSync(launcherPath(state))).toBe(false);
     expect(usableLauncher(state)).toBeUndefined();

@@ -245,7 +245,12 @@ see [docs/api.md](api.md#device-push-endpoints).
 
 ## Pointing clients at your instance
 
-- CLI: `npx agstatus init --url https://status.example.com`
+- CLI: `curl -fsSL https://status.example.com/install.sh | sh -s -- --url https://status.example.com`
+  — your instance serves `/install.sh` and `/install.ps1` itself, so a machine
+  that can reach your board can install from it without going near the hosted
+  one. (On Windows:
+  `& ([scriptblock]::Create((irm https://status.example.com/install.ps1))) -Url https://status.example.com`.)
+  An already-installed CLI just needs `agstatus init --url https://status.example.com`.
 - iOS app: on the welcome screen, expand "Self-hosting?" and enter your
   server URL, or paste/scan your board URL directly.
 - Manual hooks: see [docs/hooks.md](hooks.md).

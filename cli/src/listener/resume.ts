@@ -25,6 +25,13 @@ import type { LocalRecord } from './types';
  * side, from the local record; none of it is ever on a command line a host
  * assembled, and none of it is ever on the wire.
  *
+ * The launcher itself interpolates ONE path: the launcher shim,
+ * `<prefix>/bin/agstatus` (renderShim() below). It used to bake in `node`
+ * and `dist/cli.js` as well, which made it a second frozen snapshot of a
+ * pair that rots on the next `nvm install` — the shim resolves Node at every
+ * start instead, and is the only absolute path in AgStatus that never has to
+ * be re-baked.
+ *
  * What the launcher runs is `agstatus listener resume-exec <uuid>`, i.e.
  * runResumeExec() below: validate the uuid, load the records the hook wrote
  * for it, take the newest, resolve a directory that still exists and is
@@ -56,9 +63,179 @@ export function launcherPath(dir: string): string {
 }
 
 /**
+ * The launcher shim — `<prefix>/bin/agstatus`, the one program name the
+ * LaunchAgent (and, later, a Windows Scheduled Task) ever holds.
+ *
+ * Why it exists at all: launchd resolves a job's `ProgramArguments[0]`
+ * against launchd's OWN default PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) and
+ * NEVER against the job's `EnvironmentVariables.PATH` — a bare program name
+ * whose only directory was in that dict exits 78 (EX_CONFIG) and never runs,
+ * proved with real `launchctl` probes. Node is in none of those four
+ * directories for nvm, fnm, volta, mise or `n` users. So argv[0] must be an
+ * absolute path AgStatus owns, and the Node it runs must be resolved at
+ * launch rather than frozen into a plist (design §5.1, §5.4).
+ *
+ * That is also the self-heal: `nvm install 22 && nvm uninstall 20`, or a
+ * `brew upgrade node`, kills the running agent's interpreter; KeepAlive
+ * brings it back after ThrottleInterval (10 s); find_node() picks whatever
+ * Node exists now; nothing is reinstalled and nobody is told to reinstall.
+ * The plist that named `~/.nvm/versions/node/v20.9.0/bin/node` needed a
+ * reinstall for exactly that, and said nothing at all while it was broken.
+ */
+export const SHIM_NAME = 'agstatus';
+
+export function shimPath(prefix: string): string {
+  return path.join(prefix, 'bin', SHIM_NAME);
+}
+
+/** `<prefix>/lib/agstatus/dist/cli.js` — the CLI's place in the layout the installer lays down. */
+const LAYOUT = ['lib', 'agstatus', 'dist'];
+
+export function layoutCliPath(prefix: string): string {
+  return path.join(prefix, ...LAYOUT, 'cli.js');
+}
+
+/**
+ * The prefix under which this CLI is installed, derived from where it is
+ * running from: `<prefix>/lib/agstatus/dist/cli.js` walks back three levels.
+ * Anything else — a dev checkout (`cli/dist/cli.js`), an npx cache, a global
+ * npm root — is not our layout, so there is no prefix to read off it and the
+ * default one is used instead. Those installs still get a shim, an agent and
+ * a Resume button; what they do not get is the durability guarantee, because
+ * the cli.js the shim points at is somebody else's to move.
+ */
+export function installPrefix(
+  cliPath: string,
+  platform: NodeJS.Platform = process.platform,
+  home: string = os.homedir()
+): string {
+  const parts = path.dirname(path.resolve(cliPath)).split(path.sep);
+  const at = parts.length - LAYOUT.length;
+  if (at > 0 && LAYOUT.every((seg, i) => parts[at + i] === seg)) {
+    return parts.slice(0, at).join(path.sep) || path.sep;
+  }
+  return defaultPrefix(platform, home);
+}
+
+/**
+ * Where an install that was not laid down by the installer puts its shim:
+ * `$AGSTATUS_HOME`, else `~/.agstatus` — and `%LOCALAPPDATA%\AgStatus` on
+ * Windows, which is the state directory the hook already uses there.
+ */
+export function defaultPrefix(
+  platform: NodeJS.Platform = process.platform,
+  home: string = os.homedir()
+): string {
+  const named = process.env.AGSTATUS_HOME;
+  if (typeof named === 'string' && named !== '') return named;
+  if (platform === 'win32') {
+    return path.join(process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'AgStatus');
+  }
+  return path.join(home, '.agstatus');
+}
+
+/**
+ * The shim, byte for byte. Fixed text with exactly two substitutions —
+ * `__CLI__`, the entry point, and `__NODE__`, a *hint* tried second (after
+ * `$AGSTATUS_NODE` and before the well-known install locations), never the
+ * only answer. Both land inside double quotes in POSIX sh, so both go
+ * through the same UNQUOTABLE_RE the resume launcher uses.
+ *
+ * The resolution order below was tested under `env -i
+ * PATH=/usr/bin:/bin:/usr/sbin:/sbin` across /bin/sh, dash, zsh and bash,
+ * with spaces in paths, with an unmatched glob, and against a version set of
+ * v3.1.0/v16.14.0/v18.15.0/v20.9.0 — newest() picks v20.9.0, i.e. the newest
+ * that passes the >=18 gate, not the lexically last. Do not "simplify" it:
+ * `newest` reverses its arguments by hand because sh has no arrays, and the
+ * `ok` gate runs each candidate rather than trusting its path.
+ */
+const SHIM_TEMPLATE = [
+  '#!/bin/sh',
+  '# AgStatus launcher — rendered by the AgStatus installer. Do not edit.',
+  'set -u',
+  'HOME=${HOME:-/nonexistent}',
+  'CLI="__CLI__"',
+  'NODE_HINT="__NODE__"',
+  'ok() {',
+  '  [ -n "${1:-}" ] && [ -x "$1" ] &&',
+  '    "$1" -e \'process.exit(+process.versions.node.split(".")[0]>=18?0:1)\' >/dev/null 2>&1',
+  '}',
+  'newest() {',
+  '  n=$#',
+  '  [ "$n" -gt 0 ] || return 1',
+  '  for d do set -- "$d" "$@"; done',
+  '  i=0',
+  '  for c do',
+  '    i=$((i + 1)); [ "$i" -gt "$n" ] && break',
+  '    ok "$c" && { printf \'%s\\n\' "$c"; return 0; }',
+  '  done',
+  '  return 1',
+  '}',
+  'find_node() {',
+  '  for c in "${AGSTATUS_NODE:-}" "$NODE_HINT" /opt/homebrew/bin/node /usr/local/bin/node \\',
+  '    /usr/bin/node /opt/local/bin/node "$HOME/.volta/bin/node" \\',
+  '    "$HOME/.local/share/fnm/aliases/default/bin/node" \\',
+  '    "$HOME/Library/Application Support/fnm/aliases/default/bin/node" \\',
+  '    "$HOME/.nodenv/shims/node" "$HOME/.asdf/shims/node" "$HOME/.local/share/mise/shims/node"',
+  '  do ok "$c" && { printf \'%s\\n\' "$c"; return 0; }; done',
+  '  newest "${NVM_DIR:-$HOME/.nvm}"/versions/node/*/bin/node && return 0',
+  '  newest "$HOME/.local/share/fnm/node-versions"/*/installation/bin/node && return 0',
+  '  newest "$HOME/Library/Application Support/fnm/node-versions"/*/installation/bin/node && return 0',
+  '  newest "${N_PREFIX:-/usr/local}/n/versions/node"/*/bin/node && return 0',
+  '  newest /opt/homebrew/opt/node@*/bin/node && return 0',
+  '  newest /usr/local/opt/node@*/bin/node && return 0',
+  '  c=$(command -v node 2>/dev/null) || c=\'\'',
+  '  ok "$c" && { printf \'%s\\n\' "$c"; return 0; }',
+  '  return 1',
+  '}',
+  'NODE=$(find_node) || {',
+  '  echo "agstatus: no Node.js >=18 found. Looked in the usual places and on PATH." >&2',
+  '  echo "  Fix: install Node, or set AGSTATUS_NODE=/absolute/path/to/node." >&2',
+  '  exit 127',
+  '}',
+  'exec "$NODE" "$CLI" "$@"',
+  '',
+];
+
+/** The `CLI=` and `NODE_HINT=` lines of a rendered shim — the two things doctor reads back. */
+const SHIM_CLI_RE = /^CLI="([^"]*)"$/m;
+const SHIM_NODE_RE = /^NODE_HINT="([^"]*)"$/m;
+
+export function renderShim(cliPath: string, nodeHint = ''): string {
+  requireQuotable('launcher shim', 'cli.js', cliPath);
+  // The hint may be absent (`""` never matches `[ -n ]`, so find_node simply
+  // moves on); when it is there it has to survive its quotes like any other.
+  if (nodeHint !== '') requireQuotable('launcher shim', 'node', nodeHint);
+  // Replacer functions, not strings: `$&` and friends are special in a string
+  // replacement, and a path containing `$` would be rejected above anyway —
+  // this is belt and braces on the one line that writes an executable.
+  return SHIM_TEMPLATE.join('\n').replace('__CLI__', () => cliPath).replace('__NODE__', () => nodeHint);
+}
+
+/** Writes `<prefix>/bin/agstatus`, 0700, temp + rename. Returns its absolute path. */
+export function writeShim(prefix: string, cliPath: string, nodeHint = ''): string {
+  const file = shimPath(prefix);
+  writeScript(file, renderShim(cliPath, nodeHint));
+  return file;
+}
+
+/** What a rendered shim runs, read back off disk; undefined when the file is not one of ours. */
+export function readShim(file: string): { cli: string; nodeHint: string } | undefined {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return undefined;
+  }
+  const cli = SHIM_CLI_RE.exec(text)?.[1];
+  const nodeHint = SHIM_NODE_RE.exec(text)?.[1];
+  return cli === undefined || nodeHint === undefined ? undefined : { cli, nodeHint };
+}
+
+/**
  * The state directory `resume-exec` will look in when a *host* starts the
  * launcher: the platform default, with AGSTATUS_STATE_DIR deliberately
- * ignored. The launcher carries two absolute paths baked in at install time
+ * ignored. The launcher carries one absolute path baked in at install time
  * and nothing else, ever (§5.1), and the environment it is handed belongs to
  * whoever started it — runPlan gives every step `PATH` alone, `open -n -b`
  * hands the app launchd's environment, and an agterm or tmux command string
@@ -92,44 +269,33 @@ export function launcherResolves(
 }
 
 /**
- * The launcher script, byte for byte. Both paths are baked in at install
- * time and nothing else is ever interpolated: `"$1"` is the shell's own
- * positional argument, so the uuid the host passes goes to `resume-exec` as
- * one argv element whatever it contains. A path that is not absolute, or
- * that carries a quote, a backslash, a `$`, a backtick or a control
- * character, throws — the file is never written half-safe.
+ * An absolute path that survives being put inside the double quotes of a
+ * script we render. One check, used by both scripts: a path that is not
+ * absolute, or that carries a quote, a backslash, a `$`, a backtick or a
+ * control character, throws — neither file is ever written half-safe.
  */
-export function renderLauncher(nodePath: string, cliPath: string): string {
-  for (const [what, value] of [['node', nodePath], ['cli.js', cliPath]] as const) {
-    if (typeof value !== 'string' || !path.isAbsolute(value)) {
-      throw new Error(`The resume launcher needs an absolute ${what} path (got ${JSON.stringify(value)}).`);
-    }
-    if (UNQUOTABLE_RE.test(value)) {
-      throw new Error(`The ${what} path contains a character the resume launcher cannot quote.`);
-    }
+function requireQuotable(subject: string, what: string, value: unknown): asserts value is string {
+  if (typeof value !== 'string' || !path.isAbsolute(value)) {
+    throw new Error(`The ${subject} needs an absolute ${what} path (got ${JSON.stringify(value)}).`);
   }
-  return [
-    '#!/bin/sh',
-    '# AgStatus Focus resume launcher — written by `agstatus listener install`.',
-    `exec "${nodePath}" "${cliPath}" listener resume-exec "$1"`,
-    '',
-  ].join('\n');
+  if (UNQUOTABLE_RE.test(value)) {
+    throw new Error(`The ${what} path contains a character the ${subject} cannot quote.`);
+  }
 }
 
 /**
- * Writes `<stateDir>/agstatus-resume`, 0700, temp + rename so no host ever
- * sees a half-written script. Renders first, so a bad path throws with
- * nothing on disk. Returns the launcher's absolute path.
+ * Writes one of our scripts 0700, temp + rename so nothing ever sees a
+ * half-written file, creating its directory 0700 if it is missing.
+ *
+ * An exclusive create on an unguessable name: `wx` fails rather than follow
+ * a symlink somebody planted at the temp path (the same discipline as the
+ * listener's lock file), and the random suffix means a name nobody can
+ * predict from this process's pid.
  */
-export function writeLauncher(dir: string, nodePath: string, cliPath: string): string {
-  const text = renderLauncher(nodePath, cliPath);
+function writeScript(file: string, text: string): void {
+  const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const file = launcherPath(dir);
-  // An exclusive create on an unguessable name: `wx` fails rather than
-  // follow a symlink somebody planted at the temp path (the same discipline
-  // as the listener's lock file), and the random suffix means a name nobody
-  // can predict from this process's pid.
-  const tmp = path.join(dir, `.${LAUNCHER_NAME}.agstatus-tmp-${crypto.randomBytes(8).toString('hex')}`);
+  const tmp = path.join(dir, `.${path.basename(file)}.agstatus-tmp-${crypto.randomBytes(8).toString('hex')}`);
   try {
     fs.writeFileSync(tmp, text, { mode: 0o700, flag: 'wx' });
     fs.chmodSync(tmp, 0o700); // an existing umask can still have trimmed the mode
@@ -137,6 +303,50 @@ export function writeLauncher(dir: string, nodePath: string, cliPath: string): s
   } finally {
     fs.rmSync(tmp, { force: true });
   }
+}
+
+/**
+ * The launcher script, byte for byte. ONE path is interpolated: the launcher
+ * shim, which is the only absolute path AgStatus owns for good. `"$1"` is
+ * the shell's own positional argument, so the uuid the host passes goes to
+ * `resume-exec` as one argv element whatever it contains.
+ *
+ * It used to interpolate `node` and `dist/cli.js` instead, which made this
+ * file a second frozen snapshot of the same doomed pair as the plist: one
+ * `nvm install` and a Resume tap opened a window that printed "no such file
+ * or directory" and closed. Delegating to the shim means there is exactly
+ * one place where Node is resolved, and it is resolved at every start.
+ */
+export function renderLauncher(shim: string): string {
+  requireQuotable('resume launcher', 'launcher shim', shim);
+  return [
+    '#!/bin/sh',
+    '# AgStatus Focus resume launcher — written by `agstatus listener install`.',
+    `exec "${shim}" listener resume-exec "$1"`,
+    '',
+  ].join('\n');
+}
+
+/** The shim an installed launcher delegates to — the one path in its one command. */
+const LAUNCHER_EXEC_RE = /^exec "([^"]*)" listener resume-exec "\$1"$/m;
+
+export function launcherTarget(dir: string): string | undefined {
+  try {
+    return LAUNCHER_EXEC_RE.exec(fs.readFileSync(launcherPath(dir), 'utf8'))?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Writes `<stateDir>/agstatus-resume`, 0700, temp + rename so no host ever
+ * sees a half-written script. Renders first, so a bad path throws with
+ * nothing on disk. Returns the launcher's absolute path.
+ */
+export function writeLauncher(dir: string, shim: string): string {
+  const text = renderLauncher(shim);
+  const file = launcherPath(dir);
+  writeScript(file, text);
   return file;
 }
 
@@ -149,25 +359,47 @@ export function removeLauncher(dir: string): boolean {
 }
 
 /**
- * The launcher's path when it is safe to run: a regular file (never a
- * symlink — this lstat()s), owned by us, with no group or other bits at
- * all, executable by us, in a directory nobody else may write to. This is
- * where `MachineFacts.launcher` comes from, so anything short of that
- * leaves the fact absent and every resume plan `unsupported-host`.
+ * Why a script of ours is not one we may run, in a phrase — undefined when
+ * it is fine. A regular file (never a symlink: this lstat()s), 0700 exactly,
+ * owned by us, in a directory nobody else may write to. Doctor prints the
+ * phrase; usableLauncher() only asks whether there is one.
+ */
+export function scriptProblem(file: string, uid: number | undefined = currentUid()): string | undefined {
+  let st: fs.Stats;
+  try {
+    st = fs.lstatSync(file);
+  } catch {
+    return 'missing';
+  }
+  if (st.isSymbolicLink()) return 'a symlink, not a file of ours';
+  if (!st.isFile()) return 'not a regular file';
+  const mode = st.mode & 0o777;
+  if (mode !== 0o700) return `mode ${mode.toString(8)}, expected 700`;
+  if (uid !== undefined && st.uid !== uid) return `owned by uid ${st.uid}, not by you`;
+  try {
+    if ((fs.statSync(path.dirname(file)).mode & 0o022) !== 0) {
+      return `in ${path.dirname(file)}, which others may write to`;
+    }
+  } catch {
+    return `in ${path.dirname(file)}, which cannot be read`;
+  }
+  return undefined;
+}
+
+/**
+ * The launcher's path when it is safe to run — and, since it does nothing
+ * itself but `exec` the shim, when the shim it delegates to is safe to run
+ * too. Checking only the launcher would quietly relocate the "0700 and
+ * yours" guarantee onto a file nobody looked at. This is where
+ * `MachineFacts.launcher` comes from, so anything short of that leaves the
+ * fact absent and every resume plan `unsupported-host`.
  */
 export function usableLauncher(dir: string, uid: number | undefined = currentUid()): string | undefined {
   const file = launcherPath(dir);
-  try {
-    const st = fs.lstatSync(file);
-    if (!st.isFile()) return undefined;
-    if ((st.mode & 0o077) !== 0) return undefined;
-    if ((st.mode & 0o100) === 0) return undefined;
-    if (uid !== undefined && st.uid !== uid) return undefined;
-    if ((fs.statSync(path.dirname(file)).mode & 0o022) !== 0) return undefined;
-    return file;
-  } catch {
-    return undefined;
-  }
+  if (scriptProblem(file, uid) !== undefined) return undefined;
+  const shim = launcherTarget(dir);
+  if (shim === undefined || scriptProblem(shim, uid) !== undefined) return undefined;
+  return file;
 }
 
 /** An absolute path that stat()s as a directory belonging to us — the only cwd a resume may enter. */

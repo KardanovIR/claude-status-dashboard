@@ -149,7 +149,7 @@
     <ul>
       <li class="toc-doc"><a href="#hooks">Integration</a>
         <ul>
-          <li><a href="#hooks-npx-agstatus-init">npx agstatus init</a></li>
+          <li><a href="#hooks-install">Install</a></li>
           <li><a href="#hooks-claude-code-plugin">Claude Code plugin</a></li>
           <li><a href="#hooks-how-events-map-to-statuses">How events map to statuses</a></li>
           <li><a href="#hooks-plan-usage-bars">Plan-usage bars</a></li>
@@ -196,13 +196,12 @@ the same shape (event JSON on stdin with <code>hook_event_name</code>, <code>ses
 <code>cwd</code>), so one small script serves both: it receives each event and posts a
 status webhook to your board. Ways to set it up:</p>
 <ol>
-<li><strong><code>npx agstatus init</code></strong> (recommended) — installs a dependency-free Node
-hook and wires up Claude Code, plus Codex when <code>~/.codex</code> exists. Homebrew
-users can <code>brew install kardanovir/tap/agstatus</code> and run <code>agstatus init</code> —
-same CLI, on your PATH.</li>
+<li><strong>The installer</strong> (recommended) — one command; installs the CLI and a
+dependency-free Node hook, and wires up Claude Code, plus Codex when
+<code>~/.codex</code> exists. See <a href="#hooks-install">Install</a> below.</li>
 <li><strong>Claude Code plugin</strong> — hooks bundled as a plugin, no settings.json
 surgery; see <a href="#hooks-claude-code-plugin">Claude Code plugin</a> below. Claude Code
-only (Codex still needs <code>agstatus init</code>).</li>
+only (Codex needs <a href="#hooks-install">the installer</a>).</li>
 <li><strong>Manual bash hook</strong> — <em>deprecated.</em> The original
 <code>hooks/claude-status-hook.sh</code>, still shipped and still working, for people
 who want to see and customize every moving part. It reports status only:
@@ -214,10 +213,33 @@ secret, malformed payload) is swallowed and the agent continues normally.
 The Node hook additionally enforces a 3 s HTTP timeout, a ~4 s overall
 safety timeout, and never writes to stdout (Codex interprets hook stdout as
 behavior-control decisions).</p>
-<h3 id="hooks-npx-agstatus-init"><a class="anchor" href="#hooks-npx-agstatus-init"><code>npx agstatus init</code></a></h3>
-<pre><code class="language-bash">npx agstatus init
+<h3 id="hooks-install"><a class="anchor" href="#hooks-install">Install</a></h3>
+<p>macOS and Linux:</p>
+<pre><code class="language-bash">curl -fsSL https://agstatus.online/install.sh | sh
 </code></pre>
-<p>What it does, in order:</p>
+<p>Windows (PowerShell 5.1 or newer):</p>
+<pre><code class="language-powershell">irm https://agstatus.online/install.ps1 | iex
+</code></pre>
+<p>Both scripts do the same two things: unpack the CLI, then run <code>agstatus init</code>.
+Nothing is installed system-wide and nothing needs <code>sudo</code> — everything lands
+under one prefix you own:</p>
+<pre><code>~/.agstatus/            # or $AGSTATUS_HOME; on Windows, %LOCALAPPDATA%\AgStatus
+├── bin/agstatus        # the launcher you run (agstatus.cmd on Windows)
+└── lib/
+    ├── agstatus/       # the CLI and the hook it installs
+    └── node_modules/   # its one runtime dependency
+</code></pre>
+<p>The installer puts <code>~/.agstatus/bin</code> on your <code>PATH</code> for you — a marked block
+appended to your shell profile on macOS and Linux, the persistent user <code>PATH</code>
+on Windows — so open a new terminal before typing <code>agstatus</code> yourself. Re-run
+the installer to upgrade: it is the same command for a first install and an
+update, and it replaces only <code>bin/</code> and <code>lib/</code>, leaving the state the hook
+keeps under the same prefix alone.</p>
+<p>Self-hosting? Every board serves both scripts, so
+<code>curl -fsSL https://status.example.com/install.sh | sh -s -- --url https://status.example.com</code>
+installs from your own instance — see
+<a href="#self-hosting-pointing-clients-at-your-instance">Pointing clients at your instance</a>.</p>
+<p><code>init</code> then runs, in order:</p>
 <ol>
 <li>Contacts the server (<code>GET /api/config</code>) — the hosted instance by default.</li>
 <li>Acquires a board: claims your pairing code (<code>--code</code>), creates a new
@@ -231,6 +253,23 @@ settings and hooks are preserved; re-running <code>init</code> replaces only the
 AgStatus entries.</li>
 <li>Prints your dashboard URL and a QR code to open it on your phone.</li>
 </ol>
+<p>On macOS the installer also sets up the <a href="#hooks-focus-optional-opt-in">Focus listener</a>
+so a tap on a board card brings that session&#39;s terminal to the front. It is
+not a prompt — it prints the exact host summary your machines will start
+sending, and <code>--no-focus</code> skips it.</p>
+<h4 id="hooks-passing-flags-to-the-installer"><a class="anchor" href="#hooks-passing-flags-to-the-installer">Passing flags to the installer</a></h4>
+<p>Everything after <code>--</code> goes to <code>agstatus init</code>, so the flags in the next table
+work through the one-liner:</p>
+<pre><code class="language-bash">curl -fsSL https://agstatus.online/install.sh | sh -s -- --code AB12-CD34
+</code></pre>
+<p>PowerShell cannot pass arguments through <code>iex</code>, so on Windows fetch the
+script into a script block and call that instead:</p>
+<pre><code class="language-powershell">&amp; ([scriptblock]::Create((irm https://agstatus.online/install.ps1))) -Code AB12-CD34
+</code></pre>
+<p><code>--no-focus</code> and <code>--focus</code> are the shell installer&#39;s own flags (last one
+wins) and are consumed before the rest is handed on. They are macOS-only, so
+<code>install.ps1</code> has no equivalent; its parameters are <code>-Code</code>, <code>-Url</code>,
+<code>-Secret</code> and <code>-Minimal</code>.</p>
 <h4 id="hooks-flags"><a class="anchor" href="#hooks-flags">Flags</a></h4>
 <div class="table-wrap"><table>
 <thead>
@@ -276,10 +315,10 @@ the board owner taps &quot;Pair your computer&quot; in the iOS app (or calls
 via <code>POST /api/pair/claim</code> for the board&#39;s URLs. Claims are rate limited to
 10/min/IP. Details in <a href="#api-pairing-endpoints">docs/api.md</a>.</p>
 <h4 id="hooks-other-commands"><a class="anchor" href="#hooks-other-commands">Other commands</a></h4>
-<pre><code class="language-bash">npx agstatus status      # show configured URL, hook file, server reachability + session count
-npx agstatus uninstall   # remove the hook file and AgStatus settings entries (backup kept), and the Focus listener if installed
-npx agstatus listener …  # the Focus listener, see below (install | uninstall | status | doctor | plan | run)
-npx agstatus help        # usage
+<pre><code class="language-bash">agstatus status      # show configured URL, hook file, server reachability + session count
+agstatus uninstall   # remove the hook file and AgStatus settings entries (backup kept), and the Focus listener if installed
+agstatus listener …  # the Focus listener, see below (install | uninstall | status | doctor | plan | run)
+agstatus help        # usage
 </code></pre>
 <p><code>uninstall</code> removes only AgStatus&#39;s hook registrations and the
 <code>CLAUDE_STATUS_URL</code> / <code>CLAUDE_STATUS_SECRET</code> / <code>AGSTATUS_DETAIL</code> env keys —
@@ -287,6 +326,19 @@ everything else in <code>settings.json</code> is left untouched. When the
 <a href="#hooks-installing-the-listener-macos">Focus listener</a> is installed it runs
 <code>listener uninstall</code> too, so the LaunchAgent stops and <code>&quot;focus&quot;</code> is set to
 <code>false</code>.</p>
+<h4 id="hooks-other-ways-in"><a class="anchor" href="#hooks-other-ways-in">Other ways in</a></h4>
+<p>The <a href="#hooks-claude-code-plugin">Claude Code plugin</a> is a separate, fully supported
+channel — it needs no installer and no terminal, and it is the right choice on
+a Claude Code-only machine.</p>
+<p>AgStatus used to ship through npm and a Homebrew tap. Neither gets new
+releases any more, and the installer above replaces both. Nothing was
+unpublished, though: <code>agstatus@1.3.0</code> stays resolvable on the npm registry, so
+an <code>npx agstatus init</code> in somebody&#39;s notes, a script, or a screenshot from
+last year still runs and still works — it just installs 1.3.0 rather than the
+current release. Re-run the installer to move a machine onto current: it
+writes its own copy under <code>~/.agstatus</code> and rewires the hook, leaving any
+global npm install to be removed with <code>npm rm -g agstatus</code> whenever you get
+around to it.</p>
 <h3 id="hooks-claude-code-plugin"><a class="anchor" href="#hooks-claude-code-plugin">Claude Code plugin</a></h3>
 <p>The same hook, packaged as a Claude Code plugin — nothing touches
 <code>~/.claude/settings.json</code>. Inside Claude Code:</p>
@@ -302,14 +354,15 @@ session you run it in appears on the board.</p>
 <p><code>~/.agstatus.json</code> is also the home of the optional <code>&quot;focus&quot;: true</code> key that
 turns on <a href="#hooks-focus-optional-opt-in">Focus</a> for this machine — every install
 channel shares the file, and the hook checks that key whichever way the
-board URL arrived. <code>npx agstatus listener install</code> is the sanctioned writer
+board URL arrived. <code>agstatus listener install</code> is the sanctioned writer
 of the key; setting it by hand does nothing on its own — without the machine
 id file that installer creates, the hook adds no <code>host</code> object and writes no
 record.</p>
 <p>Don&#39;t combine the plugin with an <code>agstatus init</code> install on the same
 machine: both hooks would fire and every status would post twice. Pick one
-(<code>npx agstatus uninstall</code> removes the other). The plugin covers Claude Code
-only; for Codex, use <code>agstatus init</code>.</p>
+(<code>agstatus uninstall</code> removes the CLI-installed hook and leaves the plugin
+alone). The plugin covers Claude Code only; for Codex, use
+<a href="#hooks-install">the installer</a>.</p>
 <h3 id="hooks-how-events-map-to-statuses"><a class="anchor" href="#hooks-how-events-map-to-statuses">How events map to statuses</a></h3>
 <p>The Node hook applies this mapping. The bash hook covers the same Claude Code
 events but predates Codex support, so it has no <code>PermissionRequest</code> or
@@ -502,16 +555,20 @@ environment switches off both the <code>host</code> object and the record even w
 file says <code>true</code>. The full protocol — what the listener may run, how it
 validates a command, which terminals get pane-level focus — is in
 <a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/docs/design/focus-protocol.md">docs/design/focus-protocol.md</a>.</p>
-<p>Codex users: Codex re-checks the hooks it has been told to trust, and an
-updated hook script may need approving again — if Codex sessions stop
-reporting after an upgrade, run <code>/hooks</code> inside Codex and re-approve the
-AgStatus entries.</p>
+<p>Codex users: what Codex trusts is a hash of the registered command string, so
+an upgrade that changes that command leaves the stored hash stale and the hook
+unrun — silently. If Codex sessions stop reporting after an upgrade, run
+<code>/hooks</code> inside Codex and re-approve the AgStatus entries; see
+<a href="#hooks-openai-codex-specifics">OpenAI Codex specifics</a>.</p>
 <h4 id="hooks-installing-the-listener-macos"><a class="anchor" href="#hooks-installing-the-listener-macos">Installing the listener (macOS)</a></h4>
 <p>The listener is the process on your Mac that receives a tap from the board
 and brings the right terminal to the front. It runs as a LaunchAgent under
-your user, starts at login and is restarted if it dies. Install it after
+your user, starts at login and is restarted if it dies. On macOS the
+installer sets it up for you, so usually there is nothing to do here. Run it
+yourself to give the machine a name, to turn Focus on after installing with
+<code>--no-focus</code>, or on a machine set up through the plugin — any time after
 <code>agstatus init</code> (or the plugin&#39;s <code>/agstatus:setup</code>) has configured a board:</p>
-<pre><code class="language-bash">npx agstatus listener install --name &quot;Studio&quot;   # --name is the label shown on the board; default &quot;Mac&quot;
+<pre><code class="language-bash">agstatus listener install --name &quot;Studio&quot;   # --name is the label shown on the board; default &quot;Mac&quot;
 </code></pre>
 <p><code>install</code> is the only thing that turns Focus on. It</p>
 <ul>
@@ -525,9 +582,17 @@ directory — the only thing a Resume tap can ever start, see
 <a href="#hooks-resume">Resume</a> below; <code>--no-resume</code> writes <code>&quot;resume&quot;: false</code> instead and
 writes no launcher at all;</li>
 <li>writes and loads <code>~/Library/LaunchAgents/com.agstatus.listener.plist</code>,
-which runs <code>agstatus listener run</code> with the <code>PATH</code> of the shell you
-installed from, so the terminal tools it may call resolve the same way
-under launchd;</li>
+which runs <code>~/.agstatus/bin/agstatus listener run</code>. That first argument is
+an absolute path on purpose: launchd resolves a job&#39;s program against its
+own <code>/usr/bin:/bin:/usr/sbin:/sbin</code> and never against the job&#39;s
+<code>EnvironmentVariables.PATH</code> (see
+<a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/docs/design/focus-protocol.md">docs/design/focus-protocol.md</a>, &quot;A LaunchAgent&#39;s
+PATH&quot;), and no nvm, fnm or Volta install of Node lives in those four
+directories. The launcher is a small <code>sh</code> script that finds a Node ≥ 18 at
+every start rather than baking one in, so upgrading Node does not silently
+take Focus down. The plist still carries the <code>PATH</code> of the shell you
+installed from, so the terminal tools the listener may call resolve the
+same way under launchd;</li>
 <li>prints the exact <code>host</code> object every status post now carries.</li>
 </ul>
 <p>The board URL comes from the same places the hook reads it, in this order:
@@ -538,20 +603,18 @@ the same board; the hook still follows the files, so the installer warns
 when a <code>--url</code> names a different board than <code>settings.json</code> or
 <code>hooks.json</code>). If Claude Code and Codex are configured for different boards
 the installer refuses rather than guess — re-run <code>agstatus init</code>, or pass
-<code>--url</code>. Install the CLI itself (<code>npm i -g agstatus</code>) rather than relying
-on <code>npx</code> alone: the LaunchAgent points at the CLI&#39;s files, and npm may
-clear the <code>npx</code> cache.</p>
-<pre><code class="language-bash">npx agstatus listener status               # loaded? pid, machine label + public id, board, last log lines
-npx agstatus listener doctor               # which tools resolved and which strategies that enables, config sanity
-npx agstatus listener plan &lt;session_id&gt;    # dry run: print what a tap on that session would execute, run nothing
-npx agstatus listener plan &lt;id&gt; --resume   # the same for the Resume tap: what a respawn would launch
-npx agstatus listener uninstall [--purge]  # stop and remove the agent, set &quot;focus&quot;: false (cards clear)
+<code>--url</code>.</p>
+<pre><code class="language-bash">agstatus listener status               # loaded? pid, machine label + public id, board, last log lines
+agstatus listener doctor               # which tools resolved and which strategies that enables, config sanity
+agstatus listener plan &lt;session_id&gt;    # dry run: print what a tap on that session would execute, run nothing
+agstatus listener plan &lt;id&gt; --resume   # the same for the Resume tap: what a respawn would launch
+agstatus listener uninstall [--purge]  # stop and remove the agent, set &quot;focus&quot;: false (cards clear)
 </code></pre>
 <p><code>uninstall</code> keeps the session records and the log (and <code>machine.json</code>, so a
 reinstall keeps the same id); <code>--purge</code> removes the records and the log. The
 resume launcher goes either way: nothing that can start a session is left on
 a machine whose listener has been taken down.
-<code>npx agstatus uninstall</code> — the hook uninstall — runs <code>listener uninstall</code>
+<code>agstatus uninstall</code> — the hook uninstall — runs <code>listener uninstall</code>
 as well whenever the LaunchAgent is present or <code>&quot;focus&quot;: true</code> is still
 set, so switching AgStatus off on a machine switches Focus off with it.
 <code>plan</code> and <code>doctor</code> are the way to find out what a host can do before you
@@ -661,7 +724,7 @@ two seconds, and a breaker that ignores the board for five minutes after
 twenty taps in a minute). A refused tap starts nothing and answers
 <code>respawn-failed</code>.</p>
 <p>To keep Focus but switch Resume off, so those taps come back refused:</p>
-<pre><code class="language-bash">npx agstatus listener install --no-resume   # writes &quot;resume&quot;: false in ~/.agstatus.json
+<pre><code class="language-bash">agstatus listener install --no-resume   # writes &quot;resume&quot;: false in ~/.agstatus.json
 </code></pre>
 <p>Setting <code>&quot;resume&quot;: false</code> in <code>~/.agstatus.json</code> by hand does the same at any
 time — re-run <code>install</code> afterwards and the launcher is deleted, so &quot;off&quot;
@@ -672,7 +735,7 @@ you run <code>install</code>: it is then copied into the agent&#39;s plist. Sett
 shell rc afterwards changes nothing for the running listener, and
 <code>status</code>/<code>doctor</code> say so instead of reporting an &quot;off&quot; that is not. Both
 commands print which switch is in force, where the launcher is, and
-<code>npx agstatus listener uninstall</code> removes it.</p>
+<code>agstatus listener uninstall</code> removes it.</p>
 <h3 id="hooks-openai-codex-specifics"><a class="anchor" href="#hooks-openai-codex-specifics">OpenAI Codex specifics</a></h3>
 <p><code>agstatus init</code> configures Codex automatically when <code>~/.codex</code> exists
 (<code>CODEX_HOME</code> is respected; <code>--no-codex</code> opts out, <code>--codex</code> forces it):</p>
@@ -684,7 +747,11 @@ AgStatus entries). Codex has no settings <code>env</code> block, so the board UR
 embedded in the registered command string — you can read or change it
 right in <code>hooks.json</code>.</li>
 <li><strong>One-time step:</strong> Codex requires you to trust new hooks. Run <code>/hooks</code>
-inside Codex and approve the AgStatus entries — until then they won&#39;t fire.</li>
+inside Codex and approve the AgStatus entries — until then they won&#39;t fire.
+Codex trusts a hook by hashing its command, so a release that changes that
+command invalidates the stored hash: an existing install stays silent —
+no error anywhere — until you re-run <code>/hooks</code>. Both <code>agstatus init</code> and
+the installer say so when they finish setting Codex up.</li>
 </ol>
 <p>Events wired: <code>SessionStart</code>, <code>PreToolUse</code> (matcher
 <code>^(Bash|apply_patch|Edit|Write)$</code>), <code>PermissionRequest</code>, and <code>Stop</code>, each with
@@ -733,7 +800,7 @@ stopped being true — but it is no longer where new features land, and it is
 missing three that the Node hook has: <strong>plan-usage bars</strong> (it reports no
 usage at all), <strong>card removal on <code>SessionEnd</code></strong>, and <strong>Codex support</strong> (no
 <code>PermissionRequest</code> or <code>apply_patch</code> handling). Prefer
-<a href="#hooks-npx-agstatus-init"><code>npx agstatus init</code></a> or the
+<a href="#hooks-install">the installer</a> or the
 <a href="#hooks-claude-code-plugin">Claude Code plugin</a>; keep reading only if you want a
 hook you can read end to end in one sitting, or you would rather not have
 Node in the loop.</p>
@@ -815,7 +882,7 @@ project, use <code>.claude/settings.json</code> in that repo instead.</p>
 <p>Start a fresh Claude Code session in any project. The board should show a new
 card transitioning through <code>idle → coding → idle</code> as you work. If it doesn&#39;t:</p>
 <pre><code class="language-bash"># Check the CLI-installed setup end to end:
-npx agstatus status
+agstatus status
 
 # Run the Node hook manually with a fake payload (put your board URL first):
 export CLAUDE_STATUS_URL=&#39;https://agstatus.online/w/ags_yourtoken&#39;
@@ -1105,7 +1172,12 @@ Apple&#39;s APNs. Device registration endpoints exist in multi-tenant mode only;
 see <a href="#api-device-push-endpoints">docs/api.md</a>.</p>
 <h3 id="self-hosting-pointing-clients-at-your-instance"><a class="anchor" href="#self-hosting-pointing-clients-at-your-instance">Pointing clients at your instance</a></h3>
 <ul>
-<li>CLI: <code>npx agstatus init --url https://status.example.com</code></li>
+<li>CLI: <code>curl -fsSL https://status.example.com/install.sh | sh -s -- --url https://status.example.com</code>
+— your instance serves <code>/install.sh</code> and <code>/install.ps1</code> itself, so a machine
+that can reach your board can install from it without going near the hosted
+one. (On Windows:
+<code>&amp; ([scriptblock]::Create((irm https://status.example.com/install.ps1))) -Url https://status.example.com</code>.)
+An already-installed CLI just needs <code>agstatus init --url https://status.example.com</code>.</li>
 <li>iOS app: on the welcome screen, expand &quot;Self-hosting?&quot; and enter your
 server URL, or paste/scan your board URL directly.</li>
 <li>Manual hooks: see <a href="#hooks">docs/hooks.md</a>.</li>

@@ -7,7 +7,9 @@ describe('static pages', () => {
     const { app } = makeApp({ multiTenant: true });
     const res = await request(app).get('/').expect(200);
     expect(res.headers['content-type']).toMatch(/text\/html/);
-    expect(res.text).toContain('npx agstatus init');
+    // The hero offers both one-liners; a script picks which one is shown first.
+    expect(res.text).toContain('curl -fsSL https://agstatus.online/install.sh | sh');
+    expect(res.text).toContain('irm https://agstatus.online/install.ps1 | iex');
     // The landing page, not the board shell.
     expect(res.text).not.toContain('/app.js');
   });
@@ -45,6 +47,28 @@ describe('static pages', () => {
       for (const id of ['hooks', 'self-hosting', 'api']) {
         expect(res.text).toContain(`id="${id}"`);
       }
+    }
+  });
+
+  // The install one-liners are the documented way in, so both routes have to
+  // work on a self-hosted board too — not only on the hosted instance.
+  it('serves the install scripts in both modes', async () => {
+    for (const multiTenant of [true, false]) {
+      const { app } = makeApp({ multiTenant });
+
+      const sh = await request(app).get('/install.sh').expect(200);
+      // text/plain so a browser renders the script instead of downloading it;
+      // express.static would have answered application/x-sh.
+      expect(sh.headers['content-type']).toBe('text/plain; charset=utf-8');
+      expect(sh.headers['cache-control']).toBe('public, max-age=300');
+      expect(sh.text).toContain('#!/bin/sh');
+
+      const ps1 = await request(app).get('/install.ps1').expect(200);
+      expect(ps1.headers['content-type']).toBe('text/plain; charset=utf-8');
+      expect(ps1.headers['cache-control']).toBe('public, max-age=300');
+      // Windows PowerShell 5.1 is the floor, so the script must not be empty
+      // and must look like PowerShell rather than a shell script.
+      expect(ps1.text).toMatch(/\$[A-Za-z_]/);
     }
   });
 });

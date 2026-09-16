@@ -11,14 +11,9 @@
   "bin": {
     "agstatus": "dist/cli.js"
   },
-  "files": [
-    "dist",
-    "assets"
-  ],
   "scripts": {
     "build": "tsc",
-    "test": "vitest run",
-    "prepublishOnly": "npm run build"
+    "test": "vitest run"
   },
   "engines": {
     "node": ">=18"

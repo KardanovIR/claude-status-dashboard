@@ -29,14 +29,18 @@ import {
 import { runResumeExec } from './listener/resume';
 import type { ListenerConfig } from './listener/types';
 import {
+  codexConfigPath,
   codexDetected,
   codexHasOurHooks,
   codexHookCommand,
+  codexHookConfig,
   codexHookInstallPath,
   codexHooksPath,
+  codexLegacyRegistration,
   mergeCodexHooks,
   readCodexHooks,
   removeCodexHooks,
+  writeCodexHookConfig,
   writeCodexHooksWithBackup,
 } from './codex';
 
@@ -62,10 +66,15 @@ function installHookFile(dest: string = hookInstallPath()): string {
 }
 
 /**
- * Codex setup: same hook script, registered via $CODEX_HOME/hooks.json.
- * Reads (and validates) hooks.json before writing anything, so a malformed
- * file throws here with nothing on the Codex side changed — the caller treats
- * that as a warning and still completes Claude Code setup.
+ * Codex setup: same hook script, registered via $CODEX_HOME/hooks.json, with
+ * its configuration in a sidecar agstatus-hook.json beside the script (an env
+ * prefix on the command string would not run on Windows — see codex.ts).
+ *
+ * Everything that can refuse the inputs runs before the first write: the
+ * sidecar is built (and its URL validated) first, then hooks.json is read and
+ * validated. A bad URL or a malformed hooks.json therefore throws here with
+ * nothing on the Codex side changed — the caller treats that as a warning and
+ * still completes Claude Code setup.
  */
 function setupCodex(
   hookUrl: string,
@@ -73,15 +82,23 @@ function setupCodex(
   secret: string | undefined,
   log: (l: string) => void
 ): void {
+  const config = codexHookConfig(hookUrl, minimal === true, secret); // throws on a hostile URL
   const file = codexHooksPath();
+  const configFile = codexConfigPath();
   const hooks = readCodexHooks(file); // throws (aborting) on malformed JSON
-  const merged = mergeCodexHooks(hooks, codexHookCommand(hookUrl, minimal === true, secret));
+  const merged = mergeCodexHooks(hooks, codexHookCommand());
   installHookFile(codexHookInstallPath());
+  // Config before registration: between these two writes the hook is on disk
+  // but unregistered, so nothing can fire against a missing config.
+  writeCodexHookConfig(configFile, config);
   writeCodexHooksWithBackup(file, merged);
   log('');
   log('✔ Codex is set up too.');
   log(`  Hooks:     ${file}`);
+  log(`  Config:    ${configFile} (board URL${secret ? ' and secret' : ''}, mode 0600)`);
   log('  ⚠ One-time step: run /hooks inside Codex to trust the AgStatus hook.');
+  log('    Codex trusts a hook by hashing its command, and this release changed');
+  log('    that command — an existing install stays silent until you re-run /hooks.');
 }
 
 function renderQr(url: string, log: (line: string) => void): void {
@@ -210,13 +227,17 @@ export async function runUninstall(
     codexCleanupOk = true;
   } catch (err) {
     log(`⚠ Skipped Codex cleanup: ${(err as Error).message}`);
-    log(`  Left ${codexHookInstallPath()} in place (still referenced by hooks.json).`);
+    log(`  Left ${codexHookInstallPath()} and its config in place (still referenced by hooks.json).`);
   }
   if (codexCleanupOk) {
-    const codexHook = codexHookInstallPath();
-    if (fs.existsSync(codexHook)) {
-      fs.unlinkSync(codexHook);
-      log(`✔ Deleted ${codexHook}`);
+    // The sidecar goes with the script it configures — and only once the
+    // registrations are gone, for the same reason: a still-registered hook
+    // that finds no config would post nothing but would still run.
+    for (const file of [codexHookInstallPath(), codexConfigPath()]) {
+      if (fs.existsSync(file)) {
+        fs.unlinkSync(file);
+        log(`✔ Deleted ${file}`);
+      }
     }
   }
 
@@ -229,7 +250,7 @@ export async function runUninstall(
     log('');
     const code = await listenerUninstall({ ...opts.listener, log });
     if (code !== 0) {
-      throw new Error('The Focus listener is still installed — fix the problem above, then run `npx agstatus listener uninstall`.');
+      throw new Error('The Focus listener is still installed — fix the problem above, then run `agstatus listener uninstall`.');
     }
   }
 }
@@ -250,12 +271,28 @@ export async function runStatus(log: (line: string) => void = console.log): Prom
   log(`Settings:  ${file}`);
   log(`Hook file: ${fs.existsSync(hookFile) ? hookFile : 'NOT INSTALLED'}`);
   if (codexDetected()) {
-    const codexConfigured =
-      fs.existsSync(codexHookInstallPath()) && codexHasOurHooks(safeReadCodexHooks());
+    const codexHooks = safeReadCodexHooks();
+    const codexConfigured = fs.existsSync(codexHookInstallPath()) && codexHasOurHooks(codexHooks);
     log(`Codex:     ${codexConfigured ? `configured (${codexHooksPath()})` : 'detected, not configured'}`);
+    // A registration older than the sidecar carries its config as an env-var
+    // prefix on the command string. Nothing looks wrong on POSIX — it still
+    // runs — but that form cannot run on Windows at all, and it is not where
+    // the current hook looks. Say so, because the fix is two steps and the
+    // second one (re-trusting in Codex) is not something init can do.
+    //
+    // Read off the registration itself, never off "is there a sidecar?":
+    // setupCodex() writes the sidecar before it rewrites hooks.json, so a
+    // rewrite that throws (EACCES, read-only ~/.codex, a full disk — which
+    // runInit degrades to a one-line warning before reporting success) leaves
+    // a sidecar beside a legacy registration. That pair is the broken state,
+    // and inferring from the sidecar would make this permanently silent on it.
+    if (codexConfigured && codexLegacyRegistration(codexHooks)) {
+      log('           ⚠ Registered with the older env-prefix command. Re-run `agstatus init`,');
+      log('             then /hooks inside Codex to trust the new one.');
+    }
   }
   if (!url) {
-    log('URL:       not configured — run `npx agstatus init`');
+    log('URL:       not configured — run `agstatus init`');
     return;
   }
   log(`URL:       ${url}`);
@@ -360,11 +397,11 @@ async function runListenerCommand(
 const USAGE = `agstatus — live status board for your coding agents (Claude Code & Codex)
 
 Usage:
-  npx agstatus init [options]   Set up hooks + a status board
-  npx agstatus status           Show current setup and server reachability
-  npx agstatus uninstall        Remove hooks and env entries (and the Focus listener, if installed)
-  npx agstatus listener <cmd>   Focus listener (bring a session's terminal to the front from the board)
-  npx agstatus help             This help
+  agstatus init [options]   Set up hooks + a status board
+  agstatus status           Show current setup and server reachability
+  agstatus uninstall        Remove hooks and env entries (and the Focus listener, if installed)
+  agstatus listener <cmd>   Focus listener (bring a session's terminal to the front from the board)
+  agstatus help             This help
 
 init options:
   --url <base>      Server to use (default: ${resolveBaseUrl()})

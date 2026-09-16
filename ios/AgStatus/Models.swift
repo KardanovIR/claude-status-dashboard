@@ -801,8 +801,17 @@ struct PairCode: Codable, Equatable, Sendable {
     let expiresInSeconds: Int
 
     /// The terminal command a user runs to wire their machine to the board.
+    ///
+    /// The documented install path is the one-liner from agstatus.online, and
+    /// `sh -s --` is how arguments reach a script that arrived on stdin. The
+    /// script URL stays on the default server even when the board is
+    /// self-hosted: the board hands out `--url`, but the installer itself
+    /// still has to be fetched from somewhere the phone knows is current.
+    ///
+    /// PairSheet renders this in a wrapping Text, so the extra length costs a
+    /// second line on a phone and nothing else.
     func command(for board: Board) -> String {
-        var command = "npx agstatus init --code \(code)"
+        var command = "curl -fsSL \(Board.defaultServer.absoluteString)/install.sh | sh -s -- --code \(code)"
         if !board.isDefaultServer {
             command += " --url \(board.baseURL.absoluteString)"
         }

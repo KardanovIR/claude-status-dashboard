@@ -21,9 +21,22 @@ Steps:
 
 3. Check for a conflicting install: if `~/.claude/settings.json` contains
    `agstatus-hook` entries under `hooks`, warn the user that both the plugin
-   and the `npx agstatus init` hook are active — every status would be posted
-   twice. Recommend removing one: `npx agstatus uninstall` keeps the plugin;
-   `/plugin uninstall agstatus` keeps the npx install. Continue after warning.
+   and the standalone CLI hook are active — every status would be posted
+   twice. The settings entries are written by `agstatus init`, whichever way
+   the CLI got onto the machine (the installer at
+   `https://agstatus.online/install.sh`, or an older `npx agstatus` /
+   Homebrew install); the plugin's own hooks live in the plugin and never
+   touch `settings.json`, so their presence there is the tell. Recommend
+   removing one, and say which command matches what you found:
+   - CLI installed under `~/.agstatus` (check for `~/.agstatus/bin/agstatus`):
+     `~/.agstatus/bin/agstatus uninstall` — or just `agstatus uninstall` if
+     that directory is on their `PATH`.
+   - Otherwise an older install: `agstatus uninstall`, falling back to
+     `npx agstatus@1.3.0 uninstall` if `agstatus` is not on their `PATH`.
+   - Either way, `/plugin uninstall agstatus` is the other choice: it keeps
+     the CLI install and drops the plugin.
+   Continue after warning — this is advice, not a blocker, and do not run any
+   uninstall yourself.
 
 4. Acquire a board with curl:
    - If the arguments contain a pairing code (XXXX-XXXX, case and dashes

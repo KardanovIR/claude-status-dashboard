@@ -11,18 +11,27 @@
  * IMPORTANT: this script must never write to stdout — Codex interprets hook
  * stdout as behavior-control JSON, and a stray print could block a tool call.
  *
+ * Configuration comes from three places, in this order: the environment, then
+ * `agstatus-hook.json` beside this script (the sidecar `agstatus init` writes
+ * for Codex, because an env-var prefix on a command line is a POSIX shell
+ * construct that does not exist on Windows), then ~/.agstatus.json — written
+ * by the Claude Code plugin's /agstatus:setup, which cannot set env vars.
+ * Sidecar keys are the env names lowercased and unprefixed: url, secret,
+ * detail, source. `source` is the one key never taken from ~/.agstatus.json:
+ * that file is shared by both agents on a machine.
+ *
  * Env:
- *   CLAUDE_STATUS_URL     (board URL; falls back to "url" in ~/.agstatus.json —
- *                          written by the Claude Code plugin's /agstatus:setup —
- *                          and exits silently when neither is set)
+ *   CLAUDE_STATUS_URL     (board URL; "url" in either config file, and the
+ *                          hook exits silently when none of the three is set)
  *   CLAUDE_STATUS_SECRET  (optional; sent as x-webhook-secret, legacy servers;
- *                          falls back to "secret" in ~/.agstatus.json)
- *   AGSTATUS_DETAIL=off   (optional; send tool names instead of command text)
+ *                          "secret" in either config file)
+ *   AGSTATUS_DETAIL=off   (optional; send tool names instead of command text;
+ *                          "detail": "off" in either config file)
  *   AGSTATUS_USAGE=off    (optional; never report plan-usage percentages, and
  *                          never scan local logs for per-project token spend)
  *   AGSTATUS_PROJECT_FORCE=1 (optional; skip the per-project scan's throttle)
  *   AGSTATUS_SOURCE       (optional; agent kind tag, defaults to "claude" —
- *                          the Codex integration sets "codex")
+ *                          the Codex sidecar sets "source": "codex")
  *   AGSTATUS_FOCUS=off    (optional; ignore "focus": true in ~/.agstatus.json —
  *                          no host summary on the wire, no local session record)
  *   AGSTATUS_STATE_DIR    (optional; where machine.json and the session records
@@ -99,12 +108,6 @@ const PROJECT_FILE_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 // ignores this and reads everything.
 const PROJECT_SCAN_BYTE_BUDGET = 8 * 1024 * 1024;
 
-// Which agent this hook invocation serves. Claude Code installs leave it
-// unset (→ "claude"); the Codex hooks.json command embeds AGSTATUS_SOURCE=codex.
-// Dashboards use it to show only the limit bars of agents actually running.
-const SOURCE = /^[a-z][a-z0-9_-]{0,23}$/.test(process.env.AGSTATUS_SOURCE || '')
-  ? process.env.AGSTATUS_SOURCE
-  : 'claude';
 // Only Bash command text is truncated client-side (matching the bash hook);
 // the server caps every message at 300.
 const COMMAND_MAX = 120;
@@ -142,6 +145,56 @@ const FILE_CONFIG = (() => {
     return {};
   }
 })();
+
+/**
+ * agstatus-hook.json, written beside this script by `agstatus init` (see
+ * cli/src/codex.ts). The Codex registration used to carry its configuration as
+ * a POSIX env-var prefix on the command line; that form does not exist on
+ * cmd.exe, so on Windows the whole line would fail and the hook would silently
+ * never fire. The configuration rides in this sibling file instead, and the
+ * registered command is the same bare `node "<script>"` everywhere.
+ *
+ * Resolved from __dirname, never a fixed path: the Claude Code copy and the
+ * Codex copy are two files in two directories, and a per-copy file is the only
+ * thing that can tell them apart — which is what carries `source`.
+ * Missing or malformed just means "not configured here".
+ */
+const LOCAL_CONFIG = (() => {
+  try {
+    const raw = fs.readFileSync(path.join(__dirname, 'agstatus-hook.json'), 'utf8');
+    const cfg = JSON.parse(raw);
+    return cfg && typeof cfg === 'object' && !Array.isArray(cfg) ? cfg : {};
+  } catch {
+    return {};
+  }
+})();
+
+/**
+ * One lookup order for every setting: the environment (Claude Code's
+ * settings.json `env` block, or a one-off shell override) beats the sidecar
+ * beats ~/.agstatus.json. An env var that is set but not the value we are
+ * testing for still wins — it is an explicit override, not a miss.
+ */
+function configValue(envKey, key) {
+  return str(process.env[envKey]) || str(LOCAL_CONFIG[key]) || str(FILE_CONFIG[key]);
+}
+
+/**
+ * Which agent this hook invocation serves. Claude Code installs configure
+ * nothing (→ "claude"); the Codex sidecar sets "codex". Dashboards use it to
+ * show only the limit bars of agents actually running.
+ *
+ * Deliberately never read from ~/.agstatus.json: one machine has one of those
+ * and both agents share it, so a `source` there would tag every Claude Code
+ * session as a Codex one. Only the per-script sidecar knows which copy runs.
+ */
+const SOURCE = (() => {
+  const raw = str(process.env.AGSTATUS_SOURCE) || str(LOCAL_CONFIG.source);
+  return /^[a-z][a-z0-9_-]{0,23}$/.test(raw) ? raw : 'claude';
+})();
+
+/** Privacy switch (`--minimal` at init): tool names only, never command text. */
+const MINIMAL = configValue('AGSTATUS_DETAIL', 'detail') === 'off';
 
 /** Bash commands may arrive as a string (Claude Code) or argv (Codex). */
 function commandText(input) {
@@ -229,7 +282,7 @@ async function send(method, url, body) {
   try {
     const headers = {};
     if (body !== undefined) headers['content-type'] = 'application/json';
-    const secret = process.env.CLAUDE_STATUS_SECRET || str(FILE_CONFIG.secret);
+    const secret = configValue('CLAUDE_STATUS_SECRET', 'secret');
     if (secret) headers['x-webhook-secret'] = secret;
     // Await the response, but its status/body are irrelevant: fire-and-forget.
     await fetch(url, {
@@ -1740,7 +1793,7 @@ async function endHostRecord(base, session) {
 }
 
 async function main() {
-  const rawUrl = process.env.CLAUDE_STATUS_URL || str(FILE_CONFIG.url);
+  const rawUrl = configValue('CLAUDE_STATUS_URL', 'url');
   if (!rawUrl) return;
   const base = boardBase(rawUrl);
 
@@ -1778,12 +1831,11 @@ async function main() {
     const generic = event === 'PermissionRequest' ? 'Needs approval' : 'Needs input';
     // The prompt text can quote the command awaiting approval, so honor the
     // privacy switch here too: minimal mode sends only the generic label.
-    message =
-      process.env.AGSTATUS_DETAIL === 'off'
-        ? generic
-        : typeof payload.message === 'string' && payload.message !== ''
-          ? payload.message
-          : generic;
+    message = MINIMAL
+      ? generic
+      : typeof payload.message === 'string' && payload.message !== ''
+        ? payload.message
+        : generic;
   } else if (event === 'UserPromptSubmit') {
     // The user just answered — flip the card away from blocked/idle right now,
     // not at the first tool call (which may come much later, or never for a
@@ -1793,29 +1845,25 @@ async function main() {
     const prompt = str(typeof payload.prompt === 'string' ? payload.prompt : '')
       .replace(/\s+/g, ' ');
     message =
-      process.env.AGSTATUS_DETAIL === 'off' || prompt === ''
-        ? 'Processing prompt'
-        : prompt.slice(0, COMMAND_MAX);
+      MINIMAL || prompt === '' ? 'Processing prompt' : prompt.slice(0, COMMAND_MAX);
   } else if (event === 'PreToolUse') {
     const tool = typeof payload.tool_name === 'string' ? payload.tool_name : '';
     const input =
       payload.tool_input && typeof payload.tool_input === 'object' ? payload.tool_input : {};
-    // Privacy switch: minimal mode reports the tool and nothing else — no
+    // MINIMAL is the privacy switch: report the tool and nothing else — no
     // descriptions, file names, search queries, or command text.
-    const minimal = process.env.AGSTATUS_DETAIL === 'off';
-
     // Codex's file-edit tool is apply_patch; Claude Code uses Edit/Write/….
     if (EDIT_TOOLS.has(tool)) {
       status = 'coding';
-      message = minimal ? tool : describeEdit(tool, input);
+      message = MINIMAL ? tool : describeEdit(tool, input);
     } else if (tool === 'Bash') {
       // Classify from the command itself — the description says what the
       // command means, but only the command says whether it runs tests.
       status = TEST_RE.test(commandText(input)) ? 'testing' : 'coding';
-      message = minimal ? 'Bash' : describeBash(input);
+      message = MINIMAL ? 'Bash' : describeBash(input);
     } else if (tool === 'Task' || tool === 'WebSearch' || tool === 'WebFetch') {
       status = 'planning';
-      message = minimal ? tool : describeResearch(tool, input);
+      message = MINIMAL ? tool : describeResearch(tool, input);
     } else {
       return;
     }
@@ -1875,7 +1923,7 @@ async function main() {
  */
 if (process.argv.includes('--backfill')) {
   clearTimeout(safety);
-  const rawUrl = process.env.CLAUDE_STATUS_URL || str(FILE_CONFIG.url);
+  const rawUrl = configValue('CLAUDE_STATUS_URL', 'url');
   if (!rawUrl) {
     process.stderr.write('agstatus: set CLAUDE_STATUS_URL to your board URL first\n');
     process.exit(1);

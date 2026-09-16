@@ -156,21 +156,58 @@
     display: inline-flex;
     align-items: center;
     gap: 12px;
+    max-width: 100%;
     padding: 13px 16px;
     background: #05070b;
     border: 1px solid var(--line);
     border-radius: 11px;
     font-family: var(--mono);
-    font-size: 14.5px;
+    /* The one-liners are ~49 characters, three times the old `npx` command,
+       so the hero type has to give way on a phone rather than overflow. */
+    font-size: clamp(12px, 3vw, 14.5px);
+    text-align: left;
     color: var(--text);
     cursor: pointer;
     transition: border-color .15s;
     -webkit-tap-highlight-color: transparent;
   }
   .cmd:hover { border-color: var(--coding); }
-  .cmd .prompt { color: var(--done); user-select: none; }
-  .cmd .copy { color: var(--muted-2); font-size: 12px; margin-left: 2px; }
+  .cmd .prompt { color: var(--done); user-select: none; flex-shrink: 0; }
+  /* Even shrunk, the command needs a second line on a narrow screen: wrap it
+     inside the button, and let it break mid-URL rather than push the layout. */
+  .cmd .cmd-text { min-width: 0; overflow-wrap: anywhere; }
+  .cmd .copy { color: var(--muted-2); font-size: 12px; margin-left: 2px; flex-shrink: 0; }
   .cmd.copied .copy { color: var(--done); }
+
+  /* Platform switch for the install one-liner. Two buttons rather than a
+     select: which command you are looking at stays visible without opening
+     anything, and aria-pressed says it out loud. */
+  .os-switch {
+    margin-top: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .os-switch .os-btn {
+    font: inherit;
+    color: var(--muted);
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 5px 10px;
+    cursor: pointer;
+    transition: color .15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .os-switch .os-btn:hover { color: var(--text); }
+  .os-switch .os-btn[aria-pressed="true"] {
+    background: var(--surface-2);
+    border-color: var(--line);
+    color: var(--text);
+  }
 
   .btn {
     display: inline-flex;
@@ -440,6 +477,11 @@
   /* the display rules above would otherwise beat the hidden attribute */
   .step [hidden] { display: none !important; }
   .install-note { font-size: 13px; color: var(--muted-2); margin-top: 8px; }
+  /* A flag named mid-sentence is not a command block — undo .step code. */
+  .install-note code {
+    display: inline; margin: 0; padding: 1px 5px; font-size: 0.92em;
+    background: var(--surface-2); user-select: auto; overflow: visible;
+  }
 
   /* ── self-host strip ── */
   .strip {
@@ -497,7 +539,6 @@
       <a href="#setup" class="hide-sm">Setup</a>
       <a href="/docs">Docs</a>
       <a href="https://github.com/KardanovIR/claude-status-dashboard">GitHub</a>
-      <a href="https://www.npmjs.com/package/agstatus" class="hide-sm">npm</a>
     </div>
   </div>
 </nav>
@@ -510,11 +551,18 @@
     doing right now — and <strong>tells you the moment one needs your approval</strong>.
   </p>
   <div class="actions">
-    <button class="cmd" id="copy-cmd" type="button" aria-label="Copy install command">
-      <span class="prompt" aria-hidden="true">$</span>npx agstatus init<span class="copy">copy</span>
+    <button class="cmd" id="copy-cmd" type="button" aria-label="Copy the macOS and Linux install command">
+      <span class="prompt" aria-hidden="true">$</span><span class="cmd-text" id="cmd-text">curl -fsSL https://agstatus.online/install.sh | sh</span><span class="copy">copy</span>
     </button>
     <button class="btn" id="create-board" type="button">Create a board</button>
     <a class="btn btn-ghost" href="https://github.com/KardanovIR/claude-status-dashboard">Source</a>
+  </div>
+  <!-- The other one-liner is always one click away: the detection below is a
+       guess, and a wrong guess must never be a dead end. Windows ships with
+       the .ps1 pre-selected, everyone else with the .sh — but both are here. -->
+  <div class="os-switch" id="os-switch" role="group" aria-label="Install command platform">
+    <button class="os-btn" type="button" data-os="posix" aria-pressed="true">macOS / Linux</button>
+    <button class="os-btn" type="button" data-os="windows" aria-pressed="false">Windows</button>
   </div>
   <p class="err" id="err" role="alert"></p>
 </header>
@@ -595,15 +643,17 @@
         <h3>Install the hook</h3>
         <p>Sets up Claude Code, and OpenAI Codex too when it finds it. Your existing settings are preserved.</p>
         <div class="install-tabs" role="tablist" aria-label="Install method">
-          <button class="tab" role="tab" aria-selected="true" data-tab="npx" type="button">npx</button>
-          <button class="tab" role="tab" aria-selected="false" data-tab="brew" type="button">Homebrew</button>
+          <button class="tab" role="tab" aria-selected="true" data-tab="posix" type="button">macOS / Linux</button>
+          <button class="tab" role="tab" aria-selected="false" data-tab="windows" type="button">Windows</button>
           <button class="tab" role="tab" aria-selected="false" data-tab="plugin" type="button">Claude Code plugin</button>
         </div>
         <div>
-          <code data-pane="npx">npx agstatus init</code>
-          <code data-pane="brew" hidden>brew install kardanovir/tap/agstatus &amp;&amp; agstatus init</code>
+          <code data-pane="posix">curl -fsSL https://agstatus.online/install.sh | sh</code>
+          <code data-pane="windows" hidden>irm https://agstatus.online/install.ps1 | iex</code>
           <code data-pane="plugin" class="multi" hidden>/plugin marketplace add KardanovIR/claude-status-dashboard<br />/plugin install agstatus@agstatus<br />/agstatus:setup</code>
-          <p class="install-note" data-pane="plugin-note" hidden>Runs inside Claude Code — no terminal needed. Claude Code only; for Codex use the CLI.</p>
+          <p class="install-note" data-pane="posix-note">On macOS the installer also sets up Focus, so a tap on the board brings that session's terminal to the front. It prints what that sends; <code>--no-focus</code> skips it.</p>
+          <p class="install-note" data-pane="windows-note" hidden>Windows PowerShell 5.1 and up. Claude Code and Codex hooks, same as everywhere else; Focus is macOS-only.</p>
+          <p class="install-note" data-pane="plugin-note" hidden>Runs inside Claude Code — no terminal needed. Claude Code only; for Codex use the installer.</p>
         </div>
       </div>
     </div>
@@ -654,7 +704,7 @@
     <span>MIT licensed · Built by Inal Kardanov</span>
     <div class="foot-links">
       <a href="https://github.com/KardanovIR/claude-status-dashboard">GitHub</a>
-      <a href="https://www.npmjs.com/package/agstatus">npm</a>
+      <a href="/docs">Docs</a>
       <a href="/docs#self-hosting">Self-hosting</a>
       <a href="/privacy">Privacy</a>
     </div>
@@ -665,11 +715,75 @@
 (() => {
   'use strict';
 
-  // ── copy the install command ──────────────────────────────────────────
+  // ── install method tabs ────────────────────────────────────────────────
+  const tabs = document.querySelector('.install-tabs');
+  function selectTab(btn) {
+    for (const t of tabs.querySelectorAll('.tab')) {
+      t.setAttribute('aria-selected', String(t === btn));
+    }
+    for (const pane of tabs.parentElement.querySelectorAll('[data-pane]')) {
+      pane.hidden = !pane.dataset.pane.startsWith(btn.dataset.tab);
+    }
+  }
+  tabs.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tab');
+    if (btn) selectTab(btn);
+  });
+
+  // ── the install one-liner: one per platform ───────────────────────────
+  // Both commands are in the markup; this only decides which one greets you.
+  // Sniffing is a guess (a Mac driving a Windows VM, a spoofed UA, a bot), so
+  // the other platform stays one click away rather than behind the guess.
+  const INSTALL = {
+    posix: {
+      prompt: '$',
+      cmd: 'curl -fsSL https://agstatus.online/install.sh | sh',
+      label: 'macOS and Linux',
+    },
+    windows: {
+      prompt: '>',
+      cmd: 'irm https://agstatus.online/install.ps1 | iex',
+      label: 'Windows PowerShell',
+    },
+  };
+
   const cmdBtn = document.getElementById('copy-cmd');
+  const cmdText = document.getElementById('cmd-text');
+  const cmdPrompt = cmdBtn.querySelector('.prompt');
+  const osSwitch = document.getElementById('os-switch');
+  let currentOS = 'posix';
+
+  function showOS(os) {
+    const spec = INSTALL[os];
+    if (!spec) return;
+    currentOS = os;
+    cmdText.textContent = spec.cmd;
+    cmdPrompt.textContent = spec.prompt;
+    cmdBtn.setAttribute('aria-label', `Copy the ${spec.label} install command`);
+    for (const b of osSwitch.querySelectorAll('.os-btn')) {
+      b.setAttribute('aria-pressed', String(b.dataset.os === os));
+    }
+    // Keep Setup step 01 on the same platform, so the page never shows two
+    // different answers to "what do I run?".
+    const tab = tabs.querySelector(`.tab[data-tab="${os}"]`);
+    if (tab) selectTab(tab);
+  }
+
+  osSwitch.addEventListener('click', (e) => {
+    const btn = e.target.closest('.os-btn');
+    if (btn) showOS(btn.dataset.os);
+  });
+
+  // userAgentData.platform where it exists ("Windows", "macOS", "Linux"),
+  // then the deprecated-but-universal navigator.platform ("Win32"), then the
+  // UA string ("Windows NT 10.0"). Anything unrecognised stays on POSIX.
+  const uaData = navigator.userAgentData;
+  const probe = String((uaData && uaData.platform) || navigator.platform || navigator.userAgent || '');
+  if (/^win|windows/i.test(probe)) showOS('windows');
+
   cmdBtn.addEventListener('click', async () => {
     try {
-      await navigator.clipboard.writeText('npx agstatus init');
+      await navigator.clipboard.writeText(INSTALL[currentOS].cmd);
       cmdBtn.classList.add('copied');
       cmdBtn.querySelector('.copy').textContent = 'copied';
       setTimeout(() => {
@@ -677,19 +791,6 @@
         cmdBtn.querySelector('.copy').textContent = 'copy';
       }, 1600);
     } catch { /* clipboard unavailable — the text is selectable anyway */ }
-  });
-
-  // ── install method tabs ────────────────────────────────────────────────
-  const tabs = document.querySelector('.install-tabs');
-  tabs.addEventListener('click', (e) => {
-    const btn = e.target.closest('.tab');
-    if (!btn) return;
-    for (const t of tabs.querySelectorAll('.tab')) {
-      t.setAttribute('aria-selected', String(t === btn));
-    }
-    for (const pane of tabs.parentElement.querySelectorAll('[data-pane]')) {
-      pane.hidden = !pane.dataset.pane.startsWith(btn.dataset.tab);
-    }
   });
 
   // ── create a board (same call the dashboard makes) ────────────────────

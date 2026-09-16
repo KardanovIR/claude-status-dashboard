@@ -53,17 +53,40 @@ export function hookInstallPath(): string {
 }
 
 /**
- * The command string written into settings.json. Uses $HOME so synced dotfiles
- * stay portable; falls back to the literal path when the config dir lives
- * outside the home directory (e.g. CLAUDE_CONFIG_DIR pointing at a temp dir).
+ * The command string written into settings.json, as a pure function of the
+ * three things it depends on — so the win32 form can be asserted from a Linux
+ * or macOS test run. There is no Windows runner in CI, and a hook command that
+ * does not parse on Windows fails silently (the hook is registered, the shell
+ * cannot resolve it, nothing ever posts), so this test is the only coverage
+ * that form will ever get.
+ *
+ * POSIX keeps `$HOME` — byte-identical to what every existing install already
+ * carries. The shell Claude Code runs hook commands through expands it, which
+ * keeps a settings.json synced between machines (different usernames, /Users
+ * vs /home) pointing at the right file. That portability is the whole reason
+ * the form was chosen (see the original CLI commit, 396b38e), so POSIX
+ * behaviour here is deliberately unchanged: no churn for anyone upgrading.
+ *
+ * Windows has no such expansion: cmd.exe would look for a literal `$HOME`
+ * (its own form is `%USERPROFILE%`, and `%HOME%` is usually unset) and
+ * PowerShell only expands `$HOME` in PowerShell syntax. So win32 bakes the
+ * absolute path, with forward slashes: node accepts them on Windows, and they
+ * survive JSON.stringify without every separator doubling into `\\`.
+ *
+ * The separators are compared literally rather than through `path.sep` so the
+ * result depends only on `platform`, never on the machine running the code.
  */
-export function hookCommand(): string {
-  const dest = hookInstallPath();
-  const home = os.homedir();
-  if (dest.startsWith(home + path.sep)) {
-    return `node "$HOME${dest.slice(home.length)}"`;
-  }
+export function hookCommandFor(dest: string, home: string, platform: NodeJS.Platform): string {
+  if (platform === 'win32') return `node "${dest.replace(/\\/g, '/')}"`;
+  // Falls back to the literal path when the config dir lives outside the home
+  // directory (e.g. CLAUDE_CONFIG_DIR pointing at a temp dir).
+  if (home && dest.startsWith(home + '/')) return `node "$HOME${dest.slice(home.length)}"`;
   return `node "${dest}"`;
+}
+
+/** hookCommandFor() applied to this machine. */
+export function hookCommand(): string {
+  return hookCommandFor(hookInstallPath(), os.homedir(), process.platform);
 }
 
 /**

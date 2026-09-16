@@ -29,19 +29,29 @@ so you step away from the keyboard without losing the thread.
    submission in progress; until it's live, open `ios/AgStatus.xcodeproj` in
    Xcode and run it — a simulator build needs no signing). No iPhone? Your
    board URL works in any browser.
-2. **Wire up your machine:**
+2. **Wire up your machine** — macOS and Linux:
 
    ```bash
-   npx agstatus init
+   curl -fsSL https://agstatus.online/install.sh | sh
    ```
 
-   One command: creates a private board on the hosted instance, installs a
+   Windows (PowerShell 5.1 or newer):
+
+   ```powershell
+   irm https://agstatus.online/install.ps1 | iex
+   ```
+
+   One command: unpacks the CLI under `~/.agstatus` (no `sudo`, nothing
+   system-wide), creates a private board on the hosted instance, installs a
    dependency-free Node hook, registers it in `~/.claude/settings.json` (with
    a backup) — and in `~/.codex/hooks.json` when Codex is detected — then
    prints your board URL plus a QR code to open it on your phone. (Codex asks
-   you to trust the new hook once: run `/hooks` inside Codex.)
+   you to trust the hook: run `/hooks` inside Codex — and again after an
+   upgrade that changes the hook command, or Codex silently stops firing it.)
+   Re-run the same command to upgrade. On macOS it also sets up
+   [Focus](docs/design/focus-protocol.md) — it prints exactly what that sends,
+   and `--no-focus` skips it.
 
-   Prefer Homebrew? `brew install kardanovir/tap/agstatus`, then `agstatus init`.
    Claude Code-only machines can skip the CLI entirely and use the
    [plugin](docs/hooks.md#claude-code-plugin): `/plugin marketplace add
    KardanovIR/claude-status-dashboard`, `/plugin install agstatus@agstatus`,
@@ -51,7 +61,8 @@ so you step away from the keyboard without losing the thread.
    the agent through `idle → coding → testing → …` as it works.
 
 Created the board in the app first? Pair your machine to it with a code:
-`npx agstatus init --code XXXX-XXXX`. Details in [docs/hooks.md](docs/hooks.md).
+`curl -fsSL https://agstatus.online/install.sh | sh -s -- --code XXXX-XXXX`.
+Details in [docs/hooks.md](docs/hooks.md).
 
 ## Features
 
@@ -92,7 +103,7 @@ environment-variable reference are in **[docs/self-hosting.md](docs/self-hosting
 claude-status/
 ├── src/              # Server: Express + SSE + PostgreSQL store + APNs push (TypeScript)
 ├── public/           # Web dashboard: vanilla JS, no build step
-├── cli/              # `npx agstatus` setup CLI + the Node hook it installs
+├── cli/              # `agstatus` setup CLI + the Node hook it installs
 ├── hooks/            # Original bash hook for manual setup (deprecated)
 ├── ios/              # AgStatus: native SwiftUI app (+ legacy ClaudeStatus WebView app)
 ├── integrations/     # Android WebView client
@@ -107,9 +118,20 @@ claude-status/
 
 - [Self-hosting guide](docs/self-hosting.md) — quick start, env vars, TLS, push setup
 - [HTTP API reference](docs/api.md) — webhook, workspaces, pairing, devices, SSE
-- [Claude Code integration](docs/hooks.md) — `agstatus init`, event mapping, manual setup
+- [Claude Code integration](docs/hooks.md) — the installer, event mapping, manual setup
 - [Privacy policy](docs/privacy.md) — what the hosted instance stores and for how long
 - [Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md)
+
+### Other ways in
+
+The [Claude Code plugin](docs/hooks.md#claude-code-plugin) is a separate,
+fully supported channel — no installer, no terminal, Claude Code only.
+
+AgStatus used to ship through npm and a Homebrew tap; neither gets new
+releases now. Nothing was unpublished, though: `agstatus@1.3.0` stays
+resolvable on the npm registry, so an `npx agstatus init` in an old script or
+somebody's notes still runs and still works — it just installs 1.3.0 instead
+of the current release. Re-run the installer to move a machine onto current.
 
 ## License
 

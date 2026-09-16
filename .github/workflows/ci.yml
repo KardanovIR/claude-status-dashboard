@@ -151,6 +151,28 @@ jobs:
           context: .
           push: false
 
+  # The Focus listener is macOS-only (cli/src/listener/install.ts refuses any
+  # other platform), and a handful of its tests assert behaviour that depends on
+  # the host's real directory layout — they skip on the Linux job above, so this
+  # is the only place they run. Without it, `install`, `doctor` and the resume
+  # launcher would have no coverage at all on the platform they actually ship to.
+  cli-macos:
+    name: CLI (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: cli/package-lock.json
+      - name: Install and test
+        working-directory: cli
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npx vitest run
+
   ios:
     name: iOS app (build)
     runs-on: macos-15

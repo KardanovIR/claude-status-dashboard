@@ -8,6 +8,15 @@ import type { LocalRecord } from '../src/listener/types';
 const SESSION = '5a1d2f6e-9b3c-4d7e-8f01-23456789abcd';
 
 /** A record as the hook writes it for Claude Code inside agterm — the shape host.test.ts asserts on. */
+/**
+ * The record every `loadRecords` case writes to disk. It differs from
+ * AGTERM_RECORD in one field: loadRecords() validates with `process.platform`
+ * rather than a threaded-in one, so a record whose tty is macOS-shaped is
+ * refused outright on a Linux runner — and the test then measures the refusal
+ * instead of whatever it meant to measure. The validateRecord cases above are
+ * unaffected: they pass their platform explicitly.
+ */
+const HOST_TTY = process.platform === 'linux' ? '/dev/pts/2' : '/dev/ttys002';
 const AGTERM_RECORD = {
   v: 1,
   session_id: SESSION,
@@ -301,6 +310,8 @@ describe('loadRecords', () => {
   fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
   afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
+  const HOST_RECORD = { ...AGTERM_RECORD, tty: HOST_TTY };
+
   const write = (name: string, content: unknown, mode: number): string => {
     const file = path.join(folder, name);
     fs.writeFileSync(file, typeof content === 'string' ? content : JSON.stringify(content), { mode });
@@ -313,9 +324,9 @@ describe('loadRecords', () => {
 
   it('accepts a 0600 record and refuses one readable by group or other', () => {
     clear();
-    write('7449.json', AGTERM_RECORD, 0o600);
-    write('7450.json', { ...AGTERM_RECORD, agent_pid: 7450 }, 0o644);
-    write('7451.json', { ...AGTERM_RECORD, agent_pid: 7451 }, 0o640);
+    write('7449.json', HOST_RECORD, 0o600);
+    write('7450.json', { ...HOST_RECORD, agent_pid: 7450 }, 0o644);
+    write('7451.json', { ...HOST_RECORD, agent_pid: 7451 }, 0o640);
     const { records, rejected } = loadRecords(tmp, SESSION);
     expect(records.map((r) => r.agent_pid)).toEqual([7449]);
     expect(rejected).toBe(2);
@@ -323,12 +334,12 @@ describe('loadRecords', () => {
 
   it('refuses directories, symlinks, bad JSON, invalid records and other sessions', () => {
     clear();
-    const good = write('7449.json', AGTERM_RECORD, 0o600);
+    const good = write('7449.json', HOST_RECORD, 0o600);
     fs.mkdirSync(path.join(folder, 'dir.json'), { mode: 0o700 });
     fs.symlinkSync(good, path.join(folder, 'link.json'));
     write('broken.json', '{"v":1,', 0o600);
-    write('bad.json', { ...AGTERM_RECORD, agent_pid: 0 }, 0o600);
-    write('other.json', { ...AGTERM_RECORD, session_id: 'other-session' }, 0o600);
+    write('bad.json', { ...HOST_RECORD, agent_pid: 0 }, 0o600);
+    write('other.json', { ...HOST_RECORD, session_id: 'other-session' }, 0o600);
     write('7449.json.123.tmp', '{', 0o600); // the hook's temp file: skipped, not counted
     const { records, rejected } = loadRecords(tmp, SESSION);
     expect(records.map((r) => r.agent_pid)).toEqual([7449]);
@@ -337,9 +348,9 @@ describe('loadRecords', () => {
 
   it('sorts newest written_at first', () => {
     clear();
-    write('100.json', { ...AGTERM_RECORD, agent_pid: 100, written_at: 1000 }, 0o600);
-    write('300.json', { ...AGTERM_RECORD, agent_pid: 300, written_at: 3000 }, 0o600);
-    write('200.json', { ...AGTERM_RECORD, agent_pid: 200, written_at: 2000 }, 0o600);
+    write('100.json', { ...HOST_RECORD, agent_pid: 100, written_at: 1000 }, 0o600);
+    write('300.json', { ...HOST_RECORD, agent_pid: 300, written_at: 3000 }, 0o600);
+    write('200.json', { ...HOST_RECORD, agent_pid: 200, written_at: 2000 }, 0o600);
     const { records } = loadRecords(tmp, SESSION);
     expect(records.map((r) => r.agent_pid)).toEqual([300, 200, 100]);
   });

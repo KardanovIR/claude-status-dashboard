@@ -215,6 +215,14 @@ async function makeFixture(): Promise<Fixture> {
 }
 
 /** The hook's agterm record for the session, 0600 in a 0700 folder, with leak markers in every unused field. */
+/**
+ * A tty of the shape `validateRecord()` accepts on the machine running the
+ * tests. loadRecords() validates with `process.platform`, not a threaded-in
+ * one, so a hard-coded macOS tty is refused on the Linux CI runner and every
+ * record-backed test silently loses its record.
+ */
+const HOST_TTY = process.platform === 'linux' ? '/dev/pts/2' : '/dev/ttys002';
+
 function writeRecord(fx: Fixture, session: string, over: Record<string, unknown> = {}): void {
   const folder = path.join(fx.stateDir, 'sessions', session);
   fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
@@ -227,7 +235,7 @@ function writeRecord(fx: Fixture, session: string, over: Record<string, unknown>
     entrypoint: 'cli',
     written_at: 1789286585,
     ended_at: null,
-    tty: '/dev/ttys002',
+    tty: HOST_TTY,
     cwd: `/Users/demo/src/${NEVER}`,
     app: { bundle: AGTERM, path: '/Applications/agterm.app', pid: 662, via: 'ppid-walk' },
     env: { ...AGTERM_ENV, AGTERM_SOCKET: fx.sock, TERM_SESSION_ID: `w0t0p0:${NEVER}` },
@@ -383,7 +391,7 @@ function start(cfg: ListenerConfig, deps: Omit<ListenerDeps, 'signal'>): Running
 /** Log lines carry labels, enums and ids: nothing from the record's cwd, tty, env or path. */
 function expectCleanLog(text: string): void {
   expect(text).not.toContain(NEVER);
-  expect(text).not.toContain('/dev/ttys002');
+  expect(text).not.toContain(HOST_TTY);
   expect(text).not.toContain('.sock');
   expect(text).not.toContain(AGTERM_ENV.AGTERM_SESSION_ID);
   expect(text).not.toContain('AKIA');
@@ -1538,7 +1546,17 @@ describe('runPlanCommand', () => {
     expect(lines[0]).toContain('session id');
   });
 
-  it('--resume dry-runs the respawn of a stopped session, paths redacted', async () => {
+/**
+   * These three assert behaviour that depends on the HOST's real directory
+   * layout: `install()` refuses any platform but darwin, so they must simulate a
+   * Mac — and `launcherResolves()` then compares the fixture's state directory
+   * against the DARWIN default, which a Linux runner's fixture can never be.
+   * Simulating darwin harder does not help; the mismatch is the point of the
+   * check. They run on the macOS CI job instead (ci.yml: "CLI (macOS)").
+   */
+  const onDarwin = process.platform === 'darwin' ? it : it.skip;
+
+  onDarwin('--resume dry-runs the respawn of a stopped session, paths redacted', async () => {
     const launcher = installLauncher(fx);
     writeRecord(fx, SESSION, { cwd: workDir(fx) });
     const lines: string[] = [];
@@ -1581,7 +1599,7 @@ describe('runPlanCommand', () => {
     expect(text).toContain('starts a new session');
   });
 
-  it('--resume refuses when ~/.agstatus.json says "resume": false, launcher or no launcher', async () => {
+  onDarwin('--resume refuses when ~/.agstatus.json says "resume": false, launcher or no launcher', async () => {
     fs.writeFileSync(path.join(fx.home, '.agstatus.json'), JSON.stringify({ resume: false }), { mode: 0o600 });
     installLauncher(fx);
     writeRecord(fx, SESSION, { cwd: workDir(fx) });

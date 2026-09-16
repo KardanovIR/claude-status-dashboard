@@ -576,7 +576,17 @@ describe('the resume launcher', () => {
     expect(checked.out()).toContain('AGSTATUS_RESUME=off is set in this shell');
   });
 
-  it('refuses the feature honestly when the state directory is not the one the launcher would read', async () => {
+/**
+   * These three assert behaviour that depends on the HOST's real directory
+   * layout: `install()` refuses any platform but darwin, so they must simulate a
+   * Mac — and `launcherResolves()` then compares the fixture's state directory
+   * against the DARWIN default, which a Linux runner's fixture can never be.
+   * Simulating darwin harder does not help; the mismatch is the point of the
+   * check. They run on the macOS CI job instead (ci.yml: "CLI (macOS)").
+   */
+  const onDarwin = process.platform === 'darwin' ? it : it.skip;
+
+  onDarwin('refuses the feature honestly when the state directory is not the one the launcher would read', async () => {
     withSettingsUrl(ws.home, BOARD);
     const own = path.join(ws.home, 'state-of-its-own');
     process.env.AGSTATUS_STATE_DIR = own;

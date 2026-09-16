@@ -181,7 +181,17 @@ function wrapperAgent(extraEnv: Record<string, string>) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-agent-'));
   const codex = path.join(dir, 'codex');
   const payloadFile = path.join(dir, 'payload.json');
-  fs.symlinkSync('/bin/sh', codex);
+  // Linux reports `comm` from the executable FILE's name, macOS from the name
+  // it was invoked by — so a symlink called `codex` reads back as `sh` on a
+  // Linux runner and findAgent() never sees an agent at all. A copy carries the
+  // name on both. (Copying is Linux-only: on macOS a copied system binary can
+  // trip the arm64 signature check, and the symlink works there anyway.)
+  if (process.platform === 'linux') {
+    fs.copyFileSync('/bin/sh', codex);
+    fs.chmodSync(codex, 0o755);
+  } else {
+    fs.symlinkSync('/bin/sh', codex);
+  }
 
   const env: Record<string, string | undefined> = { ...process.env };
   for (const key of SCRUBBED_ENV) delete env[key];

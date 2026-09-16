@@ -310,6 +310,19 @@ function recorder(psComm = '/Users/demo/.local/bin/claude'): { execFile: ExecFil
   return { execFile, launches };
 }
 
+/**
+ * The same recorder with a scripted `ps -axo args=`: exactly these command
+ * lines are running on the machine. That read is the second half of a
+ * respawn's evidence, and what it may and may not take for an agent is the
+ * subject of the tests below.
+ */
+function withProcessTable(execFile: ExecFile, lines: string[]): ExecFile {
+  return async (file, args, opts) => {
+    if (file === PS && args[0] === '-axo' && args[1] === 'args=') return { code: 0, stdout: `${lines.join('\n')}\n` };
+    return execFile(file, args, opts);
+  };
+}
+
 /** Polls until `cond` holds; on timeout the listener log (when given) is part of the failure. */
 async function until(cond: () => boolean, ms = 5000, detail?: () => string): Promise<void> {
   const deadline = Date.now() + ms;
@@ -717,18 +730,70 @@ describe('runListener', () => {
     const cfg = config(fx, board.base);
     // '/usr/bin/vim' as the comm answer makes isAgentAlive see a dead session.
     const { execFile } = recorder('/usr/bin/vim');
-    const withPs: typeof execFile = async (file, args, opts) => {
-      if (file === PS && args[0] === '-axo' && args[1] === 'args=') {
-        return { code: 0, stdout: `/Users/x/.local/bin/claude --resume ${SESSION}\n` };
-      }
-      return execFile(file, args, opts);
-    };
-    running = start(cfg, { execFile: withPs, frontmost: async () => AGTERM, respawnConfirmMs: 3000 });
+    const table = [`/Users/x/.local/bin/claude --resume ${SESSION}`];
+    running = start(cfg, {
+      execFile: withProcessTable(execFile, table),
+      frontmost: async () => AGTERM,
+      respawnConfirmMs: 3000,
+    });
     await until(() => board.acks.length === 1, 6000, running.log);
 
     expect(board.acks[0].body).toMatchObject({ result: 'resumed', reach: 'pane' });
     expect(running.log()).toContain('confirmed started');
     expectCleanLog(running.log());
+  });
+
+  it('never takes its own resume launcher for the agent that launcher starts', async () => {
+    // `<node> <cli.js> listener resume-exec <uuid>` carries the session id and
+    // holds the terminal for as long as the agent runs — and on a checkout
+    // whose path contains "claude" (this repo's own) a line test for the id
+    // plus the word `claude` matches the wrapper itself. resume-exec then
+    // exits 1 ("no local record", "the directory is gone"), the window closes,
+    // and the board is told `resumed` about a session nobody ever got back.
+    process.env.HOME = fx.home;
+    installLauncher(fx);
+    writeRecord(fx, SESSION, { cwd: workDir(fx) });
+    const cmd = command({ type: 'resume' });
+    board = await startBoard({ onOpen: (_n, b) => b.send('command', { ...cmd, machine_id: cfg.machinePublicId }) });
+    const cfg = config(fx, board.base);
+    const { execFile } = recorder('/usr/bin/vim');
+    const wrapper = `/usr/local/bin/node /Users/demo/Desktop/claude-status/cli/dist/cli.js listener resume-exec ${SESSION}`;
+    running = start(cfg, {
+      execFile: withProcessTable(execFile, [wrapper]),
+      frontmost: async () => AGTERM,
+      respawnConfirmMs: 600,
+    });
+    await until(() => board.acks.length === 1, 5000, running.log);
+
+    expect(board.acks[0].body).toEqual({ machine_key: cfg.machineKey, result: 'failed', reason: 'respawn-failed' });
+    expect(running.log()).toContain('no record and no agent for the session within 600ms');
+    expect(running.log()).not.toContain('confirmed started');
+  });
+
+  it('counts an npm-installed agent, which runs as `node …/bin/claude`', async () => {
+    process.env.HOME = fx.home;
+    installLauncher(fx);
+    // What the hook writes for an npm install: `ps -o comm=` names the
+    // interpreter, so `agent_comm` is node — and the agent is then recognised
+    // by the script that node runs, which is the only word left that names one.
+    writeRecord(fx, SESSION, { cwd: workDir(fx), agent_comm: '/usr/local/bin/node' });
+    const cmd = command({ type: 'resume' });
+    board = await startBoard({ onOpen: (_n, b) => b.send('command', { ...cmd, machine_id: cfg.machinePublicId }) });
+    const cfg = config(fx, board.base);
+    const { execFile } = recorder('/usr/bin/vim');
+    const table = [
+      `/usr/local/bin/node /Users/demo/Desktop/claude-status/cli/dist/cli.js listener resume-exec ${SESSION}`,
+      `/usr/local/bin/node /Users/demo/.npm/bin/claude --resume ${SESSION}`,
+    ];
+    running = start(cfg, {
+      execFile: withProcessTable(execFile, table),
+      frontmost: async () => AGTERM,
+      respawnConfirmMs: 3000,
+    });
+    await until(() => board.acks.length === 1, 6000, running.log);
+
+    expect(board.acks[0].body).toMatchObject({ result: 'resumed', reach: 'pane' });
+    expect(running.log()).toContain('confirmed started');
   });
 
   it('keeps the respawn guards across a restart: the ledger is a file, not a field', async () => {
@@ -852,6 +917,60 @@ describe('runListener', () => {
     expect(board.claims.map((c) => c.id)).toEqual([first.id, other.id]);
     expect(board.acks.map((a) => a.id)).toEqual([first.id, other.id]);
     expect(running.log()).toContain('cooldown');
+  });
+
+  it('spends no cooldown on a claim that never landed, so the re-delivery still acts', async () => {
+    writeRecord(fx, SESSION);
+    const cmd = command();
+    // The board is unreachable for the first claim. That leaves the command
+    // pending, so the server re-sends it in the `commands` frame of the next
+    // connect — about a second later, i.e. inside the 2 s window. A cooldown
+    // spent before the claim would swallow that second delivery, and the tap
+    // would do nothing at all until the command expired.
+    let claims = 0;
+    let clock = 4_000_000;
+    const now = (): number => (clock += 100);
+    board = await startBoard({
+      claim: () => (++claims === 1 ? 503 : 200),
+      onOpen: (n, b) => {
+        b.send('commands', [{ ...cmd, machine_id: cfg.machinePublicId }]);
+        if (n === 0) setTimeout(() => b.end(), 50);
+      },
+    });
+    const cfg = config(fx, board.base);
+    running = start(cfg, {
+      ...recorder(),
+      frontmost: async () => AGTERM,
+      now,
+      timing: { backoffMinMs: 20, backoffMaxMs: 40 },
+    });
+    await until(() => board.acks.length === 1, 5000, running.log);
+
+    expect(board.claims.map((c) => c.id)).toEqual([cmd.id, cmd.id]);
+    expect(board.acks[0].body).toEqual({ machine_key: cfg.machineKey, result: 'focused', reach: 'pane' });
+    expect(running.log()).toContain('claim HTTP 503, skipped');
+    expect(running.log()).not.toContain('cooldown');
+  });
+
+  it('acts on a command id once, however often the board re-sends it', async () => {
+    writeRecord(fx, SESSION);
+    // Every delivery lands past the cooldown, so the id is the only thing
+    // left to stop the second one — which is the guarantee the cooldown used
+    // to give by accident, from in front of the claim.
+    let clock = 5_000_000;
+    const now = (): number => (clock += 5000);
+    const cmd = command();
+    board = await startBoard({
+      onOpen: (_n, b) => b.send('commands', [cmd, cmd].map((c) => ({ ...c, machine_id: cfg.machinePublicId }))),
+    });
+    const cfg = config(fx, board.base);
+    running = start(cfg, { ...recorder(), frontmost: async () => AGTERM, now });
+    await until(() => board.acks.length === 1, 5000, running.log);
+    await pause(100);
+
+    expect(board.claims.map((c) => c.id)).toEqual([cmd.id]);
+    expect(board.acks.map((a) => a.id)).toEqual([cmd.id]);
+    expect(running.log()).toContain('already claimed by this listener, skipped');
   });
 
   it('trips the breaker after 20 commands in a minute', async () => {

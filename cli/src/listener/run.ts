@@ -26,11 +26,12 @@ import {
  * runner launches the plan; the ack carries enums. A command can fail in
  * every way and the loop keeps going: nothing short of the signal ends it.
  *
- * Guards (design §5.1): one instance per state dir, one focus per session
- * per 2 s, one respawn per session per 60 s, at most 5 respawns per 10 min
- * machine-wide, and a circuit breaker that ignores the board for 5 min
- * after 20 commands in a minute. Log lines name step labels, exit codes,
- * enums and ids — never a cwd, a tty, an env value or a program's output.
+ * Guards (design §5.1): one instance per state dir, one action per command
+ * id, one focus per session per 2 s, one respawn per session per 60 s, at
+ * most 5 respawns per 10 min machine-wide, and a circuit breaker that
+ * ignores the board for 5 min after 20 commands in a minute. Log lines name
+ * step labels, exit codes, enums and ids — never a cwd, a tty, an env value
+ * or a program's output.
  *
  * A `resume` of a session whose agent is gone is the one command that
  * starts a process (§5.2 step 4). It still runs nothing of its own: the
@@ -51,6 +52,14 @@ import {
  */
 
 const COOLDOWN_MS = 2000;
+/**
+ * How long a command id stays remembered as one this listener claimed. The
+ * board expires a command at 120 s (§3.3) and re-sends only unclaimed ones,
+ * so an id older than that can never come back.
+ */
+const CLAIMED_TTL_MS = 120_000;
+/** Neither dedupe map grows past this without a prune: both are guards, not a history. */
+const DEDUPE_MAX = 1000;
 /** §5.1: one respawn per session per minute, five per machine per ten minutes. */
 const RESPAWN_COOLDOWN_MS = 60_000;
 const RESPAWN_LIMIT = 5;
@@ -91,6 +100,23 @@ const MACHINE_ID_RE = /^[0-9a-f]{32}$/;
 const PS_ENV: NodeJS.ProcessEnv = { PATH: STEP_PATH };
 /** What a listener's command line looks like in `ps -o args=`: `… cli.js listener run [--name …]`. */
 const LISTENER_ARGS_RE = /(^|\s)listener\s+run(\s|$)/;
+/**
+ * What `ps` calls a Node program — this listener, the resume launcher it
+ * installs, and an npm-installed agent alike. So it identifies nothing on
+ * its own: only the script such a process runs does (agentArgv() below).
+ */
+const NODE_COMM = 'node';
+/**
+ * Names that identify nothing on their own, so a `ps` line carrying one is not
+ * evidence an agent is running. `node` for the reason above; the shells because
+ * findAgent() in the hook falls back to the hook's own parent when it cannot
+ * reach a claude/codex ancestor — under fish or nu that parent IS a wrapper
+ * shell, which lands in `agent_comm`. A respawn then runs the launcher through
+ * a shell for every host whose plan takes a command *string* (tmux, agterm),
+ * and that shell's argv carries the session uuid — so without this the launcher
+ * is mistaken for the agent it was starting.
+ */
+const GENERIC_COMMS = new Set([NODE_COMM, 'sh', 'bash', 'zsh', 'fish', 'nu', 'dash', 'ksh']);
 /** Env keys whose value is a unix socket path the planner may hand to a tool. */
 const SOCKET_ENV_KEYS = [
   'AGTERM_SOCKET', 'WEZTERM_UNIX_SOCKET', 'ALACRITTY_SOCKET', 'HERDR_SOCKET_PATH', 'HERDR_CLIENT_SOCKET_PATH',
@@ -652,20 +678,56 @@ function recordKeys(dir: string, sessionId: string): Set<string> {
 }
 
 /**
- * Whether a respawn actually produced a session: the hook writes a record at
- * SessionStart, so a key that was not there when the plan was built is the
- * evidence. Polls until `windowMs` is up, then gives up — and the caller
- * acks `failed`/`respawn-failed`, because a window that opened and closed
- * with an error in it is not a resumed session.
+ * The names an agent process for this record runs under: the agent itself,
+ * and whatever `agent_comm` the hook saw its pid as (§4) — the same notion
+ * of identity isAgentAlive() applies to the recorded pid, which is why the
+ * record carries the field at all. `node` is left out: it is what every Node
+ * program is called, so as a name it would mean "some Node process", and the
+ * one Node process guaranteed to be there during a respawn is our own
+ * launcher.
  */
+function agentNames(record: LocalRecord): Set<string> {
+  const names = new Set<string>([record.agent]);
+  const comm = record.agent_comm ? path.basename(record.agent_comm) : '';
+  if (comm && !GENERIC_COMMS.has(comm)) names.add(comm);
+  return names;
+}
+
+/**
+ * Whether a `ps -o args=` line is one of those names being *run*, rather
+ * than a line that merely contains one: argv[0]'s basename is the agent, or
+ * argv[0] is a Node running the agent's own script (`node …/bin/claude
+ * --resume <uuid>`, how an npm-installed Claude Code shows up — there the
+ * hook recorded `agent_comm: node` too, and the script is the only thing
+ * left that names an agent). Words split on whitespace as the herdr row
+ * above splits them: a path with a space in it costs a match and can never
+ * invent one.
+ *
+ * This is what keeps the launcher from being mistaken for what it launches.
+ * `<node> <cli.js> listener resume-exec <uuid>` carries the session id for
+ * as long as the agent it wraps runs, so a test for the id plus the word
+ * `claude` anywhere on the line matches the wrapper itself on any machine
+ * whose CLI path contains `claude` or `codex` — this repo's own checkout —
+ * and the respawn then acks `resumed` for a window that had already closed
+ * with "no local record" in it. Neither `node` nor `cli.js` is an agent.
+ */
+function agentArgv(line: string, names: ReadonlySet<string>): boolean {
+  const words = line.trim().split(/\s+/);
+  const argv0 = path.basename(words[0] ?? '');
+  if (names.has(argv0)) return true;
+  return argv0 === NODE_COMM && names.has(path.basename(words[1] ?? ''));
+}
+
 /**
  * Is an agent for this session running right now? The launcher's own failures
  * — no record, the directory gone, no binary — all exit within milliseconds
- * and leave nothing behind, so a live process carrying the session id is
+ * and leave nothing behind, so a live agent process carrying the session id is
  * direct evidence that the resume took. The id has passed UUID_RE, so it is
- * a safe needle for a substring match (no shell, no regex).
+ * a safe needle for a substring match (no shell, no regex); the record says
+ * what counts as an agent (agentNames/agentArgv above).
  */
-async function agentRunningFor(sessionId: string, exec: ExecFile): Promise<boolean> {
+async function agentRunningFor(record: LocalRecord, exec: ExecFile): Promise<boolean> {
+  const names = agentNames(record);
   try {
     // The full argv table runs to hundreds of kilobytes on a busy Mac, well
     // past the default buffer — the other process-table reads size it the same way.
@@ -674,7 +736,7 @@ async function agentRunningFor(sessionId: string, exec: ExecFile): Promise<boole
     });
     if (code !== 0) return false;
     for (const line of stdout.split('\n')) {
-      if (line.includes(sessionId) && /(^|\/)(claude|codex)\b/.test(line)) return true;
+      if (line.includes(record.session_id) && agentArgv(line, names)) return true;
     }
   } catch {
     /* a process table we cannot read is not evidence either way */
@@ -688,10 +750,13 @@ async function agentRunningFor(sessionId: string, exec: ExecFile): Promise<boole
  * the hook's SessionStart record is definitive but can take longer than the
  * phone waits when a transcript is large, and a live agent process appears in
  * a second but is invisible for a host that resumes inside its own GUI.
+ *
+ * `record` is the one the command resolved to: it carries the session id the
+ * evidence is about, and the agent identity the process table is read with.
  */
 async function respawnStarted(
   dir: string,
-  sessionId: string,
+  record: LocalRecord,
   before: Set<string>,
   windowMs: number,
   sleep: (ms: number) => Promise<void>,
@@ -699,8 +764,8 @@ async function respawnStarted(
 ): Promise<boolean> {
   const deadline = Date.now() + windowMs;
   for (;;) {
-    for (const key of recordKeys(dir, sessionId)) if (!before.has(key)) return true;
-    if (exec && (await agentRunningFor(sessionId, exec))) return true;
+    for (const key of recordKeys(dir, record.session_id)) if (!before.has(key)) return true;
+    if (exec && (await agentRunningFor(record, exec))) return true;
     const left = deadline - Date.now();
     if (left <= 0) return false;
     await sleep(Math.min(RESPAWN_CONFIRM_POLL_MS, left));
@@ -756,6 +821,8 @@ class CommandRunner {
   private queue: Promise<void> = Promise.resolve();
   /** Keyed `<session>:<type>`: a resume must never be swallowed by the focus that offered it. */
   private readonly lastActed = new Map<string, number>();
+  /** Keyed by command id: what this listener has already claimed, so one tap is acted on once. */
+  private readonly claimed = new Map<string, number>();
   private recent: number[] = [];
   private breakerUntil = 0;
 
@@ -837,6 +904,23 @@ class CommandRunner {
     return true;
   }
 
+  /**
+   * What the two dedupe guards read, written at the one moment they are
+   * about: a claim came back 200, so this listener is the one acting on this
+   * command. Each map is pruned of what is past its own window when it
+   * grows — a listener that ran for a month must not hold every id it saw.
+   */
+  private remember(id: string, key: string, at: number): void {
+    this.lastActed.set(key, at);
+    this.claimed.set(id, at);
+    if (this.lastActed.size > DEDUPE_MAX) {
+      for (const [k, t] of this.lastActed) if (at - t >= COOLDOWN_MS) this.lastActed.delete(k);
+    }
+    if (this.claimed.size > DEDUPE_MAX) {
+      for (const [k, t] of this.claimed) if (at - t >= CLAIMED_TTL_MS) this.claimed.delete(k);
+    }
+  }
+
   private async handle(cmd: CommandFrame): Promise<void> {
     const { log, now } = this.deps;
     const at = now();
@@ -844,6 +928,17 @@ class CommandRunner {
     if (this.tripped(at)) return;
     if (cmd.expires_in_ms <= 0) {
       log(`${tag}: already expired, skipped`);
+      return;
+    }
+    // One id is acted on once, however often it arrives. The board re-sends
+    // what it has not seen acked in the `commands` frame of every reconnect,
+    // and that is the same tap, not a second one; the claim below already
+    // makes acting exactly-once *across* processes (409 once anyone claimed),
+    // and this is the same rule inside the one that did the claiming. It is
+    // what the cooldown used to cover by accident, before it stopped being
+    // spent on commands this listener never got to act on.
+    if (this.claimed.has(cmd.id)) {
+      log(`${tag}: already claimed by this listener, skipped`);
       return;
     }
     // Per session AND per type: the board offers Resume only after a focus
@@ -858,16 +953,19 @@ class CommandRunner {
       log(`${tag}: within the ${COOLDOWN_MS}ms cooldown for its session and type, skipped`);
       return;
     }
-    if (this.lastActed.size > 1000) {
-      for (const [id, t] of this.lastActed) if (at - t >= COOLDOWN_MS) this.lastActed.delete(id);
-    }
-    this.lastActed.set(key, at);
 
     const claim = await this.post(`/commands/${cmd.id}/claim`, { machine_key: this.deps.cfg.machineKey });
     if (claim !== 200) {
+      // This return is deliberately ahead of remember(): a claim that never
+      // landed leaves the command pending, so the board re-sends it on the
+      // next connect — and the first backoff is about a second, i.e. *inside*
+      // the 2 s window. A cooldown spent on a command this listener never
+      // acted on would swallow that re-delivery, and the tap would then do
+      // nothing at all until the command expired.
       log(`${tag}: claim ${claim === 0 ? 'unreachable' : `HTTP ${claim}`}, skipped`);
       return;
     }
+    this.remember(cmd.id, key, at);
     const started = Date.now();
     let outcome: Outcome;
     let experimental = false;
@@ -928,7 +1026,7 @@ class CommandRunner {
     // LaunchServices took the request. Wait for the hook to write a record
     // for this session before telling the phone it is back (§5.2 step 4).
     const started = await respawnStarted(
-      cfg.stateDir, cmd.session_id, before ?? new Set(), this.deps.respawnConfirmMs, pause, execFile
+      cfg.stateDir, record, before ?? new Set(), this.deps.respawnConfirmMs, pause, execFile
     );
     if (!started) {
       log(`${tag}: no record and no agent for the session within ${this.deps.respawnConfirmMs}ms — nothing came up`);

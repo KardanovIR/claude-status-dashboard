@@ -149,6 +149,73 @@ function fireEvent(
   }
 }
 
+/** Resolves once `test()` is true, so a test can wait on a process it drives. */
+function waitFor(test: () => boolean, what: string, ms = 10_000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + ms;
+    const tick = () => {
+      if (test()) return resolve();
+      if (Date.now() > deadline) return reject(new Error(`timed out waiting for ${what}`));
+      setTimeout(tick, 25);
+    };
+    tick();
+  });
+}
+
+/**
+ * The hook as Codex runs it under fish or nu: a long-lived process named
+ * `codex` that hands every event to a throwaway wrapper shell, so the hook's
+ * parent is a fresh pid each time and never the agent's — the case the ppid
+ * walk exists for. The agent is a symlink to /bin/sh because `ps` reports the
+ * name a process was launched with, and a copy of the binary would not run on
+ * a Mac. The wrapper's command ends in `:` so that shell cannot exec the hook
+ * in its own place — that exec is what makes the hook a direct child of the
+ * agent under zsh and bash, and what fish and nu leave out.
+ */
+function wrapperAgent(extraEnv: Record<string, string>) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-agent-'));
+  const codex = path.join(dir, 'codex');
+  const payloadFile = path.join(dir, 'payload.json');
+  fs.symlinkSync('/bin/sh', codex);
+
+  const env: Record<string, string | undefined> = { ...process.env };
+  for (const key of SCRUBBED_ENV) delete env[key];
+  const agent = spawn(codex, [], {
+    stdio: ['pipe', 'pipe', 'inherit'],
+    env: { ...env, CLAUDE_STATUS_URL: base, AGSTATUS_USAGE: 'off', ...extraEnv },
+  });
+  let out = '';
+  agent.stdout!.on('data', (chunk: Buffer) => { out += chunk.toString(); });
+
+  return {
+    pid: agent.pid!,
+    /** One event through a wrapper shell of its own: what it posted, and that shell's pid. */
+    async fire(payload: Record<string, unknown>): Promise<{ posted?: Posted; wrapper: number }> {
+      fs.writeFileSync(capturePath, '');
+      fs.writeFileSync(
+        payloadFile,
+        JSON.stringify({ session_id: 'msg-test', cwd: '/tmp/demo-project', ...payload }),
+      );
+      out = '';
+      agent.stdin!.write(
+        `/bin/sh -c 'echo wrapper=$$; "${process.execPath}" "${HOOK}" < "${payloadFile}"; :'\n` +
+          'echo done\n',
+      );
+      await waitFor(() => out.includes('done\n'), 'the hook to exit');
+      const wrapper = Number(/wrapper=(\d+)/.exec(out)![1]);
+      // SessionEnd only issues a DELETE, which the capture server never records.
+      if (payload.hook_event_name === 'SessionEnd') return { wrapper };
+      await waitFor(() => fs.readFileSync(capturePath, 'utf8').trim() !== '', 'the post');
+      const line = fs.readFileSync(capturePath, 'utf8').trim().split('\n')[0];
+      return { posted: JSON.parse(line) as Posted, wrapper };
+    },
+    stop() {
+      agent.stdin!.end();
+      agent.kill();
+    },
+  };
+}
+
 /** A fresh HOME (with ~/.agstatus.json) and state dir (with machine.json). */
 function workspace(
   config: Record<string, unknown> | null,
@@ -409,6 +476,48 @@ describe('focus host summary', () => {
     expect(reused.env.TERM_PROGRAM).toBe('ghostty');
     expect(reused.written_at).toBeGreaterThanOrEqual(fresh.written_at);
     expect(reused.summary).toEqual(fresh.summary);
+  });
+
+  it('reuses the record when the hook runs under a wrapper shell, not the agent', async () => {
+    // The fish/nu shape: the hook's parent is a wrapper whose pid is new every
+    // event, so the record — filed under the pid the walk resolved — can only
+    // be found again by reading the session's directory.
+    const ws = workspace({ focus: true });
+    const agent = wrapperAgent({ ...ws.env, AGSTATUS_SOURCE: 'codex', TERM_PROGRAM: 'ghostty' });
+    try {
+      const first = await agent.fire({ hook_event_name: 'SessionStart' });
+      expect(first.posted?.host).toBeTruthy();
+      const before = readRecord(ws.state);
+      expect(before.record.agent_comm).toBe('codex');
+      expect(before.record.agent_pid).toBe(agent.pid);
+      expect(path.basename(before.file)).toBe(`${agent.pid}.json`);
+      expect(first.wrapper).not.toBe(agent.pid);
+
+      // An app no environment here could produce: it can only come off disk.
+      const sentinel = { slug: 'alacritty', name: 'Alacritty', kind: 'terminal' };
+      before.record.summary.app = sentinel;
+      fs.writeFileSync(before.file, JSON.stringify(before.record));
+
+      const second = await agent.fire({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+      });
+      expect(second.wrapper).not.toBe(first.wrapper);
+      expect(second.posted?.host?.app).toEqual(sentinel);
+      const reused = readRecord(ws.state);
+      expect(reused.file).toBe(before.file);
+      expect(reused.record.written_at).toBeGreaterThanOrEqual(before.record.written_at);
+
+      // And SessionEnd stamps that record, not the wrapper's missing one.
+      await agent.fire({ hook_event_name: 'SessionEnd' });
+      const ended = readRecord(ws.state);
+      expect(ended.file).toBe(before.file);
+      expect(typeof ended.record.ended_at).toBe('number');
+      expect(ended.record.summary.app).toEqual(sentinel);
+    } finally {
+      agent.stop();
+    }
   });
 
   it('reads Codex session_meta for the entrypoint, and lets terminal markers win for the app', () => {

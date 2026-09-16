@@ -172,7 +172,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
     fun disconnect() {
         cancelStream()
         for ((sessionId, status) in _focus.value) {
-            if (!status.done) focusTimers.remove(sessionId)?.cancel()
+            if (status.awaitsAck) focusTimers.remove(sessionId)?.cancel()
         }
         when (_connection.value) {
             Connection.CONNECTING, Connection.LIVE, Connection.RECONNECTING ->
@@ -199,7 +199,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
                             for (id in _focus.value.keys.toList()) {
                                 if (id !in present) setFocus(id, null)
                             }
-                            if (_focus.value.values.any { !it.done }) {
+                            if (_focus.value.values.any { it.awaitsAck }) {
                                 launch { resolvePendingCommands(board) }
                             }
                         }
@@ -247,7 +247,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
             // there is none, so keep each pending card on its own deadline.
             // A snapshot's reconcile still wins if it arrives first.
             for ((sessionId, status) in _focus.value) {
-                if (!status.done) keepAckWindow(sessionId, status)
+                if (status.awaitsAck) keepAckWindow(sessionId, status)
             }
             _connection.value = Connection.RECONNECTING
             delay(backoffMillis)
@@ -453,8 +453,13 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Exception) {
+                // No status means the transport failed, so the POST may have
+                // created the command and only its answer been lost.
                 val httpStatus = (error as? ApiException)?.status ?: 0
-                showResult(sessionId, status.commandId, FocusStatus.Phase.FAIL, FocusCopy.sendFailed(httpStatus))
+                showResult(
+                    sessionId, status.commandId, FocusStatus.Phase.FAIL,
+                    FocusCopy.sendFailed(httpStatus), provisional = httpStatus == 0,
+                )
                 return@launch
             }
             markSent(sessionId, status.commandId, receipt.delivered)
@@ -492,7 +497,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         val current = _focus.value[ack.sessionId] ?: return
         // Only the command this card is waiting on: an older one that a re-tap
         // superseded, or a stray ack, has nothing to say to the viewer.
-        if (current.commandId != ack.id || current.done) return
+        if (current.commandId != ack.id || (current.done && !current.provisional)) return
         val outcome = FocusCopy.outcome(current, ack)
         showResult(ack.sessionId, ack.id, outcome.phase, outcome.text, outcome.offersResume)
     }
@@ -508,11 +513,16 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         phase: FocusStatus.Phase,
         text: String,
         offersResume: Boolean = false,
+        provisional: Boolean = false,
     ) {
         val current = _focus.value[sessionId] ?: return
-        if (current.commandId != commandId || current.done) return
+        // A guess may be overwritten by the answer that arrives late; an answer
+        // is final.
+        if (current.commandId != commandId || (current.done && !current.provisional)) return
         focusTimers.remove(sessionId)?.cancel()
-        val shown = current.copy(phase = phase, text = text, offersResume = offersResume)
+        val shown = current.copy(
+            phase = phase, text = text, offersResume = offersResume, provisional = provisional,
+        )
         _focus.value = _focus.value + (sessionId to shown)
         if (phase == FocusStatus.Phase.OK) {
             focusTimers[sessionId] = viewModelScope.launch {
@@ -532,7 +542,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
      */
     private suspend fun resolvePendingCommands(board: Board) {
         for ((sessionId, status) in _focus.value) {
-            if (status.done) continue
+            if (!status.awaitsAck) continue
             val state = try {
                 AgStatusApi.command(board, status.commandId)
             } catch (cancellation: CancellationException) {
@@ -565,7 +575,10 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         focusTimers.remove(sessionId)?.cancel()
         focusTimers[sessionId] = viewModelScope.launch {
             delay(afterMillis)
-            showResult(sessionId, status.commandId, FocusStatus.Phase.FAIL, FocusCopy.noAnswer(status.machineName))
+            showResult(
+                sessionId, status.commandId, FocusStatus.Phase.FAIL,
+                FocusCopy.noAnswer(status.machineName), provisional = true,
+            )
         }
     }
 
@@ -578,7 +591,10 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         if (!isCurrent(sessionId, status.commandId)) return
         val remaining = status.ackWindowLeft(System.currentTimeMillis(), ACK_TIMEOUT_MILLIS)
         if (remaining <= 0) {
-            showResult(sessionId, status.commandId, FocusStatus.Phase.FAIL, FocusCopy.noAnswer(status.machineName))
+            showResult(
+                sessionId, status.commandId, FocusStatus.Phase.FAIL,
+                FocusCopy.noAnswer(status.machineName), provisional = true,
+            )
         } else {
             armWatchdog(sessionId, status, remaining)
         }

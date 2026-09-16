@@ -27,11 +27,22 @@ data class FocusStatus(
     val text: String = FocusCopy.SENDING,
     /** After `failed / not-running`: offer a Resume control. */
     val offersResume: Boolean = false,
+    /**
+     * Set on the outcomes this side *guessed* — a deadline we called, or a POST
+     * whose answer was lost — as opposed to one the machine or the server
+     * actually reported. A later ack still overrides a guess; nothing overrides
+     * an answer. Matches `inferred` on the web board (public/app.js) and
+     * `provisional` on iOS (SessionStore.swift).
+     */
+    val provisional: Boolean = false,
 ) {
     /** Pending until the ack (or the watchdog); successes fade, failures stay until the next tap. */
     enum class Phase { PENDING, OK, FAIL }
 
     val done: Boolean get() = phase != Phase.PENDING
+
+    /** Still worth an ack: either nothing has landed yet, or what landed was a guess. */
+    val awaitsAck: Boolean get() = !done || provisional
 
     /**
      * What is left, at [nowMillis], of a [timeoutMillis] answer window that

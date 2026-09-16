@@ -41,9 +41,20 @@ final class SessionStore {
         var text = "Sending…"
         var resumeOffered = false
         var done = false
+        /// A failure this side called when the answer window ran out, not one
+        /// the machine reported. The server holds a command for its whole
+        /// 120 s TTL (docs/design/focus-protocol.md §3.3), so the real answer
+        /// can still turn up — and when it does it outranks this.
+        var provisional = false
+
+        /// Still owed an answer: waiting on one, or showing a deadline we
+        /// called. `done` alone would drop a late ack on the floor.
+        var awaitsAck: Bool { !done || provisional }
     }
 
-    /// No ack by then → "is it asleep?" (the web board waits the same).
+    /// No ack by then → "is it asleep?", provisionally: a later ack still
+    /// corrects it, and `reconcilePendingCommands` polls on the next foreground.
+    /// (The web board shows the same mark, then gives up near the server TTL.)
     static let ackTimeout: TimeInterval = 15
     /// Successes fade after this; failures stay until the next tap.
     static let statusClearDelay: TimeInterval = 8
@@ -191,71 +202,82 @@ final class SessionStore {
         }
     }
 
+    /// The whole stream lives in one task group so that everything it starts
+    /// — the snapshot's reconcile — is a child of it, exactly as Android's
+    /// `runStream` is a `coroutineScope`. A loose poll would survive
+    /// `cancelStream()`, finish during the background grace period, and re-arm
+    /// the very deadline `disconnect()` had just dropped on purpose.
     private func runStream(for board: Board) async {
-        var delay: Double = 1
+        // Discarding: nothing consumes a child's result, and a plain task
+        // group would hold every finished reconcile until the stream tears down.
+        await withDiscardingTaskGroup { group in
+            var delay: Double = 1
 
-        while !Task.isCancelled {
-            do {
-                for try await event in sse.events(for: board) {
-                    switch event {
-                    case .snapshot(let list):
-                        sessions = Self.stableOrder(current: sessions, incoming: list)
-                        connection = .live
-                        delay = 1
-                        pruneFocus()
-                        // Acks broadcast while the stream was down are gone;
-                        // ask the server where anything still pending got to.
-                        if focus.values.contains(where: { !$0.done }) {
-                            Task { await self.reconcilePendingCommands(for: board) }
+            while !Task.isCancelled {
+                do {
+                    for try await event in sse.events(for: board) {
+                        switch event {
+                        case .snapshot(let list):
+                            sessions = Self.stableOrder(current: sessions, incoming: list)
+                            connection = .live
+                            delay = 1
+                            pruneFocus()
+                            // Acks broadcast while the stream was down are gone;
+                            // ask the server where anything still owed one got to.
+                            if focus.values.contains(where: { $0.awaitsAck }) {
+                                group.addTask { await self.reconcilePendingCommands(for: board) }
+                            }
+                        case .upsert(let session):
+                            if let index = sessions.firstIndex(where: { $0.id == session.id }) {
+                                sessions[index] = session
+                            } else {
+                                sessions.insert(session, at: 0)
+                            }
+                            lastActivityAt = Date()
+                        case .remove(let id):
+                            sessions.removeAll { $0.id == id }
+                            setFocus(id, nil)
+                            lastActivityAt = Date()
+                        case .usage(let list):
+                            usage = list
+                        case .machines(let list):
+                            // The full list follows every snapshot, so a reconnect re-seeds it.
+                            machines = Dictionary(list.map { ($0.id, $0) }) { _, last in last }
+                            applyNotificationFocus()
+                        case .machine(let presence):
+                            var merged = presence
+                            if merged.name == nil {
+                                merged.name = machines[presence.id]?.name
+                            }
+                            machines[presence.id] = merged
+                        case .commandAck(let ack):
+                            handleAck(ack)
                         }
-                    case .upsert(let session):
-                        if let index = sessions.firstIndex(where: { $0.id == session.id }) {
-                            sessions[index] = session
-                        } else {
-                            sessions.insert(session, at: 0)
-                        }
-                        lastActivityAt = Date()
-                    case .remove(let id):
-                        sessions.removeAll { $0.id == id }
-                        setFocus(id, nil)
-                        lastActivityAt = Date()
-                    case .usage(let list):
-                        usage = list
-                    case .machines(let list):
-                        // The full list follows every snapshot, so a reconnect re-seeds it.
-                        machines = Dictionary(list.map { ($0.id, $0) }) { _, last in last }
-                        applyNotificationFocus()
-                    case .machine(let presence):
-                        var merged = presence
-                        if merged.name == nil {
-                            merged.name = machines[presence.id]?.name
-                        }
-                        machines[presence.id] = merged
-                    case .commandAck(let ack):
-                        handleAck(ack)
                     }
+                    // Stream ended cleanly (server closed) — fall through to retry.
+                } catch let error as APIError where error == .boardNotFound {
+                    // Nothing on a gone board can be reconciled either.
+                    group.cancelAll()
+                    markBoardGone()
+                    return
+                } catch is CancellationError {
+                    return
+                } catch {
+                    // Transient failure — fall through to retry.
                 }
-                // Stream ended cleanly (server closed) — fall through to retry.
-            } catch let error as APIError where error == .boardNotFound {
-                markBoardGone()
-                return
-            } catch is CancellationError {
-                return
-            } catch {
-                // Transient failure — fall through to retry.
-            }
 
-            if Task.isCancelled { return }
-            // disconnect() dropped the ack timers, and only a snapshot's
-            // reconcile would bring them back — with the reconnect failing
-            // there is none, so keep each pending card on its own deadline.
-            // A snapshot's reconcile still wins if it arrives first.
-            for (id, state) in focus where !state.done {
-                keepAckWindow(id, state)
+                if Task.isCancelled { return }
+                // disconnect() dropped the ack timers, and only a snapshot's
+                // reconcile would bring them back — with the reconnect failing
+                // there is none, so keep each pending card on its own deadline.
+                // A snapshot's reconcile still wins if it arrives first.
+                for (id, state) in focus where !state.done {
+                    keepAckWindow(id, state)
+                }
+                connection = .reconnecting
+                try? await Task.sleep(for: .seconds(delay))
+                delay = min(delay * 2, 30)
             }
-            connection = .reconnecting
-            try? await Task.sleep(for: .seconds(delay))
-            delay = min(delay * 2, 30)
         }
     }
 
@@ -412,7 +434,13 @@ final class SessionStore {
                                                         sessionId: id, for: board)
         } catch {
             if isCurrent(id, state.cmdId) {
-                showResult(id, .fail, Self.sendErrorText(error))
+                // `.unreachable` is every transport failure, so the POST may
+                // have created the command and only its answer been lost —
+                // provisional, or a `focused` ack seconds later would be
+                // dropped and the card would stay red over a raised window.
+                // Anything the server actually answered is final.
+                showResult(id, .fail, Self.sendErrorText(error),
+                           provisional: (error as? APIError) == .unreachable)
             }
             return
         }
@@ -421,11 +449,13 @@ final class SessionStore {
         focus[id]?.text = receipt.delivered ? "Sent…" : "Sent — \(name) is not connected"
     }
 
-    /// Applies a `command_ack`. Only the command this card is waiting on: an
-    /// older one that a re-tap superseded, or a stray ack, has nothing to say.
+    /// Applies a `command_ack`. Only the command this card is waiting on —
+    /// or the one it gave up on 15 s in, because the machine's answer is the
+    /// truth and that deadline was a guess. An older command that a re-tap
+    /// superseded, or a stray ack, still has nothing to say.
     func handleAck(_ ack: CommandAck) {
         let id = ack.sessionId
-        guard let state = focus[id], state.cmdId == ack.id, !state.done else { return }
+        guard let state = focus[id], state.cmdId == ack.id, state.awaitsAck else { return }
         let name = state.name
         switch ack.result {
         case .focused:
@@ -490,19 +520,28 @@ final class SessionStore {
         Task { await sendCommand(.focus, for: session) }
     }
 
-    /// After a (re)connect, asks the server where each command still pending
-    /// got to — the phone drops its stream in the background, so the ack may
-    /// have been broadcast while nobody was listening. The 15 s window still
-    /// counts from the tap. Unreachable? Keep waiting for what is left of it.
+    /// After a (re)connect, asks the server where each command still owed an
+    /// answer got to — the phone drops its stream in the background, so the
+    /// ack may have been broadcast while nobody was listening. A card that
+    /// already gave up is asked about too: the server holds the command for
+    /// its 120 s TTL (docs/design/focus-protocol.md §3.3), far longer than our
+    /// 15 s guess. That window still counts from the tap, and an unreachable
+    /// server leaves the card waiting out whatever is left of it.
     private func reconcilePendingCommands(for board: Board) async {
-        for (id, state) in focus where !state.done {
+        for (id, state) in focus where state.awaitsAck {
             let outcome: Result<CommandStatus, Error>
             do {
                 outcome = .success(try await AgStatusAPI.command(state.cmdId, for: board))
             } catch {
                 outcome = .failure(error)
             }
-            guard isCurrent(id, state.cmdId) else { continue }
+            // The stream this poll belongs to was cancelled while it was in
+            // flight: the phone is on its way to the background, disconnect()
+            // has dropped the deadlines deliberately, and the next connect's
+            // snapshot will ask again. Putting one back here is the one thing
+            // that must not happen.
+            if Task.isCancelled { return }
+            guard let card = focus[id], card.cmdId == state.cmdId, card.awaitsAck else { continue }
             let asleep = "No answer from \(state.name) — is it asleep?"
             switch outcome {
             case .success(let status) where status.state == .done:
@@ -510,6 +549,7 @@ final class SessionStore {
                                      type: state.type, result: status.result ?? .other(""),
                                      reach: status.reach, reason: status.reason))
             case .success(let status) where status.state == .expired:
+                // The server called it, so this one is final.
                 showResult(id, .fail, asleep)
             case .failure(let error as APIError) where error == .boardNotFound:
                 // The server no longer knows the command: swept, or restarted.
@@ -550,14 +590,17 @@ final class SessionStore {
         }
     }
 
-    /// A final outcome: successes fade after a while, failures stay until the next tap.
+    /// An outcome: successes fade after a while, failures stay until the next
+    /// tap. `provisional` marks the deadlines this side calls, which a later
+    /// ack may still correct; anything the machine or the server said is final.
     private func showResult(_ id: String, _ kind: FocusState.Kind, _ text: String,
-                            offerResume: Bool = false) {
+                            offerResume: Bool = false, provisional: Bool = false) {
         guard var state = focus[id] else { return }
         state.done = true
         state.kind = kind
         state.text = text
         state.resumeOffered = offerResume
+        state.provisional = provisional
         focus[id] = state
         cancelFocusTimer(id)
         guard kind == .ok else { return }
@@ -587,16 +630,19 @@ final class SessionStore {
             try? await Task.sleep(for: .seconds(seconds), tolerance: .milliseconds(250))
             guard !Task.isCancelled, let self, self.isCurrent(id, cmdId),
                   let name = self.focus[id]?.name else { return }
-            self.showResult(id, .fail, "No answer from \(name) — is it asleep?")
+            self.showResult(id, .fail, "No answer from \(name) — is it asleep?",
+                            provisional: true)
         }
     }
 
     /// Re-arms the ack deadline for what is left of the 15 s window since
-    /// the tap — or, with nothing left, declares the machine asleep.
+    /// the tap — or, with nothing left, declares the machine asleep, which
+    /// stays a guess the command's own answer can still overturn.
     private func keepAckWindow(_ id: String, _ state: FocusState) {
         let remaining = Self.ackTimeout - Date().timeIntervalSince(state.startedAt)
         if remaining <= 0 {
-            showResult(id, .fail, "No answer from \(state.name) — is it asleep?")
+            showResult(id, .fail, "No answer from \(state.name) — is it asleep?",
+                       provisional: true)
         } else {
             armAckTimer(id, cmdId: state.cmdId, after: remaining)
         }

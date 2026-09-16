@@ -1026,10 +1026,12 @@ async function maybeReportUsage(base, sessionId) {
 // Detection spawns `ps` (plus `tmux display-message` under tmux), and
 // PreToolUse fires between every tool call, so the result is cached per
 // (session, agent pid) in the local record and reused until it is six hours
-// old: the steady state is one small file read and a written_at bump. The
-// first run is bounded as a whole: the status post it feeds must never wait
-// out the safety exit, so past HOST_DETECT_DEADLINE_MS the post goes without
-// `host` and the next event picks the record up.
+// old: the steady state is one small file read and a written_at bump, with a
+// listing of the session's own directory in front of it wherever the hook
+// cannot name the record's pid up front (findHostRecord()). The first run is
+// bounded as a whole: the status post it feeds must never wait out the safety
+// exit, so past HOST_DETECT_DEADLINE_MS the post goes without `host` and the
+// next event picks the record up.
 
 // A cached record older than this is detected afresh.
 const HOST_RECORD_MAX_AGE_MS = 6 * 60 * 60 * 1000;
@@ -1541,6 +1543,70 @@ function hostRecordFresh(record) {
   );
 }
 
+/** Does a pid still name a live process? EPERM means yes — someone else's. */
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return !!err && err.code === 'EPERM';
+  }
+}
+
+/** The whitelisted env of two hook runs, key for key: one terminal, one agent. */
+function sameHostEnv(recorded, env) {
+  if (!recorded || typeof recorded !== 'object') return false;
+  const keys = Object.keys(env);
+  if (keys.length !== Object.keys(recorded).length) return false;
+  return keys.every((key) => recorded[key] === env[key]);
+}
+
+/**
+ * This agent's own record, found without the walk detectHost() makes. The
+ * file is `<agent pid>.json`, so cheapAgentPid() names it outright whenever
+ * the agent named its pid (CLAUDE_PID) or exec'd the hook in place
+ * (zsh/bash). Under fish/nu a wrapper shell sits in between with a brand-new
+ * pid on every invocation, so no name can be guessed and the record — filed
+ * under the pid the walk resolved — would never be read back: list the
+ * session's own directory instead (a handful of small files, still no spawn)
+ * and take the newest record whose agent is alive, the rule the listener
+ * picks by (pickRecord(), cli/src/listener/records.ts). The env decides
+ * between records: two live agents can share a session id (design §4), and a
+ * second one is in its own terminal, so its record was written under an
+ * environment this hook did not inherit.
+ */
+function findHostRecord(dir, session) {
+  const own = hostRecordFile(dir, session, cheapAgentPid());
+  const mine = readHostRecord(own);
+  if (mine) return { file: own, record: mine };
+  const folder = path.join(dir, 'sessions', session);
+  let names;
+  try {
+    names = fs.readdirSync(folder);
+  } catch {
+    return null;
+  }
+  const env = whitelistedEnv();
+  const at = (record) => (typeof record.written_at === 'number' ? record.written_at : 0);
+  let found = null;
+  for (const name of names) {
+    // Records the hook itself filed, never its temp files or an editor's droppings.
+    if (!/^\d{1,10}\.json$/.test(name)) continue;
+    const file = path.join(folder, name);
+    const record = readHostRecord(file);
+    if (!record || !pidAlive(record.agent_pid) || !sameHostEnv(record.env, env)) continue;
+    // Two live agents under the same session id and the same terminal env is
+    // the one case the env guard cannot settle (design §4). Adopting either
+    // record would leave the other agent with no file of its own — and so no
+    // `ended_at` and nothing for the listener to route to — for the whole
+    // session. Give up instead and let detection file this agent's own record.
+    if (found && record.agent_pid !== found.record.agent_pid) return null;
+    if (!found || at(record) > at(found.record)) found = { file, record };
+  }
+  return found;
+}
+
 /**
  * Full detection: one `ps` (plus `tmux display-message` under tmux), an
  * Info.plist read, the Codex session_meta, and PATH lookups — tens of
@@ -1593,9 +1659,9 @@ async function detectHost(session, cwd, transcript, machine) {
 /**
  * The `host` value for this post: the wire summary, `null` to clear it, or
  * `undefined` to leave the payload exactly as it always was. Detection runs
- * once per (session, agent pid); later events read the record back and bump
- * its written_at. Under fish/nu the hook's parent is not the agent, so a miss
- * on the parent's pid still lands on the agent's own record after the walk.
+ * once per (session, agent pid); later events find that record through
+ * findHostRecord() and bump its written_at, so a hook whose parent is not the
+ * agent (fish/nu) costs a directory listing here, never a fresh detection.
  *
  * A first-time detection gets HOST_DETECT_DEADLINE_MS in total, whatever its
  * spawns' own timeouts add up to. Past that the post goes out without `host`
@@ -1609,12 +1675,12 @@ async function hostSummary(base, session, cwd, transcript) {
   const { dir, machine } = focus;
   const started = Date.now();
 
-  const quick = hostRecordFile(dir, session, cheapAgentPid());
-  const cached = readHostRecord(quick);
-  if (cached && hostRecordFresh(cached)) {
+  const found = findHostRecord(dir, session);
+  if (found && hostRecordFresh(found.record)) {
+    const cached = found.record;
     cached.written_at = Math.floor(Date.now() / 1000);
     cached.summary = { machine, app: cached.summary.app };
-    writeHostRecord(quick, cached);
+    writeHostRecord(found.file, cached);
     dbg(`host: reused record (app=${cached.summary.app.slug}, ${Date.now() - started}ms)`);
     return cached.summary;
   }
@@ -1653,13 +1719,21 @@ async function hostSummary(base, session, cwd, transcript) {
 /**
  * SessionEnd: stamp ended_at on this agent's own record, so the listener can
  * answer "not running" honestly and garbage-collect later. Never another
- * pid's record — two live agents can share one session id.
+ * pid's record — two live agents can share one session id — so this is the
+ * one place that pays for the walk rather than settle for findHostRecord()'s
+ * best candidate: the stamp is a one-shot mark on a file the hook will not
+ * open again, and SessionEnd fires once a session with no tool call waiting.
  */
-function endHostRecord(base, session) {
+async function endHostRecord(base, session) {
   const focus = focusContext(base, session);
   if (!focus) return;
-  const file = hostRecordFile(focus.dir, session, cheapAgentPid());
-  const record = readHostRecord(file);
+  let file = hostRecordFile(focus.dir, session, cheapAgentPid());
+  let record = readHostRecord(file);
+  if (!record && process.platform !== 'win32') {
+    // fish/nu again: the record is filed under a pid only the walk knows.
+    file = hostRecordFile(focus.dir, session, findAgent(await readProcessTable()).pid);
+    record = readHostRecord(file);
+  }
   if (!record) return;
   record.ended_at = Math.floor(Date.now() / 1000);
   writeHostRecord(file, record);
@@ -1678,8 +1752,16 @@ async function main() {
   if (!session) return;
 
   if (event === 'SessionEnd') {
-    endHostRecord(base, session);
-    await send('DELETE', `${base}/sessions/${encodeURIComponent(session)}`);
+    // Side by side: the `ps` endHostRecord may need is bounded, but running it
+    // in front of the DELETE would stack two timeouts against the safety exit.
+    // allSettled, not all: send() rejects on an unreachable board, and a
+    // rejection here would abort main() while endHostRecord's `ps` is still
+    // out — so the safety exit would fire and the record would never get its
+    // `ended_at`. A board that is down must not cost us the local stamp.
+    await Promise.allSettled([
+      endHostRecord(base, session),
+      send('DELETE', `${base}/sessions/${encodeURIComponent(session)}`),
+    ]);
     return;
   }
 

@@ -168,6 +168,12 @@
 
   async function dismissSession(id) {
     state.delete(id);
+    // The card is going now, so its focus state and pending timers go with it:
+    // waiting for the server's `remove` leaves them alive for as long as the SSE
+    // backoff (up to 30s) while this DELETE succeeds anyway. Sessions are only
+    // soft-deleted and resurrect on the next post, and the card that comes back
+    // must not be wearing the status — or the Resume button — of a dead tap.
+    setFocus(id, null);
     renderGrid();
     try {
       const res = await fetch(`${BASE}/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
@@ -184,7 +190,13 @@
   // and the outcome arrives as `command_ack` (docs/api.md "Focus commands",
   // docs/design/focus-protocol.md §7).
 
-  const ACK_TIMEOUT_MS = 15000;   // no ack by then → "is it asleep?"
+  // Two waiting marks, not one. The server's command TTL is 120s and its own
+  // `expired` ack follows within a sweep of that (§3.3), so a listener that was
+  // asleep at 15s can still connect, claim and ack long after — the design's
+  // "hard 15s timeout" (§7) says the machine looks asleep, it does not decide.
+  // Only the second mark gives up, past any expired ack this board could be sent.
+  const ACK_SLOW_MS = 15000;
+  const ACK_GIVEUP_MS = 150000;
   const STATUS_CLEAR_MS = 8000;   // successes fade; failures stay until the next tap
 
   const uuid = () => {
@@ -286,9 +298,22 @@
     paintFocus(id);
   }
 
+  // Drops focus state no card can show any more: a session that left the board,
+  // and one whose machine turned Focus off — the hook posts `host: null` so a live
+  // card clears (§3.2). renderFocus draws no row for either, so paintFocus would
+  // leave the entry and its timers behind, and a machine that re-enabled Focus
+  // would get its card back wearing the old tap's status and Resume button.
+  function pruneFocus() {
+    for (const id of focus.keys()) {
+      const s = state.get(id);
+      if (!s || !s.host) setFocus(id, null);
+    }
+  }
+
   /** A final outcome: successes fade after a while, failures stay until the next tap. */
   function showResult(id, st, kind, text, resume) {
     st.done = true;
+    st.inferred = false;   // heard, not guessed, unless the caller says otherwise
     st.kind = kind;
     st.text = text;
     st.resume = Boolean(resume);
@@ -297,6 +322,15 @@
       st.clearTimer = setTimeout(() => { if (focus.get(id) === st) setFocus(id, null); }, STATUS_CLEAR_MS);
     }
     paintFocus(id);
+  }
+
+  // An outcome the board inferred rather than heard: the tap may have landed all
+  // the same — a lost response, or a TTL this board can only guess at — so a
+  // matching ack still overrides it. Dropping a genuine ack, and leaving the card
+  // on a failure while the window is in front, is what this must never produce.
+  function inferFailure(id, st, text) {
+    showResult(id, st, 'fail', text);
+    st.inferred = true;
   }
 
   const SEND_ERRORS = {
@@ -311,13 +345,20 @@
     if (!s || !s.host) return;
     const name = machineLabel(s.host);
     const st = {
-      cmdId: uuid(), type, name, kind: 'pending', text: 'Sending…', done: false, resume: false,
+      cmdId: uuid(), type, name, kind: 'pending', text: 'Sending…', done: false, inferred: false, resume: false,
       app: (s.host.app && s.host.app.name) || 'the app',
     };
     setFocus(id, st);
+    // The slow mark repaints in place and leaves the card pending; the give-up
+    // timer reuses `ackTimer`, so a newer tap and a real ack both cancel it.
     st.ackTimer = setTimeout(() => {
-      if (focus.get(id) === st && !st.done) showResult(id, st, 'fail', `No answer from ${name} — is it asleep?`);
-    }, ACK_TIMEOUT_MS);
+      if (focus.get(id) !== st || st.done) return;
+      st.text = `No answer from ${name} yet — is it asleep?`;
+      paintFocus(id);
+      st.ackTimer = setTimeout(() => {
+        if (focus.get(id) === st && !st.done) inferFailure(id, st, `No answer from ${name} — is it asleep?`);
+      }, ACK_GIVEUP_MS - ACK_SLOW_MS);
+    }, ACK_SLOW_MS);
     let res;
     try {
       res = await fetch(`${BASE}/commands`, {
@@ -326,7 +367,8 @@
         body: JSON.stringify({ id: st.cmdId, type, session_id: id }),
       });
     } catch {
-      if (focus.get(id) === st && !st.done) showResult(id, st, 'fail', "Couldn't reach the board");
+      // The POST may still have reached the server and only its answer been lost.
+      if (focus.get(id) === st && !st.done) inferFailure(id, st, "Couldn't reach the board");
       return;
     }
     // A newer tap, or an ack that beat the response, already took over.
@@ -345,8 +387,9 @@
     const id = ack.session_id;
     const st = focus.get(id);
     // Only the command this card is waiting on: an older one that a re-tap
-    // superseded, or a stray ack, has nothing to say to the viewer.
-    if (!st || st.cmdId !== ack.id || st.done) return;
+    // superseded, or a stray ack, has nothing to say to the viewer. A card that
+    // gave up waiting is still listening — that is what `inferred` is for.
+    if (!st || st.cmdId !== ack.id || (st.done && !st.inferred)) return;
     const name = st.name;
     switch (ack.result) {
       case 'focused': showResult(id, st, 'ok', `Brought to front on ${name}`); return;
@@ -429,13 +472,14 @@
       const list = JSON.parse(e.data);
       state.clear();
       for (const s of list) state.set(s.id, s);
-      for (const id of focus.keys()) if (!state.has(id)) setFocus(id, null);
+      pruneFocus();
       renderGrid();
     });
 
     es.addEventListener('session', (e) => {
       const s = JSON.parse(e.data);
       state.set(s.id, s);
+      pruneFocus();
       renderGrid();
     });
 
@@ -446,15 +490,27 @@
       renderGrid();
     });
 
-    // Presence: the full list follows every snapshot, so a reconnect re-seeds
-    // it; single frames then keep it current. An offline frame carries no
-    // name, so the one we had is kept for the "<name> is offline" copy.
+    // Presence: the frame lists the machines online right now (src/app.ts
+    // `onlineMachines`), so a reconnect re-seeds them; single frames then keep it
+    // current. It is not the whole map, so nothing is cleared — an offline machine
+    // dropped here loses the name and `lastSeen` behind "<name> is offline (3m
+    // ago)", and its card then tells a user who already installed the listener to
+    // install it. One that went offline while the stream was down keeps its name
+    // and loses only `lastSeen`: the frame that said when never arrived.
     es.addEventListener('machines', (e) => {
-      machines.clear();
-      for (const m of JSON.parse(e.data)) machines.set(m.id, m);
+      const online = new Set();
+      for (const m of JSON.parse(e.data)) {
+        machines.set(m.id, { ...(machines.get(m.id) || {}), ...m });
+        online.add(m.id);
+      }
+      for (const [id, m] of machines) {
+        if (m.online && !online.has(id)) machines.set(id, { id, name: m.name, online: false });
+      }
       renderGrid();
     });
 
+    // An offline frame carries no name, so the merge keeps the one we had for
+    // the "<name> is offline" copy.
     es.addEventListener('machine', (e) => {
       const m = JSON.parse(e.data);
       machines.set(m.id, { ...(machines.get(m.id) || {}), ...m });

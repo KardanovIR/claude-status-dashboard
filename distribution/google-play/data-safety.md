@@ -1,6 +1,6 @@
 # Data safety
 
-Google Play Data safety declaration for **AgStatus Android** (`com.kardanov.agstatus`, versionName 1.4.0). Every answer below is derived from the Android source in this repo, not from the iOS app.
+Google Play Data safety declaration for **AgStatus Android** (`com.kardanov.agstatus`, versionName 1.4.1). Every answer below is derived from the Android source in this repo, not from the iOS app.
 
 ## What the Android app actually transmits
 

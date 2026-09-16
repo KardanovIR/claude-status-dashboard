@@ -100,7 +100,8 @@ the version's **Build** section.
 
 ## 3. Fill in the version in App Store Connect
 
-Create the new version (**+ Version or Platform** → `1.3.0`), then:
+Create the new version (**+ Version or Platform** → the `MARKETING_VERSION` in
+`ios/AgStatus.xcodeproj/project.pbxproj`, currently `1.4.0`), then:
 
 - **What's New** — required for every update. The Play copy in
   `distribution/google-play/listing/whats-new.txt` is written for the same

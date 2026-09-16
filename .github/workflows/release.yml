@@ -204,8 +204,26 @@ jobs:
           node "$TREE/lib/agstatus/dist/cli.js" help > /dev/null
           echo "standalone tree OK"
 
+      # Two things in a release can only come from a human: what changed that a
+      # commit list does not convey, and what the user must DO after upgrading.
+      # 1.4.0 had two of the latter (re-run Codex `/hooks`, reinstall the macOS
+      # listener), and a generated changelog would have buried both. So the notes
+      # are a file per tag, and a missing one fails the release rather than
+      # shipping a wall of commit subjects in its place.
+      - name: Release notes exist for this tag
+        run: |
+          set -eu
+          notes="docs/release-notes/${GITHUB_REF_NAME}.md"
+          if [ ! -s "$notes" ]; then
+            echo "::error::$notes is missing or empty — write the release notes before tagging."
+            exit 1
+          fi
+          echo "using $notes"
+
       - uses: softprops/action-gh-release@v2
         with:
+          # Prepended to the generated changelog, which stays on underneath.
+          body_path: docs/release-notes/${{ github.ref_name }}.md
           generate_release_notes: true
           # Without this a missing asset publishes a release the installer
           # cannot install from, and nothing fails.

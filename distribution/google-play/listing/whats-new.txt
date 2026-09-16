@@ -1,4 +1,4 @@
-- Limits are now grouped per agent, so Claude and Codex each get their own block side by side.
-- Codex limits are reported too, including per-model session and weekly windows.
-- Tap an agent's limits to open a usage detail screen: tokens per day over the last 30 days, the plan limit charted over the top, and which projects the tokens went to.
-- Reset times no longer show a countdown for a window that has already reset.
+- Tap a session to bring its terminal to the front on the Mac running it — the app tells that machine, and the window, tab or pane comes forward.
+- If the session has already ended, the card offers Resume: the Mac starts it again where it left off.
+- A card no longer shows a false "no answer" when the Mac is just slow — a late reply now corrects it instead of being discarded.
+- Machines you own appear on the board with their name, and show when one is offline.

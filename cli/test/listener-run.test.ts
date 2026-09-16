@@ -56,6 +56,10 @@ interface Connection {
   at: number;
   query: URLSearchParams;
   secret: string | undefined;
+  /** The key from `Authorization: Bearer` — where it must be, never the URL. */
+  machineKey: string | undefined;
+  /** The raw request target, as an access log would record it. */
+  url: string;
   res: http.ServerResponse;
 }
 interface Posted {
@@ -128,8 +132,18 @@ function startBoard(opts: FakeOptions = {}): Promise<FakeBoard> {
         return;
       }
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-      const header = req.headers['x-webhook-secret'];
-      board.connections.push({ at: Date.now(), query: url.searchParams, secret: Array.isArray(header) ? header[0] : header, res });
+      const one = (name: string): string | undefined => {
+        const v = req.headers[name];
+        return Array.isArray(v) ? v[0] : v;
+      };
+      board.connections.push({
+        at: Date.now(),
+        query: url.searchParams,
+        secret: one('x-webhook-secret'),
+        machineKey: (one('authorization') || '').replace(/^Bearer /, ''),
+        url: req.url ?? '',
+        res,
+      });
       res.write('event: snapshot\ndata: []\n\n');
       opts.onOpen?.(n, board);
       return;
@@ -432,7 +446,7 @@ describe('runListener', () => {
     fs.rmSync(fx.root, { recursive: true, force: true });
   });
 
-  it('subscribes with its id, key and name, claims, runs the plan with argv arrays and acks focused/pane', async () => {
+  it('subscribes with its id and name in the URL, its key in a header, claims, runs the plan and acks focused/pane', async () => {
     writeRecord(fx, SESSION);
     const cmd = command();
     board = await startBoard({ onOpen: (_n, b) => b.send('commands', [{ ...cmd, machine_id: cfg.machinePublicId }]) });
@@ -441,11 +455,16 @@ describe('runListener', () => {
     running = start(cfg, { execFile, frontmost: async () => AGTERM });
     await until(() => board.acks.length === 1, 5000, running.log);
 
-    const query = board.connections[0].query;
-    expect(query.get('listener')).toBe(cfg.machinePublicId);
-    expect(query.get('key')).toBe(cfg.machineKey);
-    expect(query.get('name')).toBe('Test Mac');
-    expect(board.connections[0].secret).toBeUndefined();
+    const conn = board.connections[0];
+    expect(conn.query.get('listener')).toBe(cfg.machinePublicId);
+    expect(conn.query.get('name')).toBe('Test Mac');
+    expect(conn.secret).toBeUndefined();
+    // The credential is a header, and the request target — the string nginx,
+    // Cloudflare and most PaaS write to their access log verbatim — has no
+    // trace of it. Only the machine id, which every viewer sees anyway.
+    expect(conn.machineKey).toBe(cfg.machineKey);
+    expect(conn.query.get('key')).toBeNull();
+    expect(conn.url).not.toContain(cfg.machineKey);
 
     expect(board.claims).toEqual([{ id: cmd.id, body: { machine_key: cfg.machineKey } }]);
     expect(board.acks).toEqual([{ id: cmd.id, body: { machine_key: cfg.machineKey, result: 'focused', reach: 'pane' } }]);

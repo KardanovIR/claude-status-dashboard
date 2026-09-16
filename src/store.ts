@@ -33,6 +33,20 @@ export const MACHINE_ID_RE = /^[0-9a-f]{32}$/;
 export const MACHINE_KEY_RE = /^[0-9a-f]{64}$/;
 export const machineIdForKey = (key: string): string =>
   crypto.createHash('sha256').update(key).digest('hex').slice(0, 32);
+
+/**
+ * `sha256(key)[0..32] === machineId`, compared without an early exit.
+ * Both sides are public-derivable (every viewer sees the id, and anyone can
+ * hash a key they already hold), so the timing channel a `!==` opens here
+ * leaks nothing an attacker could not compute offline — but this is the one
+ * check standing between a viewer and a machine's stream, and a reader
+ * should not have to reconstruct that argument to trust it.
+ */
+export const machineKeyMatches = (key: string, machineId: string): boolean => {
+  const a = Buffer.from(machineIdForKey(key));
+  const b = Buffer.from(machineId);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+};
 const HOST_NAME_MAX = 32;
 const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F]/g;
 
@@ -1151,7 +1165,7 @@ export class Store {
     const now = Date.now();
     const cmd = this.liveCommand(wsId, id, now);
     if (!cmd) return { ok: false, error: 'not_found' };
-    if (machineIdForKey(machineKey) !== cmd.machineId) return { ok: false, error: 'wrong_machine' };
+    if (!machineKeyMatches(machineKey, cmd.machineId)) return { ok: false, error: 'wrong_machine' };
     if (cmd.state === 'expired') return { ok: false, error: 'expired' };
     if (cmd.state !== 'pending') return { ok: false, error: 'already_claimed' };
     cmd.state = 'claimed';
@@ -1169,7 +1183,7 @@ export class Store {
     const now = Date.now();
     const cmd = this.liveCommand(wsId, id, now);
     if (!cmd) return { ok: false, error: 'not_found' };
-    if (machineIdForKey(machineKey) !== cmd.machineId) return { ok: false, error: 'wrong_machine' };
+    if (!machineKeyMatches(machineKey, cmd.machineId)) return { ok: false, error: 'wrong_machine' };
     if (cmd.state === 'expired') return { ok: false, error: 'expired' };
     if (cmd.state === 'done') return { ok: false, error: 'already_done' };
     if (cmd.state === 'pending') return { ok: false, error: 'not_claimed' };

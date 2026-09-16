@@ -18,4 +18,13 @@
 	reverse_proxy dashboard:3000 {
 		flush_interval -1
 	}
+
+	# No `log` directive on purpose. If you add one, leave `log_credentials`
+	# at its default (off): Caddy serializes the whole request header map into
+	# the access log, and only with log_credentials off does it redact
+	# Authorization — which is where a Focus listener carries its machine key
+	# (docs/design/focus-protocol.md §3.2). The board token is in the request
+	# PATH and cannot be redacted at all, so an access log here is a list of
+	# credentials either way; keep it off, or keep it somewhere you would keep
+	# passwords.
 }

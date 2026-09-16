@@ -1,19 +1,25 @@
 /**
  * The listener's half of the board's event stream: one long-lived GET on
- * `/events?listener=<machine_id>&key=<machine_key>&name=…`, parsed by hand
- * (Node has no EventSource and the CLI has no room for a dependency), and
- * reconnected forever — exponential backoff with jitter from 1 s to 60 s, a
+ * `/events?listener=<machine_id>&name=…` with the machine key in the
+ * `Authorization: Bearer` header, parsed by hand (Node has no EventSource and the
+ * CLI has no room for a dependency), and reconnected forever — exponential backoff with jitter from 1 s to 60 s, a
  * 60 s pause after a 429 or an auth error so a misconfigured machine never
  * spins against the board, and an idle watchdog that drops a stream the
  * server stopped keeping alive (design §3.3, §5.4). subscribe() resolves
  * only when its signal aborts; everything it learns goes through the
- * callbacks. The key is in the query string and nowhere in a log line.
+ * callbacks. The key travels as a header, like `x-webhook-secret`, and so
+ * reaches neither this log nor the board's access log: a URL is recorded
+ * verbatim by nginx, Cloudflare and most PaaS, a request header is not. Only
+ * the machine id — which every board viewer already reads off the `machines`
+ * frame — stays in the query.
  *
  * The stream is data from the network: a line or a frame past 1 MB drops
  * the connection (into the normal backoff, so a board that keeps doing it
  * backs off to a minute), the server-chosen event name reaches the log
  * only when it looks like one, and a redirect is an error — the key is
- * never replayed to a Location the board or a man in the middle names.
+ * never replayed to a Location the board or a man in the middle names
+ * (`fetch` forwards a custom header across a redirect, so this is the guard
+ * that keeps the header as private as the query string was not).
  */
 
 /** A pending line or a frame's joined data past this size ends the stream. */
@@ -182,8 +188,13 @@ export async function subscribe(opts: SubscribeOptions): Promise<void> {
   const { signal, log } = opts;
   const url =
     `${opts.base}/events?listener=${encodeURIComponent(opts.machinePublicId)}` +
-    `&key=${encodeURIComponent(opts.machineKey)}&name=${encodeURIComponent(opts.name)}`;
-  const headers: Record<string, string> = { accept: 'text/event-stream' };
+    `&name=${encodeURIComponent(opts.name)}`;
+  const headers: Record<string, string> = {
+    accept: 'text/event-stream',
+    // `Authorization`, not a custom name: credential-redacting log
+    // pipelines (Caddy's `log_credentials` included) key off this header name.
+    authorization: `Bearer ${opts.machineKey}`,
+  };
   if (opts.secret) headers['x-webhook-secret'] = opts.secret;
 
   const parser = new SseParser((event, raw) => {

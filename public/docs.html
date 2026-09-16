@@ -1484,29 +1484,35 @@ multi-tenant mode; legacy mode mounts the same handlers at the root
 <code>X-Webhook-Secret</code> when <code>WEBHOOK_SECRET</code> is set, like the webhook.</p>
 <h4 id="api-listener-presence"><a class="anchor" href="#api-listener-presence">Listener presence</a></h4>
 <p>A listener subscribes to the ordinary event stream with a <code>listener</code> query
-parameter and the machine&#39;s key:</p>
-<pre><code>GET /w/&lt;token&gt;/events?listener=&lt;machine_id&gt;&amp;key=&lt;machine_key&gt;&amp;name=&lt;label&gt;
+parameter, and proves it is that machine with an <code>Authorization: Bearer</code> header:</p>
+<pre><code>GET /w/&lt;token&gt;/events?listener=&lt;machine_id&gt;&amp;name=&lt;label&gt;
+Authorization: Bearer &lt;machine_key&gt;
 </code></pre>
 <div class="table-wrap"><table>
 <thead>
 <tr>
-<th>Param</th>
+<th>Field</th>
 <th>Rule</th>
 </tr>
 </thead>
 <tbody><tr>
-<td><code>listener</code></td>
-<td>Required. The machine id the hook reports in <code>host.machine.id</code>; must match <code>^[0-9a-f]{32}$</code> (<code>400</code> otherwise).</td>
+<td><code>?listener=</code></td>
+<td>Required. The machine id the hook reports in <code>host.machine.id</code>; must match <code>^[0-9a-f]{32}$</code> (<code>400</code> otherwise). Public — every viewer reads it off the <code>machines</code> frame — so it is a routing label, not a credential, and it stays in the URL.</td>
 </tr>
 <tr>
-<td><code>key</code></td>
-<td>Required. The <strong>machine key</strong>: 64 lowercase hex, the value the id is derived from (<code>machine_id = sha256(key)[0..32]</code>, see the <a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/docs/design/focus-protocol.md#32-wire-summary--the-host-webhook-field">design</a>). <code>400</code> when malformed; <code>403 {&quot;error&quot;: &quot;wrong_key&quot;}</code> when it does not hash to <code>listener</code>. Only the machine holds the key — every viewer sees the id in the snapshot, so the id alone proves nothing, and a viewer can neither take a machine&#39;s slot nor end its stream.</td>
+<td><code>Authorization: Bearer &lt;key&gt;</code></td>
+<td>Required. The <strong>machine key</strong>: 64 lowercase hex, the value the id is derived from (<code>machine_id = sha256(key)[0..32]</code>, see the <a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/docs/design/focus-protocol.md#32-wire-summary--the-host-webhook-field">design</a>). <code>400</code> when malformed; <code>403 {&quot;error&quot;: &quot;wrong_key&quot;}</code> when it does not hash to <code>?listener=</code>. Only the machine holds the key — every viewer sees the id in the snapshot, so the id alone proves nothing, and a viewer can neither take a machine&#39;s slot nor end its stream. A header, not a query parameter, because nginx, Cloudflare and most PaaS record <code>$request_uri</code> verbatim: a key in the URL lands in access logs, which are shipped to aggregators and shared far more widely than the board token. And <code>Authorization</code> rather than a name of our own, because log pipelines that redact credentials match on the header name — Caddy&#39;s <code>log_credentials</code> covers exactly Cookie, Set-Cookie, Authorization and Proxy-Authorization, so a custom name would be logged in full.</td>
 </tr>
 <tr>
-<td><code>name</code></td>
+<td><code>?name=</code></td>
 <td>Label shown on the board; control characters stripped, trimmed, truncated to 32 chars; blank → <code>Machine</code>. Nothing else from the query reaches the board.</td>
 </tr>
 </tbody></table></div>
+<p><strong><code>?key=</code> is refused.</strong> Any <code>GET /events</code> carrying a <code>key</code> query parameter —
+listener or plain viewer — answers <code>400</code> and opens no stream, so a client
+still on the old shape cannot appear connected while unauthenticated. The
+rejection never echoes the value; a key that reached a URL is in an access
+log already and should be rotated.</p>
 <p>Listener slots are separate from the 10 viewer slots: at most <strong>5 listeners
 per workspace</strong> (<code>429 {&quot;error&quot;: &quot;too many listeners&quot;}</code> for a 6th machine),
 one per <code>machine_id</code> — a new connection for a machine that is already
@@ -1611,7 +1617,7 @@ new one goes out. Done and expired commands stay readable through <code>GET</cod
 </tr>
 <tr>
 <td><code>GET /events</code></td>
-<td>SSE stream (see <a href="#api-sse-event-format">format</a>); <code>?listener=</code> subscribes a Focus listener (see <a href="#api-listener-presence">presence</a>).</td>
+<td>SSE stream (see <a href="#api-sse-event-format">format</a>); <code>?listener=</code> plus <code>Authorization: Bearer</code> subscribes a Focus listener (see <a href="#api-listener-presence">presence</a>).</td>
 <td>no; yes* with <code>?listener=</code></td>
 </tr>
 <tr>
@@ -1712,7 +1718,7 @@ workspace:</p>
 </tr>
 <tr>
 <td><code>GET /w/&lt;token&gt;/events</code></td>
-<td>SSE stream (see <a href="#api-sse-event-format">format</a>). <code>429</code> past 10 concurrent connections. <code>?listener=&lt;machine_id&gt;</code> subscribes a Focus listener instead, in its own slot budget (see <a href="#api-listener-presence">presence</a>).</td>
+<td>SSE stream (see <a href="#api-sse-event-format">format</a>). <code>429</code> past 10 concurrent connections. <code>?listener=&lt;machine_id&gt;</code> with an <code>Authorization: Bearer</code> header subscribes a Focus listener instead, in its own slot budget (see <a href="#api-listener-presence">presence</a>).</td>
 </tr>
 <tr>
 <td><code>POST /w/&lt;token&gt;/webhook</code></td>

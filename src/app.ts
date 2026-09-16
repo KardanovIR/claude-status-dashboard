@@ -17,7 +17,7 @@ import {
   LEGACY_WS,
   MACHINE_ID_RE,
   MACHINE_KEY_RE,
-  machineIdForKey,
+  machineKeyMatches,
   MAX_HISTORY_DAYS,
   MAX_PENDING_COMMANDS_PER_WORKSPACE,
   normalizeHost,
@@ -56,6 +56,29 @@ const DEFAULT_HISTORY_DAYS = 30;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_LISTENERS_PER_WORKSPACE = 5;
 const LISTENER_NAME_MAX = 32;
+/**
+ * The listener's credential travels as `Authorization: Bearer <key>`.
+ *
+ * Not in the query string, because nginx, Cloudflare and most PaaS log
+ * `$request_uri` verbatim and ship those logs to aggregators. But not in a
+ * custom header either: log pipelines that redact credentials do it by NAME,
+ * and `Authorization` is on every one of those lists while `x-machine-key` is
+ * on none. Our own deploy/Caddyfile is the case in point — Caddy serializes
+ * the whole request header map into its access log, and `log_credentials`
+ * (off by default) redacts exactly Cookie, Set-Cookie, Authorization and
+ * Proxy-Authorization. A custom name would have put the key straight back in
+ * the log the moment an operator added a `log` directive, which is the very
+ * thing moving it out of the URL was for.
+ */
+const MACHINE_KEY_SCHEME = 'Bearer';
+
+/** The key from `Authorization: Bearer <key>`, or '' when absent or malformed. */
+function bearerKey(req: express.Request): string {
+  const raw = req.header('authorization') || '';
+  const [scheme, ...rest] = raw.split(' ');
+  if (scheme.toLowerCase() !== MACHINE_KEY_SCHEME.toLowerCase()) return '';
+  return rest.join(' ').trim();
+}
 const COMMAND_SWEEP_MS = 15_000;
 const ACK_KEYS = ['machine_key', 'result', 'reach', 'reason'];
 
@@ -460,6 +483,20 @@ export function createApp(cfg: AppConfig): CreatedApp {
   }
 
   function handleEvents(wsId: string, req: Request, res: Response): void {
+    // The key used to ride in `?key=`. A stale client must fail loudly rather
+    // than fall through to a viewer stream and look connected while
+    // unauthenticated. The value is never echoed back or logged: it is in an
+    // access log already, which is the whole reason it moved.
+    // Case-insensitively: the remaining way a key reaches a URL is a human
+    // typing or editing one, and `?Key=` should be just as loud as `?key=`.
+    if (Object.keys(req.query).some((k) => k.toLowerCase() === 'key')) {
+      res.status(400).json({
+        error:
+          'key must not be in the query string (access logs record it): send it as ' +
+          `\`Authorization: ${MACHINE_KEY_SCHEME} <key>\`, and rotate the key that was in this URL`,
+      });
+      return;
+    }
     if (req.query.listener !== undefined) {
       handleListener(wsId, req, res);
       return;
@@ -489,12 +526,19 @@ export function createApp(cfg: AppConfig): CreatedApp {
 
   /**
    * A Focus listener subscribing on behalf of one machine
-   * (`?listener=<machine_id>&key=<machine_key>&name=`). It gets the snapshot,
-   * then the commands already waiting for it, then every event a viewer gets;
-   * the board learns it is online. Its slot is separate from the viewer cap.
-   * The key proves it is that machine: viewers know every machine id from the
-   * snapshot, and without the key one of them could take the machine's slot,
-   * end its real stream and read its commands.
+   * (`?listener=<machine_id>&name=` plus `Authorization: Bearer <machine_key>`). It gets
+   * the snapshot, then the commands already waiting for it, then every event a
+   * viewer gets; the board learns it is online. Its slot is separate from the
+   * viewer cap. The key proves it is that machine: viewers know every machine
+   * id from the snapshot, and without the key one of them could take the
+   * machine's slot, end its real stream and read its commands.
+   *
+   * The id stays in the query — every board viewer already reads it off the
+   * `machines` frame, so it is a routing label, not a credential, and leaving
+   * it in the URL keeps the two kinds of `/events` connect distinguishable to
+   * the proxy in front and to `guardListener` below. The key is a header
+   * precisely because the id is not: only one of the two must stay out of
+   * `$request_uri`.
    */
   function handleListener(wsId: string, req: Request, res: Response): void {
     const q = req.query as Record<string, unknown>;
@@ -503,12 +547,14 @@ export function createApp(cfg: AppConfig): CreatedApp {
       res.status(400).json({ error: `listener must match ${MACHINE_ID_RE}` });
       return;
     }
-    const key = typeof q.key === 'string' ? q.key : '';
+    const key = bearerKey(req);
     if (!MACHINE_KEY_RE.test(key)) {
-      res.status(400).json({ error: `key must match ${MACHINE_KEY_RE}` });
+      // Never echo the value: this response goes to whoever sent it, but the
+      // error text is also what a listener writes to its own log.
+      res.status(400).json({ error: `Authorization: ${MACHINE_KEY_SCHEME} <key> must match ${MACHINE_KEY_RE}` });
       return;
     }
-    if (machineIdForKey(key) !== machineId) {
+    if (!machineKeyMatches(key, machineId)) {
       res.status(403).json({ error: 'wrong_key' });
       return;
     }

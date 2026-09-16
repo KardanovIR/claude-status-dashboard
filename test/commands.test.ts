@@ -182,9 +182,9 @@ async function connectListener(
   m: { id: string; key: string } = MAC,
   extra = 'name=MacBook',
 ): Promise<{ res: Response; stream: SseStream }> {
-  const res = await fetch(`${base}/w/${token}/events?listener=${m.id}&key=${m.key}&${extra}`, {
+  const res = await fetch(`${base}/w/${token}/events?listener=${m.id}&${extra}`, {
     signal,
-    headers: { accept: 'text/event-stream' },
+    headers: { accept: 'text/event-stream', authorization: `Bearer ${m.key}` },
   });
   // A rejected connection has a JSON body, not a stream; callers check res.status first.
   return { res, stream: res.status === 200 ? new SseStream(res) : (undefined as unknown as SseStream) };
@@ -609,19 +609,27 @@ describe('listener presence (GET /w/:token/events?listener=)', () => {
     }
   });
 
-  it('validates the query: bad id or key 400, a key for another machine 403 (the real stream stays), name falls back', async () => {
+  it('validates the request: bad id or key 400, a key for another machine 403 (the real stream stays), name falls back', async () => {
     const h = await harness();
     try {
       for (const bad of ['', 'abc', MACHINE_ID.toUpperCase(), MACHINE_ID + '0']) {
-        const res = await fetch(`${h.base}/w/${h.token}/events?listener=${bad}&key=${MACHINE_KEY}`);
+        const res = await fetch(`${h.base}/w/${h.token}/events?listener=${bad}`, {
+          headers: { authorization: `Bearer ${MACHINE_KEY}` },
+        });
         expect(res.status, `listener=${bad}`).toBe(400);
         await res.text();
       }
+      // A missing header is as bad as a malformed one: no key, no stream.
       for (const bad of ['', 'abc', MACHINE_KEY.toUpperCase(), MACHINE_KEY.slice(1), MACHINE_ID]) {
-        const res = await fetch(`${h.base}/w/${h.token}/events?listener=${MACHINE_ID}&key=${bad}`);
-        expect(res.status, `key=${bad}`).toBe(400);
+        const res = await fetch(`${h.base}/w/${h.token}/events?listener=${MACHINE_ID}`, {
+          headers: { authorization: `Bearer ${bad}` },
+        });
+        expect(res.status, `Authorization: Bearer ${bad}`).toBe(400);
         await res.text();
       }
+      const noHeader = await fetch(`${h.base}/w/${h.token}/events?listener=${MACHINE_ID}`);
+      expect(noHeader.status).toBe(400);
+      expect((await noHeader.json()).error).toMatch(/Authorization: Bearer/);
 
       const viewer = await connectViewer(h.base, h.token, h.signal());
       const real = await connectListener(h.base, h.token, h.signal(), MAC, 'name=&platform=darwin&v=1.4.0');
@@ -647,6 +655,60 @@ describe('listener presence (GET /w/:token/events?listener=)', () => {
       const second = await viewer.waitForEvent('machine', 2);
       expect(second.id).toBe(OTHER_MACHINE);
       expect(second.name).toBe(('BigBox ' + 'x'.repeat(40)).slice(0, 32).trim());
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('refuses the pre-release ?key= shape without echoing it, and accepts the header instead', async () => {
+    const h = await harness();
+    try {
+      const viewer = await connectViewer(h.base, h.token, h.signal());
+
+      // The shape the listener spoke before the key moved into a header. It
+      // must fail, not fall through to a plain viewer stream: a stale client
+      // that looked connected would be unauthenticated, in a machine's slot
+      // it never proved it owns.
+      const stale = await fetch(
+        `${h.base}/w/${h.token}/events?listener=${MACHINE_ID}&key=${MACHINE_KEY}&name=MacBook`,
+        { headers: { accept: 'text/event-stream' } },
+      );
+      expect(stale.status).toBe(400);
+      expect(stale.headers.get('content-type') ?? '').toContain('application/json');
+      const body = await stale.text();
+      // The refusal is the one place the key is in hand: it never comes back
+      // out, in the error or anywhere else, and it names the header to use.
+      expect(body).not.toContain(MACHINE_KEY);
+      expect(JSON.parse(body).error).toMatch(/Authorization: Bearer/);
+
+      // Belt and braces: the right header does not rescue a request that also
+      // carries the key in its query — the URL is already in an access log.
+      const both = await fetch(`${h.base}/w/${h.token}/events?listener=${MACHINE_ID}&key=${MACHINE_KEY}`, {
+        headers: { authorization: `Bearer ${MACHINE_KEY}` },
+      });
+      expect(both.status).toBe(400);
+      expect(await both.text()).not.toContain(MACHINE_KEY);
+
+      // A plain viewer connect carrying a stray ?key= is refused too, so the
+      // credential can never quietly ride a URL that does open a stream.
+      const strayViewer = await fetch(`${h.base}/w/${h.token}/events?key=${MACHINE_KEY}`);
+      expect(strayViewer.status).toBe(400);
+      await strayViewer.text();
+
+      // Nothing above took the machine's slot or reached the board.
+      await sleep(100);
+      expect(viewer.events('machine')).toEqual([]);
+      expect(await (await fetch(`${h.base}/w/${h.token}/api/machines`)).json()).toEqual([]);
+
+      // The same connect with the key in the header is the supported shape.
+      const ok = await fetch(`${h.base}/w/${h.token}/events?listener=${MACHINE_ID}&name=MacBook`, {
+        signal: h.signal(),
+        headers: { accept: 'text/event-stream', authorization: `Bearer ${MACHINE_KEY}` },
+      });
+      expect(ok.status).toBe(200);
+      expect(ok.headers.get('content-type') ?? '').toContain('text/event-stream');
+      await new SseStream(ok).waitFor('event: commands');
+      expect(await viewer.waitForEvent('machine')).toMatchObject({ id: MACHINE_ID, name: 'MacBook', online: true });
     } finally {
       await h.close();
     }
@@ -813,9 +875,19 @@ describe('legacy mode (multiTenant: false)', () => {
     const { srv, base } = await listen(app);
     const ac = new AbortController();
     try {
-      const denied = await fetch(`${base}/events?listener=${MACHINE_ID}&key=${MACHINE_KEY}`);
+      const denied = await fetch(`${base}/events?listener=${MACHINE_ID}`, {
+        headers: { authorization: `Bearer ${MACHINE_KEY}` },
+      });
       expect(denied.status).toBe(401);
       expect(await denied.json()).toEqual({ error: 'unauthorized' });
+
+      // Legacy mode refuses the old query shape too — behind the secret, so a
+      // stale client without it is turned away before the key is even read.
+      const stale = await fetch(`${base}/events?listener=${MACHINE_ID}&key=${MACHINE_KEY}`, {
+        headers: { 'x-webhook-secret': 's3cret' },
+      });
+      expect(stale.status).toBe(400);
+      expect(await stale.text()).not.toContain(MACHINE_KEY);
 
       const viewerRes = await fetch(`${base}/events`, { signal: ac.signal });
       expect(viewerRes.status).toBe(200);
@@ -823,9 +895,9 @@ describe('legacy mode (multiTenant: false)', () => {
       await viewer.waitFor('event: snapshot');
       expect(viewer.events('machines')).toEqual([[]]);
 
-      const listenerRes = await fetch(`${base}/events?listener=${MACHINE_ID}&key=${MACHINE_KEY}&name=Mac`, {
+      const listenerRes = await fetch(`${base}/events?listener=${MACHINE_ID}&name=Mac`, {
         signal: ac.signal,
-        headers: { 'x-webhook-secret': 's3cret' },
+        headers: { 'x-webhook-secret': 's3cret', authorization: `Bearer ${MACHINE_KEY}` },
       });
       expect(listenerRes.status).toBe(200);
       await new SseStream(listenerRes).waitFor('event: commands');

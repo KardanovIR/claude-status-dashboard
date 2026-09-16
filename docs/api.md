@@ -219,17 +219,24 @@ multi-tenant mode; legacy mode mounts the same handlers at the root
 ### Listener presence
 
 A listener subscribes to the ordinary event stream with a `listener` query
-parameter and the machine's key:
+parameter, and proves it is that machine with an `Authorization: Bearer` header:
 
 ```
-GET /w/<token>/events?listener=<machine_id>&key=<machine_key>&name=<label>
+GET /w/<token>/events?listener=<machine_id>&name=<label>
+Authorization: Bearer <machine_key>
 ```
 
-| Param      | Rule |
-| ---------- | ---- |
-| `listener` | Required. The machine id the hook reports in `host.machine.id`; must match `^[0-9a-f]{32}$` (`400` otherwise). |
-| `key`      | Required. The **machine key**: 64 lowercase hex, the value the id is derived from (`machine_id = sha256(key)[0..32]`, see the [design](design/focus-protocol.md#32-wire-summary--the-host-webhook-field)). `400` when malformed; `403 {"error": "wrong_key"}` when it does not hash to `listener`. Only the machine holds the key — every viewer sees the id in the snapshot, so the id alone proves nothing, and a viewer can neither take a machine's slot nor end its stream. |
-| `name`     | Label shown on the board; control characters stripped, trimmed, truncated to 32 chars; blank → `Machine`. Nothing else from the query reaches the board. |
+| Field                    | Rule |
+| ------------------------ | ---- |
+| `?listener=`             | Required. The machine id the hook reports in `host.machine.id`; must match `^[0-9a-f]{32}$` (`400` otherwise). Public — every viewer reads it off the `machines` frame — so it is a routing label, not a credential, and it stays in the URL. |
+| `Authorization: Bearer <key>` | Required. The **machine key**: 64 lowercase hex, the value the id is derived from (`machine_id = sha256(key)[0..32]`, see the [design](design/focus-protocol.md#32-wire-summary--the-host-webhook-field)). `400` when malformed; `403 {"error": "wrong_key"}` when it does not hash to `?listener=`. Only the machine holds the key — every viewer sees the id in the snapshot, so the id alone proves nothing, and a viewer can neither take a machine's slot nor end its stream. A header, not a query parameter, because nginx, Cloudflare and most PaaS record `$request_uri` verbatim: a key in the URL lands in access logs, which are shipped to aggregators and shared far more widely than the board token. And `Authorization` rather than a name of our own, because log pipelines that redact credentials match on the header name — Caddy's `log_credentials` covers exactly Cookie, Set-Cookie, Authorization and Proxy-Authorization, so a custom name would be logged in full. |
+| `?name=`                 | Label shown on the board; control characters stripped, trimmed, truncated to 32 chars; blank → `Machine`. Nothing else from the query reaches the board. |
+
+**`?key=` is refused.** Any `GET /events` carrying a `key` query parameter —
+listener or plain viewer — answers `400` and opens no stream, so a client
+still on the old shape cannot appear connected while unauthenticated. The
+rejection never echoes the value; a key that reached a URL is in an access
+log already and should be rotated.
 
 Listener slots are separate from the 10 viewer slots: at most **5 listeners
 per workspace** (`429 {"error": "too many listeners"}` for a 6th machine),
@@ -309,7 +316,7 @@ new one goes out. Done and expired commands stay readable through `GET` for
 | `POST /webhook`        | Create/update a session (see above; `host` included). | yes* |
 | `POST /usage`          | Report plan usage (see [Plan usage](#plan-usage)). | yes* |
 | `POST /usage/projects` | Report per-project token spend (see [Usage history](#usage-history-and-per-project-spend)). | yes* |
-| `GET /events`          | SSE stream (see [format](#sse-event-format)); `?listener=` subscribes a Focus listener (see [presence](#listener-presence)). | no; yes* with `?listener=` |
+| `GET /events`          | SSE stream (see [format](#sse-event-format)); `?listener=` plus `Authorization: Bearer` subscribes a Focus listener (see [presence](#listener-presence)). | no; yes* with `?listener=` |
 | `GET /api/sessions`    | JSON list of all sessions.                     | no   |
 | `GET /api/machines`    | Focus listeners currently online.              | no   |
 | `POST /commands`       | Send a Focus command (see [Focus commands](#focus-commands)). | yes* |
@@ -363,7 +370,7 @@ workspace:
 | -------------------------------- | ------- |
 | `GET /w/<token>`                 | Dashboard UI for this workspace. |
 | `GET /w/<token>/api/sessions`    | JSON list of the workspace's sessions (newest first). |
-| `GET /w/<token>/events`          | SSE stream (see [format](#sse-event-format)). `429` past 10 concurrent connections. `?listener=<machine_id>` subscribes a Focus listener instead, in its own slot budget (see [presence](#listener-presence)). |
+| `GET /w/<token>/events`          | SSE stream (see [format](#sse-event-format)). `429` past 10 concurrent connections. `?listener=<machine_id>` with an `Authorization: Bearer` header subscribes a Focus listener instead, in its own slot budget (see [presence](#listener-presence)). |
 | `POST /w/<token>/webhook`        | Create/update a session (same body as legacy, `host` included). `200` with `{ok, session}`; `400` on validation errors; `429` over the rate limit. |
 | `POST /w/<token>/usage`          | Report plan usage (see [Plan usage](#plan-usage)). |
 | `POST /w/<token>/usage/projects` | Report per-project token spend (see [Usage history](#usage-history-and-per-project-spend)). |

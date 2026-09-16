@@ -1,0 +1,39 @@
+# Gitleaks configuration for AgStatus.
+#
+# Starts from the upstream rule set and narrows it in exactly one place: the
+# Focus protocol's machine key is a SHA-256 of two PUBLIC constants
+# (`sha256(machineId + "\n" + boardBase)`, docs/design/focus-protocol.md §3.2),
+# and the tests pin the derivation by writing the expected 64-hex output next
+# to the inputs that produce it. That is indistinguishable from a leaked API
+# key by shape, so `generic-api-key` fires on it.
+#
+# The allowlist is deliberately narrow: named constants, in test files, whose
+# value the repo can recompute from the two lines above them. Anything else in
+# these files is still scanned, and no other path is exempted.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+description = "Generic API Key"
+regex = '''(?i)(?:key|api|token|secret|client|passwd|password|auth|access)(?:[0-9a-z\-_\t .]{0,20})(?:[\s|']|[\s|"]){0,3}(?:=|>|:{1,3}=|\|\||:|<=|=>|:=|\?=)(?:'|\"|\s|=|\x60){0,5}([0-9a-z\-_.=]{10,150})(?:['|\"|\n|\r|\s|\x60|;]|$)'''
+keywords = ["key", "api", "token", "secret", "client", "passwd", "password", "auth", "access"]
+
+  [rules.allowlist]
+  description = "Focus-protocol test vectors: derived from public constants in the same file."
+  regexTarget = "line"
+  paths = [
+    '''cli/test/listener-install\.test\.ts''',
+    '''cli/test/listener-run\.test\.ts''',
+    '''cli/test/host\.test\.ts''',
+    '''android/app/src/test/kotlin/com/kardanov/agstatus/ApiParsingTest\.kt''',
+  ]
+  regexes = [
+    # The pinned derivation: a named constant holding the hex the two lines
+    # above it produce.
+    '''(?i)const\s+(EXPECTED_KEY|EXPECTED_PUBLIC_ID|MACHINE_KEY|MACHINE_ID)\s*=\s*'[0-9a-f-]{32,64}';''',
+    # JSON fixtures whose "credential" is an interpolated constant, so there is
+    # no literal value on the line at all — e.g. `"machine_id":"$MACHINE_ID"`.
+    # (That constant is `"9f2c".padEnd(32, '0')`.)
+    '''"(machine_id|machine_key|id|session_id)"\s*:\s*"\$[A-Z_]+"''',
+  ]

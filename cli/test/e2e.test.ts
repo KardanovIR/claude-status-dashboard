@@ -44,6 +44,8 @@ afterAll(async () => {
 
 let codexDir: string;
 let prevCodexHome: string | undefined;
+let prevStatusUrl: string | undefined;
+let prevHome: string | undefined;
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-e2e-'));
@@ -54,6 +56,15 @@ beforeEach(() => {
   codexDir = path.join(os.tmpdir(), `agstatus-e2e-codex-${process.pid}-${Math.random().toString(36).slice(2)}`);
   prevCodexHome = process.env.CODEX_HOME;
   process.env.CODEX_HOME = codexDir;
+  // Isolate the two config sources that are NOT under CLAUDE_CONFIG_DIR, or
+  // these tests read the real machine's setup: CLAUDE_STATUS_URL is the
+  // highest-precedence board (boardUrlCandidates()), and ~/.agstatus.json is
+  // found through os.homedir(). Without this, a developer whose own shell has
+  // a board exported gets different results from CI.
+  prevStatusUrl = process.env.CLAUDE_STATUS_URL;
+  delete process.env.CLAUDE_STATUS_URL;
+  prevHome = process.env.HOME;
+  process.env.HOME = dir;
   logs.length = 0;
 });
 
@@ -62,6 +73,10 @@ afterEach(() => {
   else process.env.CLAUDE_CONFIG_DIR = prevConfigDir;
   if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
   else process.env.CODEX_HOME = prevCodexHome;
+  if (prevStatusUrl === undefined) delete process.env.CLAUDE_STATUS_URL;
+  else process.env.CLAUDE_STATUS_URL = prevStatusUrl;
+  if (prevHome === undefined) delete process.env.HOME;
+  else process.env.HOME = prevHome;
   fs.rmSync(dir, { recursive: true, force: true });
   fs.rmSync(codexDir, { recursive: true, force: true });
 });
@@ -196,6 +211,33 @@ describe('agstatus init against a real multi-tenant server', () => {
     expect(after).not.toHaveProperty('env');
     expect(fs.existsSync(hookInstallPath())).toBe(false);
     expect(fs.existsSync(`${settingsPath()}.agstatus-backup`)).toBe(true);
+  });
+
+  // The installer runs `init` on every re-run, so this IS the upgrade path for
+  // every existing user. Minting a second board here would leave their sessions,
+  // their history and their phone pairing on the first one, silently.
+  it('re-running init keeps the board this machine already reports to', async () => {
+    const lines: string[] = [];
+    await runInit({ url: base, noQr: true, log });
+    const first = String((readInstalledSettings().env as Record<string, unknown>).CLAUDE_STATUS_URL);
+    expect(first).toMatch(/\/w\//);
+
+    await runInit({ url: base, noQr: true, log: (l) => lines.push(l) });
+    const second = String((readInstalledSettings().env as Record<string, unknown>).CLAUDE_STATUS_URL);
+    expect(second).toBe(first);
+    expect(lines.join('\n')).toContain('Using the board this machine already reports to.');
+    expect(lines.join('\n')).not.toContain('Created a new private board.');
+  });
+
+  it('--new-board mints a second one on purpose', async () => {
+    await runInit({ url: base, noQr: true, log });
+    const first = String((readInstalledSettings().env as Record<string, unknown>).CLAUDE_STATUS_URL);
+
+    const lines: string[] = [];
+    await runInit({ url: base, noQr: true, newBoard: true, log: (l) => lines.push(l) });
+    const second = String((readInstalledSettings().env as Record<string, unknown>).CLAUDE_STATUS_URL);
+    expect(second).not.toBe(first);
+    expect(lines.join('\n')).toContain('Created a new private board.');
   });
 
   it('aborts without touching an invalid settings.json', async () => {

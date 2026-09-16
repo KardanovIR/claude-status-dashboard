@@ -17,7 +17,7 @@ import {
   settingsPath,
   writeSettingsWithBackup,
 } from './settings';
-import { resolveListenerConfig } from './listener/config';
+import { resolveBoardUrl, resolveListenerConfig } from './listener/config';
 import {
   doctor as listenerDoctor,
   install as listenerInstall,
@@ -53,6 +53,8 @@ export interface InitOptions {
   codex?: boolean;
   /** Suppress the QR code (tests / narrow terminals). */
   noQr?: boolean;
+  /** Force a fresh board even when this machine already has one (`--new-board`). */
+  newBoard?: boolean;
   log?: (line: string) => void;
 }
 
@@ -107,6 +109,31 @@ function renderQr(url: string, log: (line: string) => void): void {
   });
 }
 
+/**
+ * The board this machine is already configured with, if it is a board on
+ * `base`. Anything else — no configuration at all, a single-tenant server's
+ * bare origin, or a board on a different host — returns undefined so the
+ * caller mints a new one.
+ */
+function existingBoard(base: string): string | undefined {
+  let current: string | undefined;
+  try {
+    current = resolveBoardUrl()?.url;
+  } catch {
+    // An unreadable settings.json or ~/.agstatus.json is the existing setup's
+    // problem to report, not a reason to silently mint a second board here.
+    return undefined;
+  }
+  if (!current) return undefined;
+  const trimmed = current.replace(/\/$/, '').replace(/\/webhook$/, '');
+  // `<base>/w/<token>` and nothing else: a bare origin is a legacy server, and
+  // a deeper path is not something `init` wrote.
+  const prefix = `${base.replace(/\/$/, '')}/w/`;
+  if (!trimmed.startsWith(prefix)) return undefined;
+  const token = trimmed.slice(prefix.length);
+  return token.length > 0 && !token.includes('/') ? trimmed : undefined;
+}
+
 export async function runInit(opts: InitOptions = {}): Promise<void> {
   const log = opts.log ?? console.log;
   const base = resolveBaseUrl(opts.url);
@@ -128,10 +155,24 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
     dashboardUrl = board.dashboardUrl;
     log('Paired with your existing board.');
   } else if (cfg.mode === 'multi') {
-    const board = await createWorkspace(base);
-    hookUrl = board.dashboardUrl;
-    dashboardUrl = board.dashboardUrl;
-    log('Created a new private board.');
+    // Reuse the board this machine already reports to. `init` used to be a
+    // once-per-machine setup command, so minting a board unconditionally was
+    // fine; it is now also the UPGRADE command — the installer runs it on every
+    // re-run — and a second board would silently strand the sessions, the
+    // history and the phone pairing on the first one. Only a board on the same
+    // server counts: pointing `--url` somewhere else is a deliberate move.
+    const existing = existingBoard(base);
+    if (existing && !opts.newBoard) {
+      hookUrl = existing;
+      dashboardUrl = existing;
+      log('Using the board this machine already reports to.');
+      log('  Wanted a separate one? Re-run with --new-board.');
+    } else {
+      const board = await createWorkspace(base);
+      hookUrl = board.dashboardUrl;
+      dashboardUrl = board.dashboardUrl;
+      log('Created a new private board.');
+    }
   } else {
     hookUrl = base;
     dashboardUrl = base;
@@ -408,6 +449,7 @@ init options:
   --code XXXX-XXXX  Pair with a board created elsewhere (e.g. the mobile app)
   --secret <s>      Webhook secret for self-hosted single-tenant servers
   --minimal         Send tool names only, never command text
+  --new-board       Create a second board instead of reusing this machine's
   --codex           Also set up OpenAI Codex even if ~/.codex isn't detected
   --no-codex        Skip Codex setup (default: auto-configure when detected)
   --no-qr           Skip the QR code
@@ -426,7 +468,7 @@ listener commands (macOS; see docs/hooks.md "Focus"):
 `;
 
 const VALUE_FLAGS = new Set(['url', 'code', 'secret', 'name']);
-const BOOL_FLAGS = new Set(['minimal', 'no-qr', 'help', 'codex', 'no-codex', 'purge', 'no-resume', 'resume']);
+const BOOL_FLAGS = new Set(['minimal', 'no-qr', 'help', 'codex', 'no-codex', 'purge', 'no-resume', 'resume', 'new-board']);
 
 export async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
@@ -485,6 +527,7 @@ export async function main(argv: string[]): Promise<number> {
           minimal: flags.get('minimal') === true,
           codex: flags.get('codex') === true ? true : flags.get('no-codex') === true ? false : undefined,
           noQr: flags.get('no-qr') === true,
+          newBoard: flags.get('new-board') === true,
         });
         return 0;
       case 'uninstall':

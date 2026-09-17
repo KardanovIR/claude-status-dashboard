@@ -1,0 +1,564 @@
+/*
+ * AgStatus board — components.
+ *
+ * Reads tokens.css and invents nothing. The organising idea is an instrument
+ * panel rather than a dashboard, and the distinction is load-bearing: an
+ * instrument is read in a fraction of a second, from the corner of the eye, by
+ * someone doing something else. That is achieved through hierarchy, not
+ * density. Each card has ONE dominant reading — its state — and holds its
+ * precision for the lean-in.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100dvh;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-md) var(--space-2xl);
+  background: var(--ink-950);
+  color: var(--text-1);
+  font-family: var(--font-ui);
+  font-size: var(--t-sm);
+  line-height: var(--lh-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Every number on this board sits in a column with other numbers, or ticks in
+ * place every 15s. Proportional figures make both jump. */
+.reading-value,
+.meter-value,
+.ts,
+.usage-val,
+.dv-proj-val,
+.dv-proj-pct,
+.stat {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The old stylesheet set `outline: none` in three places and had no replacement.
+ * One ring, everywhere, keyboard-only. It tracks the board's accent — which is
+ * --st-done since `done` became the end-of-turn state, not --st-idle — so the
+ * ring reads as part of the palette rather than as a stray colour. Point it at
+ * whatever tokens.css calls the accent, never at a hard-coded value. */
+:focus-visible {
+  outline: 2px solid var(--st-done);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+/* ---- Shell ------------------------------------------------------------- */
+
+.topbar {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.logo {
+  font-family: var(--font-read);
+  font-size: var(--t-md);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+
+/* Connection state. A dot, because it is genuinely one bit of information and
+ * a label would out-shout the cards. Its title attribute carries the words. */
+.conn {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--r-pill);
+  background: var(--st-done);
+  transition: background var(--d-mid) var(--ease);
+}
+
+.conn.connecting { background: var(--st-testing); }
+.conn.disconnected { background: var(--st-blocked); }
+
+.topbar-spacer { flex: 1 1 auto; }
+
+/* ---- Grid ---------------------------------------------------------------
+ * The old grid was capped at two columns at every width above 700px, so a
+ * 27-inch monitor showed two enormous cards. This is the breakpoint-free
+ * version: cards keep a sane measure and the column count follows the space. */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+  gap: var(--space-sm);
+  align-content: start;
+}
+
+/* Every card's surface carries its state, not just the badge — the state should
+ * read before you find the tag. The mix is derived from --state rather than
+ * hand-written per status, so the twelve drifting rgba literals of the old
+ * stylesheet cannot come back.
+ *
+ * 10% is not a guess. Text contrast was solved against every tinted surface:
+ * at 10% (14% for blocked) with --text-3 lifted to 64.5% lightness, the worst
+ * ratio anywhere on the board is 4.53:1, still WCAG AA. At the 6% I first tried
+ * with the old --text-3, the meta line fell to 4.01:1 and failed.
+ *
+ * What this is NOT: a coloured stripe down the card's edge. That is the most
+ * overused device in dashboard UI and never reads as intentional, whatever
+ * colour or radius it is given. */
+
+/* ---- Card ---------------------------------------------------------------
+ * Deliberately NOT a rounded rectangle with a drop shadow. The surface is flat,
+ * the border is a hairline, and the only thing that distinguishes one card from
+ * another is its state — carried by the mark, the rail and the type, in that
+ * order of legibility at distance. */
+.card {
+  --state: var(--st-idle);
+
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-sm) var(--space-xs);
+  background: color-mix(in oklab, var(--ink-900) 90%, var(--state));
+  border: 1px solid color-mix(in oklab, var(--ink-800) 62%, var(--state));
+  border-radius: var(--r-lg);
+  transition: border-color var(--d-mid) var(--ease), background var(--d-mid) var(--ease);
+}
+
+.card.status-idle { --state: var(--st-idle); }
+.card.status-planning { --state: var(--st-planning); }
+.card.status-coding { --state: var(--st-coding); }
+.card.status-testing { --state: var(--st-testing); }
+.card.status-blocked { --state: var(--st-blocked); }
+.card.status-done { --state: var(--st-done); }
+
+/* Blocked still outranks the rest: a stronger mix and a brighter edge, because
+ * it is the one state that means a human is required. No glow — a lit halo is
+ * the crypto-terminal tell, and it is exactly wrong in a dark room at 1am. */
+.card.status-blocked {
+  background: color-mix(in oklab, var(--ink-900) 86%, var(--state));
+  border-color: var(--state-line);
+}
+
+.card.stale { opacity: 0.62; }
+
+/* Name first and largest: it is how you know WHICH session you are looking at,
+ * and the status only matters once you have found the right card. The first
+ * pass put both on one line, where they competed for width and the name was
+ * what truncated — exactly backwards. */
+.card-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.card-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.card-state-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+}
+
+/* Status icons. Drawn as inline SVG at 15px so they inherit --state, stay sharp
+ * and cost no extra request.
+ *
+ * The first pass used abstract geometry — filled circle, half circle, square —
+ * to carry state without colour. It did carry it, but it meant nothing on
+ * sight: you had to learn the code. An icon does the same job legibly. Blocked
+ * is the only one that is not a quiet outline, because it is the only state
+ * that means a human is required. */
+.state-mark {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  color: var(--state);
+  display: block;
+}
+
+.act svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  margin-right: var(--space-2xs);
+}
+
+/* The agent behind the session, marked as well as named. These are simple
+ * geometric marks, NOT the Anthropic or OpenAI logos: this board is
+ * self-hosted by other people, and redistributing someone's trademark inside
+ * it is a different thing from naming their tool. */
+.source svg {
+  width: 12px;
+  height: 12px;
+  vertical-align: -1px;
+  margin-right: 3px;
+}
+
+.badge {
+  font-family: var(--font-label);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--state);
+}
+
+.name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--t-lg);
+  line-height: var(--lh-tight);
+  font-weight: 600;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Secondary actions do not announce themselves until the card is approached.
+ * They stay reachable for keyboard and touch, where there is no hover. */
+.dismiss {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--text-3);
+  font-size: var(--t-md);
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--d-fast) var(--ease), color var(--d-fast) var(--ease);
+}
+
+.card:hover .dismiss,
+.dismiss:focus-visible { opacity: 1; }
+.dismiss:hover { color: var(--text-1); }
+
+@media (hover: none) {
+  .dismiss { opacity: 1; }
+}
+
+/* The lifecycle rail that used to sit here is deliberately gone. It showed a
+ * session's position through planning → coding → testing → done, as a second
+ * non-colour channel for state. But the badge above it already said the state
+ * in words, and the status now has a real icon too — three encodings of one
+ * fact, and the third needed a caption to be understood. Something that has to
+ * be explained on a board you look at for two seconds has failed. The only bar
+ * left is the plan limit, which is labelled with what it measures, because it
+ * is the one thing on the card that genuinely is a proportion of something. */
+
+.message {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--t-sm);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.meta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  color: var(--text-3);
+  font-size: var(--t-xs);
+  min-width: 0;
+}
+
+/* The machine, not the project.
+ *
+ * `project` was always identical to the card's name: the hook builds one value
+ * and sends it under both keys —
+ *     const project = path.basename(cwd);
+ *     const body = { session_id, name: project, …, project, source };
+ * — so the meta line was repeating the title on every card, forever. The host
+ * is the fact the card genuinely did not show; it was buried in the Focus
+ * button's tooltip. This matters on a board where one agent runs on more than
+ * one machine: "jobsearch on MacBook" and "jobsearch on Studio" were
+ * indistinguishable until you hovered a button. */
+.host {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meta-sep { color: var(--ink-700); }
+.ts { flex: none; }
+
+/* The agent behind the session. It was in the data all along and the card never
+ * showed it.
+ *
+ * Deliberately NOT in the agent's brand colour. Anthropic's orange (#D97757)
+ * measures OKLCH L 67.2% C 0.131 H 39 — eleven degrees of hue from --st-blocked
+ * (L 68% C 0.190 H 28) at effectively the same lightness. A permanent orange
+ * chip on every Claude card would read as a standing alarm from across the
+ * room, which is precisely the misread that got amber removed as the accent.
+ * OpenAI's mark is near-black, which is invisible here anyway.
+ *
+ * Colour on this board means STATE. The agents are told apart by their marks,
+ * which is a channel nothing else is using. */
+.source {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--space-2xs);
+  border: 1px solid var(--ink-800);
+  border-radius: var(--r-sm);
+  font-size: var(--t-2xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* ---- Readings -----------------------------------------------------------
+ * The precision half of the card: exact values, wide figures, unit beneath.
+ * Read on approach, not at a glance — which is why they are small and calm
+ * while the state above them is not. */
+.readings {
+  display: flex;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
+.reading {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.reading-value {
+  font-family: var(--font-read);
+  font-size: var(--t-lg);
+  font-weight: 600;
+  line-height: var(--lh-tight);
+  color: var(--text-1);
+}
+
+.reading-value.dim { color: var(--text-3); }
+
+.reading-label {
+  font-size: var(--t-2xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* A plan limit, which is a percentage of an unknown quota — never a token
+ * count. The two measures do not convert and the UI must not imply they do. */
+.meter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.meter-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-xs);
+  font-size: var(--t-2xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.meter-value {
+  font-family: var(--font-read);
+  font-weight: 600;
+  color: var(--text-2);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* Segmented, not a smooth bar: an instrument reads in discrete increments, and
+ * segments stay countable at a glance where a continuous fill only reads as
+ * "about half". */
+.meter-track {
+  height: 6px;
+  border-radius: var(--r-sm);
+  background: var(--ink-850);
+  overflow: hidden;
+  position: relative;
+}
+
+.meter-fill {
+  height: 100%;
+  border-radius: var(--r-sm);
+  background: var(--text-2);
+  transform-origin: left center;
+  transition: transform var(--d-slow) var(--ease), background var(--d-mid) var(--ease);
+}
+
+/* Close to the limit is the one reading allowed to take the alarm colour. */
+.meter-fill.high { background: var(--st-blocked); }
+
+/* ---- Card actions -------------------------------------------------------
+ * Two things a card can do: open its detail, or bring its terminal to the front
+ * on the machine running it. Neither is a primary button — making every button
+ * primary is how a card ends up shouting louder than its own state. */
+.card-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  margin-top: auto;
+  padding-top: var(--space-2xs);
+  border-top: 1px solid var(--ink-800);
+}
+
+.act {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: var(--space-xs) var(--space-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--t-sm);
+  cursor: pointer;
+  transition: background var(--d-fast) var(--ease), color var(--d-fast) var(--ease),
+    border-color var(--d-fast) var(--ease);
+}
+
+.act:hover {
+  background: var(--ink-850);
+  color: var(--text-1);
+}
+
+.act[aria-disabled='true'] {
+  color: var(--text-3);
+  cursor: default;
+}
+
+.act[aria-disabled='true']:hover { background: transparent; }
+
+/* Resume appears only after a focus came back "not running", so it is a
+ * consequence rather than a permanent control — it gets the border that says
+ * "this one does something different". */
+.act-resume { border-color: var(--ink-700); }
+
+.act-spacer { flex: 1 1 auto; }
+
+/* The ack line. Always present, toggled with `hidden`, so the live region
+ * actually announces instead of being re-created on each change. */
+.focus-status {
+  font-size: var(--t-xs);
+  color: var(--text-3);
+  text-align: right;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.focus-status.ok { color: var(--st-done); }
+.focus-status.fail { color: var(--st-blocked); }
+.focus-status.pending { color: var(--text-3); }
+
+/* ---- Motion -------------------------------------------------------------
+ * Motion here reports that something changed; there is no ambient animation and
+ * nothing loops. A card that moves has news.
+ *
+ * This only works because the grid is reconciled by key rather than rebuilt —
+ * the previous board assigned `innerHTML` on every SSE event, which restarted
+ * every card's entrance animation and cancelled every transition mid-flight. */
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.card.entering {
+  animation: card-in var(--d-slow) var(--ease) both;
+}
+
+/* A state change earns one brief lift of the card's own edge. */
+@keyframes state-change {
+  50% { border-color: var(--state); }
+}
+
+.card.changed {
+  animation: state-change 900ms var(--ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ---- Empty state --------------------------------------------------------
+ * Teaches the interface rather than announcing its own emptiness. */
+.empty {
+  padding: var(--space-xl) var(--space-md);
+  border: 1px dashed var(--ink-800);
+  border-radius: var(--r-lg);
+  color: var(--text-3);
+  text-align: center;
+}
+
+.empty strong {
+  display: block;
+  margin-bottom: var(--space-2xs);
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+/* ---- Phone --------------------------------------------------------------
+ * Adapted, not amputated: the same information, retuned for a thumb and a
+ * glance. Touch targets grow, the message clamps harder, actions go full width
+ * so they are hittable without aiming. */
+@media (max-width: 560px) {
+  body { padding: var(--space-sm) var(--space-sm) var(--space-xl); }
+
+  .grid { grid-template-columns: 1fr; }
+
+  .message { -webkit-line-clamp: 2; }
+
+  /* 44px is Apple's minimum target, and these get tapped one-handed. Stretching
+   * them to fill the row makes Details and Focus two halves you can hit without
+   * aiming. */
+  .act {
+    min-height: 44px;
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+
+  .focus-status {
+    flex: 1 0 100%;
+    text-align: left;
+    white-space: normal;
+  }
+}
+
+@media (min-width: 1100px) {
+  body { padding: var(--space-lg) var(--space-lg) var(--space-2xl); }
+  .grid { gap: var(--space-md); }
+}

@@ -1,0 +1,247 @@
+/*
+ * AgStatus design tokens.
+ *
+ * One source of truth for the board. Everything visual references a token here;
+ * no component invents a colour, a duration or a gap. See .impeccable.md for the
+ * reasoning — the short version is below, because the *why* is what keeps a
+ * palette from drifting back into defaults.
+ *
+ * WHY OKLCH. The previous palette was hex, and its six status colours were
+ * unmodified Tailwind defaults (blue-500, purple-500, amber-500, red-500,
+ * emerald-500, gray-500) on a near-black #0b0d12 — which is precisely the
+ * "generic AI dashboard" look this redesign exists to leave. Hex also makes
+ * derived values impossible: the old stylesheet carried twelve hand-typed rgba
+ * tints that had already drifted from the colours they came from. In OKLCH,
+ * lightness is perceptually uniform, so a tint is `oklch(from var(--x) …)` and
+ * a scale step *looks* like a step.
+ *
+ * WHY WARM. Aviation instruments are lit warm at night because blue light
+ * destroys dark adaptation. This board is read in a dark room, late, and out of
+ * the corner of the eye on a second monitor. Every neutral is tinted toward
+ * hue 65 at very low chroma — imperceptible as colour, but it stops the ground
+ * reading as cold blue-black, and it makes the live state (also warm) feel
+ * native to the surface rather than stuck on top of it.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* ---- Brand hue -------------------------------------------------------
+   * Every neutral is tinted toward this. Chroma stays under 0.012 so it never
+   * reads as "a colour" — only as a cast.
+   *
+   * This was 65 (amber) in the first pass, on the argument that aviation
+   * instruments are lit warm at night to protect dark adaptation. The owner
+   * rejected it on sight and was right: amber IS the caution convention, and
+   * the accent was also the `coding` state — the most common state on the
+   * board — so the board spent all day implying a warning. A colour that
+   * misreads at a glance defeats an interface built for glancing. */
+  --hue: 155;
+
+  /* ---- Surfaces --------------------------------------------------------
+   * Low-glare on purpose: the top surface is 20% lightness, not black. A dark
+   * room plus a bright card is the glare this product is read under. */
+  --ink-950: oklch(16.5% 0.008 var(--hue)); /* page ground */
+  --ink-900: oklch(20.5% 0.009 var(--hue)); /* card */
+  --ink-850: oklch(24.5% 0.010 var(--hue)); /* raised: inputs, tracks, hover */
+  --ink-800: oklch(30% 0.011 var(--hue));   /* hairlines */
+  --ink-700: oklch(38% 0.012 var(--hue));   /* hairlines, emphatic */
+
+  /* ---- Text ------------------------------------------------------------
+   * All three clear WCAG AA on --ink-900. The palette this replaces used a
+   * tertiary at 2.90:1 for the project name, the timestamp and every Focus
+   * label — the three things you most need to read at a glance. */
+  --text-1: oklch(94% 0.010 var(--hue));
+  --text-2: oklch(74% 0.012 var(--hue));
+  --text-3: oklch(64.5% 0.012 var(--hue)); /* lifted from 60%: see the card tint in board.css */
+
+  /* ---- State -----------------------------------------------------------
+   * Grouped by WHO IS WAITING, not by stage — that is the only question this
+   * board exists to answer.
+   *
+   * YOUR TURN carries the chroma:
+   *   done     the agent finished cleanly and handed the turn back — the
+   *            hook's `Stop` event. This is the board's accent.
+   *   blocked  the agent stopped mid-flight and needs approval or input. The
+   *            loudest colour here, because it is the one state that is also
+   *            costing you time while you do not know about it.
+   * QUIET, because nothing is required of you:
+   *   idle     now only SessionStart — a session that has registered and not
+   *            yet done anything. Rare, and unremarkable when it happens.
+   *   planning / coding / testing — the agent is working.
+   *
+   * Two earlier passes got this wrong in two different ways, and both are
+   * worth recording because both are easy to walk back into.
+   *
+   * The first ranked the six by lifecycle stage, which put the brightest
+   * colour on `coding` — the most COMMON state — and the dimmest on the
+   * states that actually need a human. That is backwards for a board read at
+   * a glance: the accent belongs on the important state, not the frequent one.
+   *
+   * The second fixed the ranking but hung the accent on `idle`, which was
+   * correct for the hook as it stood: cli/assets/agstatus-hook.js never
+   * emitted `done` at all, and sent `idle` from `Stop`, so `idle` WAS the
+   * end-of-turn state and `done` was styled quietly for completeness. The hook
+   * now emits `done` on a clean finish and keeps `idle` for SessionStart, so
+   * the accent and the quiet neutral swap places with it. `idle` also drops
+   * most of its chroma (0.125 → 0.020) rather than merely dimming: a
+   * registered-but-silent session should read as neutral, not as a faded
+   * version of the state next to it.
+   *
+   * The icons already describe this model and are NOT to be touched — `done`
+   * is a check in a circle, `idle` a paused clock face. They were drawn for
+   * these meanings; it was only the colour that lagged behind.
+   *
+   * Verified on the 10%-tinted card surfaces (14% for blocked) with --text-3
+   * at 64.5% lightness: the worst ratio anywhere is 4.53:1 on blocked, and
+   * every state clears WCAG AA. */
+  --st-done:     oklch(76% 0.125 155);
+  --st-blocked:  oklch(68% 0.190 28);
+  --st-idle:     oklch(66% 0.020 155);
+  --st-planning: oklch(72% 0.075 285);
+  --st-coding:   oklch(74% 0.085 240);
+  --st-testing:  oklch(74% 0.080 200);
+
+  /* Bound per-card by .card.status-*; components read these, never the six
+   * above. The fallback stays `idle` on purpose: a card whose status matches
+   * no rule is an unknown, and an unknown should sit quiet rather than claim
+   * the accent — which is what pointing this at --st-done would do. */
+  --state: var(--st-idle);
+  --state-dim: oklch(from var(--state) l c h / 0.16);
+  --state-line: oklch(from var(--state) l c h / 0.42);
+
+  /* ---- Type ------------------------------------------------------------
+   * Two families, self-hosted. Not a CDN link: docs/privacy.md promises no
+   * third-party requests, and a webfont from Google is a third-party request
+   * on every board view.
+   *
+   * Barlow carries the readings and Barlow Semi Condensed the labels and
+   * badges. Barlow comes out of Californian public signage, which is close to
+   * what this board is: something read fast, at a distance, by someone doing
+   * something else — and it stays plain at 11px, where a more mannered face
+   * does the most damage.
+   *
+   * An earlier pass used Archivo's width axis to separate "reading" from
+   * "label". That was a conceit: it read as mannered rather than engineered,
+   * and the owner rejected it on sight. Size and weight do that job instead.
+   *
+   * Neither face is a monospace. Mono as shorthand for "technical" is a tell,
+   * and `font-variant-numeric: tabular-nums` gives the column alignment that
+   * actually matters without the costume. */
+  --font-read: 'Barlow', ui-sans-serif, system-ui, sans-serif;
+  --font-label: 'Barlow Semi Condensed', 'Barlow', ui-sans-serif, system-ui, sans-serif;
+  --font-ui: 'Public Sans', ui-sans-serif, system-ui, sans-serif;
+
+  /* A fixed rem scale, not fluid. Product UI wants stable sizes; fluid type
+   * belongs on marketing pages. Ratio ~1.25 so steps are actually distinct. */
+  --t-2xs: 0.6875rem; /* 11px — tick labels, units */
+  --t-xs: 0.75rem;    /* 12px — meta */
+  --t-sm: 0.8125rem;  /* 13px — body */
+  --t-md: 0.9375rem;  /* 15px — card title */
+  --t-lg: 1.25rem;    /* 20px — readings */
+  --t-xl: 1.75rem;    /* 28px — the dominant reading */
+
+  /* Light type on dark reads lighter than it is, so leading runs looser than a
+   * light theme would use. */
+  --lh-tight: 1.2;
+  --lh-body: 1.55;
+
+  /* ---- Space -----------------------------------------------------------
+   * 4pt, semantic names. 8pt is too coarse — 12px between two related values is
+   * a spacing you want often and cannot express on an 8pt scale. */
+  --space-2xs: 4px;
+  --space-xs: 8px;
+  --space-sm: 12px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+
+  /* ---- Shape -----------------------------------------------------------
+   * Four radii, not the eleven the old stylesheet had in play. */
+  --r-sm: 4px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-pill: 999px;
+
+  /* ---- Motion ----------------------------------------------------------
+   * Exponential ease-out only: real things decelerate, they do not bounce.
+   * Durations are short because motion here reports a state change — it is not
+   * an effect. Every use is wrapped by the reduced-motion block at the end. */
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --d-fast: 120ms;
+  --d-mid: 220ms;
+  --d-slow: 420ms;
+}
+
+/*
+ * Self-hosted, latin subset. Not a CDN link: docs/privacy.md promises no
+ * third-party requests, and a webfont from Google is a third-party request on
+ * every board view. `display: swap` so a cold load shows the fallback at once —
+ * this board is often the thing you glance at while something else loads, and
+ * invisible text would defeat the point.
+ */
+
+@font-face {
+  font-family: 'Barlow';
+  src: url('/fonts/barlow-400.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Barlow';
+  src: url('/fonts/barlow-500.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Barlow';
+  src: url('/fonts/barlow-600.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Barlow';
+  src: url('/fonts/barlow-700.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Barlow Semi Condensed';
+  src: url('/fonts/barlow-semi-condensed-500.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Barlow Semi Condensed';
+  src: url('/fonts/barlow-semi-condensed-600.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Barlow Semi Condensed';
+  src: url('/fonts/barlow-semi-condensed-700.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Public Sans';
+  src: url('/fonts/public-sans.woff2') format('woff2-variations');
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}

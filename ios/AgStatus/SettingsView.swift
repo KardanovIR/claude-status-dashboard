@@ -28,7 +28,7 @@ struct SettingsView: View {
             }
             .scrollContentBackground(.hidden)
             .background(Theme.background.ignoresSafeArea())
-            .tint(Theme.color(for: .planning))
+            .tint(Theme.accent)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -128,7 +128,7 @@ struct SettingsView: View {
             Section {
                 Toggle("When an agent is blocked", isOn: blockedToggle(for: board))
                     .disabled(!togglesEnabled || notifications.state == .requesting)
-                Toggle("When an agent finishes", isOn: doneToggle(for: board))
+                Toggle("Each time an agent finishes a turn", isOn: doneToggle(for: board))
                     .disabled(!togglesEnabled || notifications.state != .on)
                 if notifications.state == .denied {
                     Button("Open Settings") { openNotificationSettings() }
@@ -250,7 +250,7 @@ struct SettingsView: View {
         case .unsupported:
             return "Push isn't available in this environment."
         default:
-            return "Get pinged the moment an agent is waiting on you."
+            return "Blocked means an agent stopped and needs you — rare, and always worth a look. A finished turn is every time an agent hands back, which on a busy session is often."
         }
     }
 

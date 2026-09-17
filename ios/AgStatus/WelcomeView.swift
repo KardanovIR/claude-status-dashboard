@@ -73,7 +73,7 @@ struct WelcomeView: View {
                 .padding(.vertical, 8)
             }
             .buttonStyle(.borderedProminent)
-            .tint(Theme.color(for: .planning))
+            .tint(Theme.accent)
             .disabled(isCreating)
 
             Button {
@@ -150,7 +150,7 @@ struct WelcomeView: View {
             store.startDemo()
         }
         .font(.footnote.weight(.medium))
-        .foregroundStyle(Theme.color(for: .planning))
+        .foregroundStyle(Theme.accent)
     }
 
     // MARK: - Actions
@@ -265,7 +265,7 @@ private struct BoardURLEntrySheet: View {
                     .padding(.vertical, 8)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(Theme.color(for: .planning))
+                .tint(Theme.accent)
                 .disabled(isConnecting || text.trimmingCharacters(in: .whitespaces).isEmpty)
 
                 Spacer()

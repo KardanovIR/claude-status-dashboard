@@ -69,7 +69,7 @@ struct BoardView: View {
                             store.stopDemo()
                         }
                         .font(.system(.subheadline, design: .rounded).weight(.semibold))
-                        .tint(Theme.color(for: .planning))
+                        .tint(Theme.accent)
                     }
                     if store.board?.token != nil && store.connection != .boardGone {
                         Button {
@@ -146,12 +146,13 @@ struct BoardView: View {
         List {
             ForEach(store.sessions) { session in
                 SessionCardView(session: session)
-                    // Invisible link keeps the card design chevron-free while
-                    // making the whole card open the session's history.
-                    .overlay {
-                        NavigationLink(value: session.id) { EmptyView() }
-                            .opacity(0)
-                    }
+                    // No invisible full-card NavigationLink any more. It was
+                    // an overlay across the whole card, which meant it sat on
+                    // top of the Focus and Resume controls and could swallow
+                    // the tap meant for them — a card that opens history when
+                    // you asked it to raise a window. The card now carries an
+                    // explicit Details button instead, which is also what makes
+                    // both of its actions discoverable.
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
@@ -197,7 +198,7 @@ struct BoardView: View {
         HStack(spacing: 10) {
             Image(systemName: "bell.badge")
                 .font(.subheadline)
-                .foregroundStyle(Theme.color(for: .planning))
+                .foregroundStyle(Theme.accent)
                 .accessibilityHidden(true)
             Text("Get a ping when an agent needs you")
                 .font(.footnote)
@@ -212,7 +213,7 @@ struct BoardView: View {
             }
             .font(.footnote.weight(.semibold))
             .buttonStyle(.borderless)
-            .foregroundStyle(Theme.color(for: .planning))
+            .foregroundStyle(Theme.accent)
             Button {
                 withAnimation { pushTipShown = true }
             } label: {
@@ -266,7 +267,7 @@ struct BoardView: View {
                             .padding(.vertical, 8)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(Theme.color(for: .planning))
+                    .tint(Theme.accent)
                     .padding(.top, 4)
                 }
 
@@ -367,7 +368,7 @@ struct BoardView: View {
                     .padding(.vertical, 8)
             }
             .buttonStyle(.borderedProminent)
-            .tint(Theme.color(for: .planning))
+            .tint(Theme.accent)
             .padding(.top, 4)
         }
         .padding(32)

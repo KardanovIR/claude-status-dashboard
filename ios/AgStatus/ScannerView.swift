@@ -171,7 +171,7 @@ struct ScannerView: View {
                 .padding(.vertical, 8)
             }
             .buttonStyle(.borderedProminent)
-            .tint(Theme.color(for: .planning))
+            .tint(Theme.accent)
             .disabled(
                 isValidating
                     || manualText.trimmingCharacters(in: .whitespaces).isEmpty

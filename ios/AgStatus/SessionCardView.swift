@@ -33,24 +33,27 @@ struct SessionCardView: View {
             && now.timeIntervalSince(session.updatedDate) > Self.staleAfter
         return VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text(session.name)
-                        .font(.system(.title3, design: .rounded).weight(.semibold))
-                        .foregroundStyle(Theme.textPrimary)
-                        .lineLimit(1)
-                    Spacer(minLength: 8)
-                    statusBadge(pulsing: session.status.isActive && !stale)
-                }
+                // Name first and largest: it is how you know WHICH session this
+                // is, and the status only matters once you have found the right
+                // card. These used to share a line and compete for width, so
+                // the name was what truncated — exactly backwards.
+                Text(session.name)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
 
-                if !session.project.isEmpty && session.project != session.name {
-                    Text(session.project)
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(Theme.textSecondary)
-                        .lineLimit(1)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(Theme.cardBorder))
+                HStack(spacing: Theme.Space.xxs) {
+                    Image(systemName: Theme.symbol(for: session.status))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(statusColor)
+                    Text(session.status.label.uppercased())
+                        .font(.caption2.weight(.semibold))
+                        .kerning(0.5)
+                        .foregroundStyle(statusColor)
                 }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(session.status.label)
+
 
                 if !session.message.isEmpty {
                     Text(session.message)
@@ -59,9 +62,46 @@ struct SessionCardView: View {
                         .lineLimit(2)
                 }
 
-                Text(Self.relativeTime(from: session.updatedDate, to: now))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(Theme.textSecondary.opacity(0.75))
+                // Agent, machine, when — three different facts. The machine is
+                // the one the card never showed; it was buried in the Focus
+                // control's label, so two sessions of the same project on two
+                // machines were indistinguishable at a glance.
+                HStack(spacing: Theme.Space.xxs) {
+                    Text(session.source.uppercased())
+                        .font(.system(size: 10, weight: .semibold))
+                        .kerning(0.4)
+                        .foregroundStyle(Theme.textTertiary)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Theme.Radius.sm)
+                                .strokeBorder(Theme.cardBorder)
+                        )
+                    if let host = session.host {
+                        Text("·").foregroundStyle(Theme.hairlineStrong)
+                        Text(store.machineLabel(for: host))
+                            .lineLimit(1)
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                    // The working directory, but ONLY when it has diverged from
+                    // the card's name. The name is pinned at the session's first
+                    // event while `project` follows the live directory, so these
+                    // two are identical for a session that stayed put and differ
+                    // precisely when one moved — which is the only time the
+                    // second label is worth the width. This is also where a
+                    // moved session's tokens are being attributed.
+                    if !session.project.isEmpty && session.project != session.name {
+                        Text("·").foregroundStyle(Theme.hairlineStrong)
+                        Text("in \(session.project)")
+                            .lineLimit(1)
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                    Text("·").foregroundStyle(Theme.hairlineStrong)
+                    Text(Self.relativeTime(from: session.updatedDate, to: now))
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                .font(.caption)
             }
             .accessibilityElement(children: .combine)
             .accessibilityActions {
@@ -72,39 +112,42 @@ struct SessionCardView: View {
                 }
             }
 
-            if let host = session.host {
-                FocusRow(session: session, host: host, now: now)
-                    .padding(.top, 12)
-            }
+            // Both actions, always present and always explicit: Details opens
+            // this session's history, Focus raises its window on the machine
+            // running it. Divided from the body by a hairline so the card reads
+            // as content-then-controls rather than one undifferentiated block.
+            Divider()
+                .overlay(Theme.cardBorder)
+                .padding(.top, Theme.Space.sm)
+                .padding(.bottom, Theme.Space.xxs)
+
+            FocusRow(session: session, host: session.host, now: now)
         }
-        .padding(.leading, 18)
-        .padding([.top, .bottom, .trailing], 14)
+        .padding(Theme.Space.sm)
         .frame(maxWidth: .infinity, alignment: .leading)
+        // The whole surface carries the state, so the board can be sorted by
+        // colour before a word is read. This replaces a 4pt coloured stripe
+        // down the leading edge: that pattern is the most overused device in
+        // dashboard UI and never reads as intentional, whatever colour or
+        // corner radius it is given. A large tinted area also reads from much
+        // further away than a 4pt sliver.
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Theme.card)
+            RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)
+                .fill(Theme.cardSurface(for: session.status))
         )
-        // A plain full-height stripe, clipped by the card's own shape so it
-        // hugs the rounded left edge instead of floating beside it.
-        .overlay(alignment: .leading) {
-            Rectangle()
-                .fill(statusColor)
-                .frame(width: 4)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(
-                    session.status == .blocked
-                        ? statusColor.opacity(0.45)
-                        : Theme.cardBorder
-                )
+            RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)
+                .strokeBorder(Theme.cardEdge(for: session.status))
         )
-        .shadow(
-            color: session.status == .blocked ? statusColor.opacity(0.4) : .clear,
-            radius: 12
-        )
-        .opacity(session.status == .done || stale ? 0.55 : 1)
+        // No glow. A lit halo is the trading-terminal tell, and it is exactly
+        // wrong in a dark room at 1am — which is when this board is read.
+        //
+        // Only staleness dims a card now. `done` used to be dimmed too, from
+        // when it meant "finished, nothing to see". It now means the agent
+        // handed back and is waiting on YOU, so dimming it hid the one state
+        // the board most needs to surface.
+        .opacity(stale ? 0.62 : 1)
     }
 
     // MARK: - Focus
@@ -127,28 +170,12 @@ struct SessionCardView: View {
     // MARK: - Status badge
 
     @ViewBuilder
-    private func statusBadge(pulsing: Bool) -> some View {
-        if pulsing {
-            badgeContent
-                .phaseAnimator([1.0, 0.45]) { view, phase in
-                    view.opacity(phase)
-                } animation: { _ in
-                    .easeInOut(duration: 1.1)
-                }
-        } else {
-            badgeContent
-        }
-    }
-
-    private var badgeContent: some View {
-        Text(session.status.label)
-            .font(.system(.caption, design: .rounded).weight(.semibold))
-            .foregroundStyle(statusColor)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(Capsule().fill(statusColor.opacity(0.16)))
-            .overlay(Capsule().strokeBorder(statusColor.opacity(0.35)))
-    }
+    // The pulsing badge that used to live here is gone. It looped forever on
+    // every active card, which is ambient animation: it reported nothing, it
+    // never stopped, and on a board left open all day it cost battery to say
+    // the same thing continuously. Motion on this board now means something
+    // changed. The state is carried by the icon, the word and the card's own
+    // tint instead.
 
     // MARK: - Time
 
@@ -176,16 +203,19 @@ struct SessionCardView: View {
 private struct FocusRow: View {
     @Environment(SessionStore.self) private var store
     let session: Session
-    let host: Host
+    /// Optional: a session whose machine never opted into Focus still gets a
+    /// Details button, so every card has the same controls in the same place.
+    let host: Host?
     let now: Date
 
-    private var name: String { store.machineLabel(for: host) }
-    private var online: Bool { store.isMachineOnline(host.machine.id) }
+    private var name: String { host.map { store.machineLabel(for: $0) } ?? "" }
+    private var online: Bool { host.map { store.isMachineOnline($0.machine.id) } ?? false }
     private var state: SessionStore.FocusState? { store.focus[session.id] }
 
     /// Why the control is disabled. A machine the board has never seen gets
     /// the hint about the listener; one it has seen says when it left.
     private var offlineNote: String? {
+        guard let host else { return nil }
         guard !online else { return nil }
         guard let machine = store.machines[host.machine.id] else {
             return "\(name) is offline — needs the AgStatus listener on that machine"
@@ -225,14 +255,25 @@ private struct FocusRow: View {
 
     @ViewBuilder
     private var buttons: some View {
-        Button {
-            send(.focus)
-        } label: {
-            Label("Bring to front on \(name)", systemImage: "macwindow.on.rectangle")
+        NavigationLink(value: session.id) {
+            Label("Details", systemImage: "eye")
         }
         .buttonStyle(FocusButtonStyle())
-        .disabled(!online)
-        .accessibilityHint(offlineNote ?? "")
+
+        if host != nil {
+            // Just "Focus": the machine's name now sits in the card's meta
+            // line, so repeating it here was the same word twice on one card —
+            // and it made the label too long to fit beside Details.
+            Button {
+                send(.focus)
+            } label: {
+                Label("Focus", systemImage: "dot.viewfinder")
+            }
+            .buttonStyle(FocusButtonStyle())
+            .disabled(!online)
+            .accessibilityLabel(online ? "Bring to front on \(name)" : "Focus")
+            .accessibilityHint(offlineNote ?? "")
+        }
 
         // Only after the listener answered "not running".
         if state?.resumeOffered == true {
@@ -261,21 +302,34 @@ private struct FocusRow: View {
 
 /// A small capsule in the card's own idiom; greyed, not hidden, when the
 /// machine is offline so the reason underneath still makes sense.
+/// A card control.
+///
+/// Deliberately neutral. These used to be drawn in `planning` blue — a STATE
+/// colour on a control — which put a second, unrelated meaning into the one
+/// channel this board reserves for "what is this session doing". A control is
+/// not a state, so it takes text colours and earns its emphasis from the
+/// surface it sits on.
+///
+/// 44pt minimum height because these are tapped one-handed, often while
+/// walking away from the desk — Apple's minimum target, and the same floor the
+/// web board uses on a phone.
 private struct FocusButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
-        let color = isEnabled ? Theme.color(for: .planning) : Theme.textSecondary
         configuration.label
-            .font(.system(.caption, design: .rounded).weight(.semibold))
+            .font(.subheadline.weight(.medium))
             .lineLimit(1)
-            .foregroundStyle(color)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(Capsule().fill(color.opacity(isEnabled ? 0.16 : 0.08)))
-            .overlay(Capsule().strokeBorder(color.opacity(isEnabled ? 0.35 : 0.2)))
-            .contentShape(Capsule())
-            .opacity(configuration.isPressed ? 0.6 : 1)
+            .foregroundStyle(isEnabled ? Theme.textSecondary : Theme.textTertiary)
+            .padding(.horizontal, Theme.Space.sm)
+            .frame(minHeight: 44)
+            .frame(maxWidth: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
+                    .fill(configuration.isPressed ? Theme.raised : Color.clear)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+            .opacity(isEnabled ? 1 : 0.55)
     }
 }
 

@@ -112,7 +112,7 @@ struct PairSheet: View {
                         .padding(.vertical, 8)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(copied ? Theme.color(for: .done) : Theme.color(for: .planning))
+                    .tint(copied ? Theme.color(for: .done) : Theme.accent)
                 }
 
                 Text("Run this in your terminal — it wires Claude Code hooks to this board.")
@@ -147,7 +147,7 @@ struct PairSheet: View {
                     .padding(.vertical, 8)
             }
             .buttonStyle(.borderedProminent)
-            .tint(Theme.color(for: .planning))
+            .tint(Theme.accent)
         }
         .padding(32)
     }
@@ -171,7 +171,7 @@ struct PairSheet: View {
                     .padding(.vertical, 8)
             }
             .buttonStyle(.borderedProminent)
-            .tint(Theme.color(for: .planning))
+            .tint(Theme.accent)
         }
         .padding(32)
     }

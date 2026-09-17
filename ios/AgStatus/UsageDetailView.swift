@@ -198,13 +198,14 @@ struct UsageDetailView: View {
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     Capsule()
-                        .fill(Color.white.opacity(0.06))
+                        .fill(Theme.raised)
+                    // Flat, not a gradient. A bar is a quantity; a gradient
+                    // across it implies a second dimension that is not there.
+                    // It takes the accent because token spend is not a status —
+                    // this used to borrow `planning` blue, which made a chart of
+                    // tokens look like a chart of planning.
                     Capsule()
-                        .fill(
-                            LinearGradient(colors: [Theme.color(for: .planning), Theme.accentLight],
-                                           startPoint: .leading,
-                                           endPoint: .trailing)
-                        )
+                        .fill(Theme.accent)
                         // A hairline keeps the smallest project visible.
                         .frame(width: share > 0 ? max(geo.size.width * share, 4) : 0)
                 }

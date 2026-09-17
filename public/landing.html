@@ -822,7 +822,8 @@
   // ── the live board ────────────────────────────────────────────────────
   const ACTIVE = new Set(['planning', 'coding', 'testing']);
   const MESSAGES = {
-    idle: ['Waiting for input', 'Session started'],
+    idle: ['Session started'],
+    done: ['Turn finished'],
     planning: ['Reading the codebase…', 'Drafting an implementation plan', 'Exploring src/ for entry points'],
     coding: ['Editing src/auth/token.ts', 'Refactoring api/routes.ts', 'Implementing retry with backoff'],
     testing: ['npm test — 42 passing', 'pytest -q — 87 passed', 'vitest run — 3 suites'],

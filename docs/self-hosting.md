@@ -236,11 +236,15 @@ all keep receiving pushes.
 
 What triggers a push: an agent transitioning into `blocked` notifies every
 registered device; transitioning into `done` notifies only devices that opted
-in (`notify_done: true`). Repeat alerts for the same session and kind are
-debounced to at most one per minute, and a session that first appears already
-`done` doesn't notify. A push payload contains the same session name and
-message your hook already sent to the board — nothing more — relayed through
-Apple's APNs. Device registration endpoints exist in multi-tenant mode only;
+in (`notify_done: true`). Be deliberate about that one: `done` is the end of
+every *turn*, not the end of a session, so an opted-in device is notified each
+time an agent hands control back to you — which on a busy session is often.
+Repeat alerts for the same session and kind are debounced to at most one per
+minute, which bounds a burst but not a normal back-and-forth, since most turns
+take longer than that. `blocked` is the one that fires rarely and always
+deserves a look. A session that first appears already `done` doesn't notify.
+A push payload contains the same session name and message your hook already
+sent to the board — nothing more — relayed through Apple's APNs. Device registration endpoints exist in multi-tenant mode only;
 see [docs/api.md](api.md#device-push-endpoints).
 
 ## Pointing clients at your instance

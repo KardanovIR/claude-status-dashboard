@@ -31,7 +31,14 @@ The server runs in one of two modes:
 ```
 
 Timestamps are epoch milliseconds. `status` is one of `idle`, `planning`,
-`coding`, `testing`, `blocked`, `done`. `host` says where the session runs
+`coding`, `testing`, `blocked`, `done`
+([what each one means](hooks.md#what-each-status-means)). Two of them the
+server itself acts on: a transition into `blocked` — the agent has stopped and
+needs a human — pushes every registered device, and a transition into `done` —
+a turn finished and its answer is waiting to be read — pushes the devices that
+asked for it (`notify_done`). The bundled hooks send `done` at the end of every
+turn and `idle` only at `SessionStart`, so `idle` is close to unseen on a live
+board and `done` is where a card rests between prompts. `host` says where the session runs
 (see the [webhook table](#webhook-body-and-validation)); it is `null` for
 the many sessions whose hook has not opted in, and the key is always present.
 
@@ -52,9 +59,9 @@ the same JSON body and upsert a session by `session_id`:
 | ------------ | ------ | -------- | ----- |
 | `session_id` | string | yes      | Unique session identifier. Must match `^[A-Za-z0-9._:-]{1,128}$`. |
 | `status`     | enum   | yes      | One of `idle`, `planning`, `coding`, `testing`, `blocked`, `done`. |
-| `name`       | string | no       | Human-readable title. Defaults to `session_id` if omitted. Truncated to 120 chars. |
+| `name`       | string | no       | Human-readable title. Defaults to `session_id` if omitted (and never yet set — on update an omitted `name` carries the stored one forward). Truncated to 120 chars. The bundled hooks pin it at `SessionStart`: the name a session is given there is the name it keeps, even if the session later changes directory. They hold the pin in a small local map and re-send it on every post rather than leaning on carry-forward, and a pin on file wins over any later `SessionStart` for the same id, so `/compact`, `/clear` and `--resume` leave the title alone. |
 | `message`    | string | no       | Short description of the current activity (shown on the card). Truncated to 300 chars. |
-| `project`    | string | no       | Project or repo the session is working on. Truncated to 120 chars. |
+| `project`    | string | no       | Project or repo the session is working on. Truncated to 120 chars. Unlike `name`, the bundled hooks recompute it from the session's live working directory on every post, so after a `cd` the two legitimately disagree — the card keeps its original title while `project` follows the session. Per-project spend depends on that; see [Usage history and per-project spend](#usage-history-and-per-project-spend). |
 | `source`     | string | no       | Agent kind that owns the session, e.g. `claude` or `codex` (same regex as the usage `source`). Defaults to `claude`; omitted on update = carried forward. Dashboards use it to show only the limit bars of agents present on the board. |
 | `host`       | object \| null | no | Where the session runs, sent by hooks that opted in to Focus: `{"machine": {"id", "name"}, "app": {"slug", "name", "kind"}}`. Omitted = carried forward; `null` = cleared (the hook opted out). `machine.id` must match `^[0-9a-f]{32}$` (a per-board hash, never a raw machine id) or the post is `400`. `machine.name` and `app.name` are trimmed and truncated to 32 chars; blank ones become `Machine` and the slug. `app.slug` is one of `agterm`, `iterm2`, `kitty`, `wezterm`, `terminal`, `ghostty`, `alacritty`, `warp`, `vscode`, `cursor`, `windsurf`, `jetbrains`, `zed`, `claude-desktop`, `codex-desktop`, `herdr`, `tmux`, `zellij`, `screen`, `windows-terminal`, `other` — anything else is stored as `other`; `app.kind` is one of `terminal`, `multiplexer`, `ide`, `desktop-app`, `unknown` — anything else becomes `unknown`. Every other key is dropped. |
 
@@ -103,6 +110,14 @@ agent plan's rate limits is consumed, so dashboards can draw limit bars:
 | `label`    | string | no       | Display name; defaults to `id`. Truncated to 48 chars. |
 | `resetsAt` | number | no       | Epoch ms when the window resets; anything invalid becomes `null`. |
 
+A report is stored per workspace, per `source`, per window id — **never per
+session.** A plan limit is account-wide, so every session of an agent reports
+the same numbers into the same set of windows and the newest report wins; the
+bars do not belong to a card, and dismissing a card does not clear them. The
+window id `session` is the plan's own name for its 5-hour rolling window (the
+bundled hooks label it "Current session"), not the agent session in front of
+you: it keeps counting across restarts and does not reset when a session ends.
+
 The server keeps the latest report per `source` (a re-post replaces the
 previous one), broadcasts the full usage list as an SSE `usage` event, and
 answers `{ok: true}`. Usage posts share the webhook rate-limit budget.
@@ -150,6 +165,19 @@ A day is **replaced**, not accumulated, so re-running a backfill converges
 instead of double-counting. Reported tokens are input + output + cache
 creation; cache reads are excluded because they are ~94% of raw token volume
 but a small share of what a plan limit charges.
+
+**A row is a folder and a day, not a session.** There is no session id and no
+card name in this series: every session that spent tokens in a folder on a day
+is summed into the same row. So one row can be several sessions' work, and a
+session that moves between projects contributes to two rows, split at the point
+it moved — even though its card keeps the name it was pinned at `SessionStart`
+(see [the webhook `name` field](#webhook-body-and-validation)). The two series
+answer different questions: a card says which session this is, these rows say
+where the quota went. How fine the split can be depends on the agent's own
+logs: Claude Code stamps every request with the directory it ran in, so a
+Claude session that moves is split at the moment it moved, while a Codex
+rollout names its directory once at the top of the file, so a Codex session
+that moves keeps all of its spend under the folder it started in.
 
 `GET /api/usage/history` and `GET /w/<token>/api/usage/history` return both
 series. `?days=N` selects the range (default 30, capped at 90):

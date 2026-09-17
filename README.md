@@ -58,7 +58,8 @@ so you step away from the keyboard without losing the thread.
    `/agstatus:setup`.
 
 3. **Start a Claude Code session** — a card appears on the board and follows
-   the agent through `idle → coding → testing → …` as it works.
+   the agent through `planning → coding → testing → done` as it works, landing
+   on `done` each time it hands back to you.
 
 Created the board in the app first? Pair your machine to it with a code:
 `curl -fsSL https://agstatus.online/install.sh | sh -s -- --code XXXX-XXXX`.

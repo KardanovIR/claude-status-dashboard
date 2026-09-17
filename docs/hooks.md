@@ -189,34 +189,101 @@ alone). The plugin covers Claude Code only; for Codex, use
 
 ## How events map to statuses
 
-The Node hook applies this mapping. The bash hook covers the same Claude Code
-events but predates Codex support, so it has no `PermissionRequest` or
-`apply_patch` handling (the last two rows below are Codex-only):
+The Node hook applies this mapping; the `PermissionRequest` and `PreToolUse` —
+`apply_patch` rows are Codex-only. The bash hook covers the same Claude Code
+events but predates Codex support, so it handles neither of those, and being
+frozen it still reports `Stop` as `idle` rather than `done` and renames a card
+from the working directory of every event instead of pinning the name at
+`SessionStart`:
 
 | Hook event                                                     | Board status   | Notes |
 | -------------------------------------------------------------- | -------------- | ----- |
-| `SessionStart`                                                  | `idle`         | New session appears as soon as Claude starts. |
+| `SessionStart`                                                  | `idle`         | New session appears as soon as Claude starts. The only event that sends `idle`, so a card wears it just for the seconds between starting an agent and submitting the first prompt. |
 | `UserPromptSubmit`                                              | `planning`     | Fires the moment you submit a prompt, so the card leaves `blocked`/`idle` immediately instead of waiting for the first tool call. Shows the prompt text (truncated); minimal mode shows "Processing prompt". |
 | `PreToolUse` — `Edit` / `Write` / `MultiEdit` / `NotebookEdit`  | `coding`       | Card shows the file being touched — "Editing store.ts", "Writing landing.html". |
 | `PreToolUse` — `Bash` (test runner)                             | `testing`      | Detected via `pytest`/`jest`/`vitest`/`go test`/`cargo test`/etc. Classification always reads the command, never the description. |
 | `PreToolUse` — `Bash` (other)                                   | `coding`       | Card shows the agent's own one-line description of the command ("Show working tree status"), falling back to the command text when none was supplied. |
 | `PreToolUse` — `Task` / `WebSearch` / `WebFetch`                | `planning`     | Card shows what is being looked for — the subagent's task description, "Searching: &lt;query&gt;", or "Reading &lt;host&gt;". |
+| `Notification`                                                  | `blocked`      | Claude Code: permission prompts and other attention-needed events — this is what triggers a push. |
+| `PermissionRequest`                                             | `blocked`      | Codex: fires before approval prompts — same push trigger. |
+| `PreToolUse` — `apply_patch`                                    | `coding`       | Codex's file-edit tool; the card shows "Editing files". |
+| `Stop`                                                          | `done`         | The agent finished its turn: the answer is on screen and it is waiting for your next prompt. The card reads "Turn finished", and this is the transition an opt-in push fires on. A turn you interrupt fires no `Stop` at all, so that card keeps its last tool status until the session's next event. |
+| `SessionEnd`                                                    | _card removed_ | Claude Code only — the hook calls `DELETE /sessions/:id` so the card disappears. Codex has no session-end hook; its cards expire via the server's session TTL instead. |
 
-Messages are capped at 120 characters. With `--minimal` (`AGSTATUS_DETAIL=off`) every card shows
-only the tool name — no descriptions, file names, queries, or command text.
+Other tools and events are ignored. Messages are capped at 120 characters.
+With `--minimal` (`AGSTATUS_DETAIL=off`) every card shows only the tool name —
+no descriptions, file names, queries, or command text.
 
 > **Why descriptions instead of commands?** Agents write a short description of
 > each command they run, which reads better on a phone than a shell one-liner —
 > and keeps flags, paths, and anything secret in the command out of the board.
-| `Notification`                                                  | `blocked`      | Claude Code: permission prompts and other attention-needed events — this is what triggers a push. |
-| `PermissionRequest`                                             | `blocked`      | Codex: fires before approval prompts — same push trigger. |
-| `PreToolUse` — `apply_patch`                                    | `coding`       | Codex's file-edit tool; the card shows "Editing files". |
-| `Stop`                                                          | `idle`         | Turn finished, waiting for the next prompt. |
-| `SessionEnd`                                                    | _card removed_ | Claude Code only — the hook calls `DELETE /sessions/:id` so the card disappears. Codex has no session-end hook; its cards expire via the server's session TTL instead. |
 
-Other tools and events are ignored. The card `name` and `project` default to
-the basename of the session's working directory, so multiple sessions are
-easy to tell apart.
+### What each status means
+
+| Status     | What the card is telling you |
+| ---------- | ---------------------------- |
+| `idle`     | The session exists and has not been asked to do anything yet. Only `SessionStart` sends it, so on a working board it is rare: a card shows `idle` until you submit the first prompt and normally never again. |
+| `planning` | Thinking, reading or searching — your submitted prompt, a subagent, a web search or a fetch. |
+| `coding`   | Editing a file, or running a command that isn't a test. |
+| `testing`  | Running a test command (`pytest`, `jest`, `vitest`, `go test`, `cargo test`, …). |
+| `blocked`  | The agent has stopped and needs a human: a permission prompt, or another attention-needed notification. Every registered device is pushed on this one. |
+| `done`     | The turn is finished and the agent is waiting for your next prompt. `Stop` fires at the end of every turn, so this is the state a card rests in most of the time. |
+
+`Stop` used to report `idle`, which folded two different situations into one
+word: "nothing has happened here yet" and "your answer is ready". A program
+cannot tell those apart; a person glancing at a phone cares about little else —
+an `idle` card is one you have not started, a `done` card is one waiting to be
+read. So `done` is now the ordinary end-of-turn state (boards colour it
+green, and a device that opted in with `notify_done` is pushed each time a turn
+finishes — see [docs/api.md](api.md#device-push-endpoints)), and `idle` is left
+to mean only what it says: a session that has not been given any work.
+
+### Card names and projects
+
+A card's `name` is **pinned when the session starts**. The hook takes the
+basename of the working directory at `SessionStart`, and that stays the card's
+title for the life of the session. A session that starts in `~/work/backend`
+and later `cd`s into `~/work/docs` is still the card called "backend": the card
+you glanced at a minute ago is the same card now, and the name you learned to
+recognise stays a handle on that piece of work.
+
+That is new. The name used to be recomputed from the working directory on
+every event, so a session that moved renamed its own card mid-turn — one live
+session showed "backend" and later "docs", and two cards on the same board
+could swap identities while you watched. Directory changes are ordinary (a
+`cd` into a subproject, a build in a sibling checkout), and none of them mean
+the session became a different session.
+
+The pin is the hook's own, not the server's: it keeps a small map of session
+id to name in the system temp directory (`agstatus-names-<hash>.json`, one file
+per board and agent, capped at 200 sessions, entries dropped 24 hours after
+their last event — the server's session TTL — and dropped outright at
+`SessionEnd`). Every post carries the pinned name, so nothing depends on the
+server remembering one. Two consequences worth knowing:
+
+- **A pin on file always wins, including against a later `SessionStart`.**
+  Claude Code fires that event again mid-session for `/compact`, `/clear` and
+  `--resume`, and a session that had changed directory by then would be renamed
+  by the re-pin — the exact bug the pinning exists to prevent. A genuinely new
+  session brings a new id, finds no entry, and pins normally, so the title
+  changes when the session does and not before.
+- **A lost pin costs one name, not correctness.** If the map is missing or
+  unreadable — the hook was installed mid-session, the temp directory was
+  swept, this is the first run — the next event pins the live directory name,
+  which is exactly what the hook posted before pinning existed.
+
+`project` is deliberately **not** pinned: it is still read from the live
+working directory on every event, so it says where the session is right now.
+After a `cd` the two disagree, and that is correct — the card keeps the name it
+was born with while the project underneath it follows the session. The
+per-project token totals depend on it; see
+[Where the tokens went](#where-the-tokens-went).
+
+The split is visible on the cards. The web board always prints the project
+beside the title, so it simply changes when the session moves. The iOS card
+prints the project only when it differs from the name, so a session that moved
+grows a second line naming the folder it moved into — exactly when that is
+worth saying — and a session that never left home shows nothing extra.
 
 ## Plan-usage bars
 
@@ -226,9 +293,17 @@ events (`SessionStart`, `UserPromptSubmit`, `Stop`, `Notification`,
 reports only percentages and reset times
 (`POST <board>/usage` — see [docs/api.md](api.md#plan-usage)).
 
+A bar belongs to the board and the agent, never to a card. The server keeps
+one set of windows per board per agent, and every session of that agent
+reports into the same set, so the bars do not change when you switch cards and
+dismissing a card does not clear them. In particular, the window whose id is
+`session` is the **plan's 5-hour rolling window** — that is the plan's own
+name for it, not a statement about the agent session in front of you. It keeps
+counting across restarts, and ending a session does not reset it.
+
 Where the numbers come from depends on which agent is running:
 
-**Claude** (the 5-hour session window and the weekly caps you see in `/usage`
+**Claude** (the 5-hour rolling window and the weekly caps you see in `/usage`
 inside Claude Code):
 
 1. The hook reads the Claude Code OAuth token locally:
@@ -285,6 +360,20 @@ date and a number leave your machine — never prompts, code or conversation.
 Reported tokens are input + output + cache creation. Cache reads are excluded:
 they are ~94% of raw token volume but a small share of what a limit charges,
 and counting them ranks projects by context size rather than by spend.
+
+**These totals are keyed by folder, never by card name or session id.** Tokens
+are bucketed per project folder per UTC day and summed across every session
+that spent them there, so one row on the usage screen can be the work of three
+sessions, and one session can appear in two rows. Claude Code stamps every
+assistant record in its transcript with the directory it was made in, so a
+session that starts in one project and `cd`s into another has its spend split
+at the moment it moved: part lands under the first folder, the rest under the
+second. Next to a card that kept its original name
+([Card names and projects](#card-names-and-projects)) that looks like a bug,
+and it is not one: the session really did spend tokens in both places, and
+this is the screen that has to say so. (Codex is coarser: a rollout log
+records its working directory once, at the top, so a Codex session that moves
+keeps all of its spend under the folder it started in.)
 
 Scanning is incremental — the hook remembers how far into each log it has read
 and each run costs only what was appended since — and is capped at 8 MB per
@@ -697,7 +786,7 @@ No script changes needed, and no secret — the token in the URL is the auth.
 ## Troubleshooting
 
 Start a fresh Claude Code session in any project. The board should show a new
-card transitioning through `idle → coding → idle` as you work. If it doesn't:
+card transitioning through `idle → coding → done` as you work. If it doesn't:
 
 ```bash
 # Check the CLI-installed setup end to end:

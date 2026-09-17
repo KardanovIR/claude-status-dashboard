@@ -364,9 +364,12 @@ machine: both hooks would fire and every status would post twice. Pick one
 alone). The plugin covers Claude Code only; for Codex, use
 <a href="#hooks-install">the installer</a>.</p>
 <h3 id="hooks-how-events-map-to-statuses"><a class="anchor" href="#hooks-how-events-map-to-statuses">How events map to statuses</a></h3>
-<p>The Node hook applies this mapping. The bash hook covers the same Claude Code
-events but predates Codex support, so it has no <code>PermissionRequest</code> or
-<code>apply_patch</code> handling (the last two rows below are Codex-only):</p>
+<p>The Node hook applies this mapping; the <code>PermissionRequest</code> and <code>PreToolUse</code> —
+<code>apply_patch</code> rows are Codex-only. The bash hook covers the same Claude Code
+events but predates Codex support, so it handles neither of those, and being
+frozen it still reports <code>Stop</code> as <code>idle</code> rather than <code>done</code> and renames a card
+from the working directory of every event instead of pinning the name at
+<code>SessionStart</code>:</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
@@ -378,7 +381,7 @@ events but predates Codex support, so it has no <code>PermissionRequest</code> o
 <tbody><tr>
 <td><code>SessionStart</code></td>
 <td><code>idle</code></td>
-<td>New session appears as soon as Claude starts.</td>
+<td>New session appears as soon as Claude starts. The only event that sends <code>idle</code>, so a card wears it just for the seconds between starting an agent and submitting the first prompt.</td>
 </tr>
 <tr>
 <td><code>UserPromptSubmit</code></td>
@@ -405,30 +408,138 @@ events but predates Codex support, so it has no <code>PermissionRequest</code> o
 <td><code>planning</code></td>
 <td>Card shows what is being looked for — the subagent&#39;s task description, &quot;Searching: &lt;query&gt;&quot;, or &quot;Reading &lt;host&gt;&quot;.</td>
 </tr>
+<tr>
+<td><code>Notification</code></td>
+<td><code>blocked</code></td>
+<td>Claude Code: permission prompts and other attention-needed events — this is what triggers a push.</td>
+</tr>
+<tr>
+<td><code>PermissionRequest</code></td>
+<td><code>blocked</code></td>
+<td>Codex: fires before approval prompts — same push trigger.</td>
+</tr>
+<tr>
+<td><code>PreToolUse</code> — <code>apply_patch</code></td>
+<td><code>coding</code></td>
+<td>Codex&#39;s file-edit tool; the card shows &quot;Editing files&quot;.</td>
+</tr>
+<tr>
+<td><code>Stop</code></td>
+<td><code>done</code></td>
+<td>The agent finished its turn: the answer is on screen and it is waiting for your next prompt. The card reads &quot;Turn finished&quot;, and this is the transition an opt-in push fires on. A turn you interrupt fires no <code>Stop</code> at all, so that card keeps its last tool status until the session&#39;s next event.</td>
+</tr>
+<tr>
+<td><code>SessionEnd</code></td>
+<td><em>card removed</em></td>
+<td>Claude Code only — the hook calls <code>DELETE /sessions/:id</code> so the card disappears. Codex has no session-end hook; its cards expire via the server&#39;s session TTL instead.</td>
+</tr>
 </tbody></table></div>
-<p>Messages are capped at 120 characters. With <code>--minimal</code> (<code>AGSTATUS_DETAIL=off</code>) every card shows
-only the tool name — no descriptions, file names, queries, or command text.</p>
+<p>Other tools and events are ignored. Messages are capped at 120 characters.
+With <code>--minimal</code> (<code>AGSTATUS_DETAIL=off</code>) every card shows only the tool name —
+no descriptions, file names, queries, or command text.</p>
 <blockquote>
 <p><strong>Why descriptions instead of commands?</strong> Agents write a short description of
 each command they run, which reads better on a phone than a shell one-liner —
-and keeps flags, paths, and anything secret in the command out of the board.
-| <code>Notification</code>                                                  | <code>blocked</code>      | Claude Code: permission prompts and other attention-needed events — this is what triggers a push. |
-| <code>PermissionRequest</code>                                             | <code>blocked</code>      | Codex: fires before approval prompts — same push trigger. |
-| <code>PreToolUse</code> — <code>apply_patch</code>                                    | <code>coding</code>       | Codex&#39;s file-edit tool; the card shows &quot;Editing files&quot;. |
-| <code>Stop</code>                                                          | <code>idle</code>         | Turn finished, waiting for the next prompt. |
-| <code>SessionEnd</code>                                                    | <em>card removed</em> | Claude Code only — the hook calls <code>DELETE /sessions/:id</code> so the card disappears. Codex has no session-end hook; its cards expire via the server&#39;s session TTL instead. |</p>
+and keeps flags, paths, and anything secret in the command out of the board.</p>
 </blockquote>
-<p>Other tools and events are ignored. The card <code>name</code> and <code>project</code> default to
-the basename of the session&#39;s working directory, so multiple sessions are
-easy to tell apart.</p>
+<h4 id="hooks-what-each-status-means"><a class="anchor" href="#hooks-what-each-status-means">What each status means</a></h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Status</th>
+<th>What the card is telling you</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>idle</code></td>
+<td>The session exists and has not been asked to do anything yet. Only <code>SessionStart</code> sends it, so on a working board it is rare: a card shows <code>idle</code> until you submit the first prompt and normally never again.</td>
+</tr>
+<tr>
+<td><code>planning</code></td>
+<td>Thinking, reading or searching — your submitted prompt, a subagent, a web search or a fetch.</td>
+</tr>
+<tr>
+<td><code>coding</code></td>
+<td>Editing a file, or running a command that isn&#39;t a test.</td>
+</tr>
+<tr>
+<td><code>testing</code></td>
+<td>Running a test command (<code>pytest</code>, <code>jest</code>, <code>vitest</code>, <code>go test</code>, <code>cargo test</code>, …).</td>
+</tr>
+<tr>
+<td><code>blocked</code></td>
+<td>The agent has stopped and needs a human: a permission prompt, or another attention-needed notification. Every registered device is pushed on this one.</td>
+</tr>
+<tr>
+<td><code>done</code></td>
+<td>The turn is finished and the agent is waiting for your next prompt. <code>Stop</code> fires at the end of every turn, so this is the state a card rests in most of the time.</td>
+</tr>
+</tbody></table></div>
+<p><code>Stop</code> used to report <code>idle</code>, which folded two different situations into one
+word: &quot;nothing has happened here yet&quot; and &quot;your answer is ready&quot;. A program
+cannot tell those apart; a person glancing at a phone cares about little else —
+an <code>idle</code> card is one you have not started, a <code>done</code> card is one waiting to be
+read. So <code>done</code> is now the ordinary end-of-turn state (boards colour it
+green, and a device that opted in with <code>notify_done</code> is pushed each time a turn
+finishes — see <a href="#api-device-push-endpoints">docs/api.md</a>), and <code>idle</code> is left
+to mean only what it says: a session that has not been given any work.</p>
+<h4 id="hooks-card-names-and-projects"><a class="anchor" href="#hooks-card-names-and-projects">Card names and projects</a></h4>
+<p>A card&#39;s <code>name</code> is <strong>pinned when the session starts</strong>. The hook takes the
+basename of the working directory at <code>SessionStart</code>, and that stays the card&#39;s
+title for the life of the session. A session that starts in <code>~/work/backend</code>
+and later <code>cd</code>s into <code>~/work/docs</code> is still the card called &quot;backend&quot;: the card
+you glanced at a minute ago is the same card now, and the name you learned to
+recognise stays a handle on that piece of work.</p>
+<p>That is new. The name used to be recomputed from the working directory on
+every event, so a session that moved renamed its own card mid-turn — one live
+session showed &quot;backend&quot; and later &quot;docs&quot;, and two cards on the same board
+could swap identities while you watched. Directory changes are ordinary (a
+<code>cd</code> into a subproject, a build in a sibling checkout), and none of them mean
+the session became a different session.</p>
+<p>The pin is the hook&#39;s own, not the server&#39;s: it keeps a small map of session
+id to name in the system temp directory (<code>agstatus-names-&lt;hash&gt;.json</code>, one file
+per board and agent, capped at 200 sessions, entries dropped 24 hours after
+their last event — the server&#39;s session TTL — and dropped outright at
+<code>SessionEnd</code>). Every post carries the pinned name, so nothing depends on the
+server remembering one. Two consequences worth knowing:</p>
+<ul>
+<li><strong>A pin on file always wins, including against a later <code>SessionStart</code>.</strong>
+Claude Code fires that event again mid-session for <code>/compact</code>, <code>/clear</code> and
+<code>--resume</code>, and a session that had changed directory by then would be renamed
+by the re-pin — the exact bug the pinning exists to prevent. A genuinely new
+session brings a new id, finds no entry, and pins normally, so the title
+changes when the session does and not before.</li>
+<li><strong>A lost pin costs one name, not correctness.</strong> If the map is missing or
+unreadable — the hook was installed mid-session, the temp directory was
+swept, this is the first run — the next event pins the live directory name,
+which is exactly what the hook posted before pinning existed.</li>
+</ul>
+<p><code>project</code> is deliberately <strong>not</strong> pinned: it is still read from the live
+working directory on every event, so it says where the session is right now.
+After a <code>cd</code> the two disagree, and that is correct — the card keeps the name it
+was born with while the project underneath it follows the session. The
+per-project token totals depend on it; see
+<a href="#hooks-where-the-tokens-went">Where the tokens went</a>.</p>
+<p>The split is visible on the cards. The web board always prints the project
+beside the title, so it simply changes when the session moves. The iOS card
+prints the project only when it differs from the name, so a session that moved
+grows a second line naming the folder it moved into — exactly when that is
+worth saying — and a session that never left home shows nothing extra.</p>
 <h3 id="hooks-plan-usage-bars"><a class="anchor" href="#hooks-plan-usage-bars">Plan-usage bars</a></h3>
 <p>The Node hook also feeds the dashboard&#39;s plan-limit bars. It runs on quiet
 events (<code>SessionStart</code>, <code>UserPromptSubmit</code>, <code>Stop</code>, <code>Notification</code>,
 <code>PermissionRequest</code>), at most once every 5 minutes per board and source, and
 reports only percentages and reset times
 (<code>POST &lt;board&gt;/usage</code> — see <a href="#api-plan-usage">docs/api.md</a>).</p>
+<p>A bar belongs to the board and the agent, never to a card. The server keeps
+one set of windows per board per agent, and every session of that agent
+reports into the same set, so the bars do not change when you switch cards and
+dismissing a card does not clear them. In particular, the window whose id is
+<code>session</code> is the <strong>plan&#39;s 5-hour rolling window</strong> — that is the plan&#39;s own
+name for it, not a statement about the agent session in front of you. It keeps
+counting across restarts, and ending a session does not reset it.</p>
 <p>Where the numbers come from depends on which agent is running:</p>
-<p><strong>Claude</strong> (the 5-hour session window and the weekly caps you see in <code>/usage</code>
+<p><strong>Claude</strong> (the 5-hour rolling window and the weekly caps you see in <code>/usage</code>
 inside Claude Code):</p>
 <ol>
 <li>The hook reads the Claude Code OAuth token locally:
@@ -481,6 +592,19 @@ date and a number leave your machine — never prompts, code or conversation.</p
 <p>Reported tokens are input + output + cache creation. Cache reads are excluded:
 they are ~94% of raw token volume but a small share of what a limit charges,
 and counting them ranks projects by context size rather than by spend.</p>
+<p><strong>These totals are keyed by folder, never by card name or session id.</strong> Tokens
+are bucketed per project folder per UTC day and summed across every session
+that spent them there, so one row on the usage screen can be the work of three
+sessions, and one session can appear in two rows. Claude Code stamps every
+assistant record in its transcript with the directory it was made in, so a
+session that starts in one project and <code>cd</code>s into another has its spend split
+at the moment it moved: part lands under the first folder, the rest under the
+second. Next to a card that kept its original name
+(<a href="#hooks-card-names-and-projects">Card names and projects</a>) that looks like a bug,
+and it is not one: the session really did spend tokens in both places, and
+this is the screen that has to say so. (Codex is coarser: a rollout log
+records its working directory once, at the top, so a Codex session that moves
+keeps all of its spend under the folder it started in.)</p>
 <p>Scanning is incremental — the hook remembers how far into each log it has read
 and each run costs only what was appended since — and is capped at 8 MB per
 run so a first run cannot stall an agent. To load the history that already
@@ -880,7 +1004,7 @@ project, use <code>.claude/settings.json</code> in that repo instead.</p>
 <p>No script changes needed, and no secret — the token in the URL is the auth.</p>
 <h3 id="hooks-troubleshooting"><a class="anchor" href="#hooks-troubleshooting">Troubleshooting</a></h3>
 <p>Start a fresh Claude Code session in any project. The board should show a new
-card transitioning through <code>idle → coding → idle</code> as you work. If it doesn&#39;t:</p>
+card transitioning through <code>idle → coding → done</code> as you work. If it doesn&#39;t:</p>
 <pre><code class="language-bash"># Check the CLI-installed setup end to end:
 agstatus status
 
@@ -1164,11 +1288,15 @@ anyone. So a development phone and App Store installs can share one board and
 all keep receiving pushes.</p>
 <p>What triggers a push: an agent transitioning into <code>blocked</code> notifies every
 registered device; transitioning into <code>done</code> notifies only devices that opted
-in (<code>notify_done: true</code>). Repeat alerts for the same session and kind are
-debounced to at most one per minute, and a session that first appears already
-<code>done</code> doesn&#39;t notify. A push payload contains the same session name and
-message your hook already sent to the board — nothing more — relayed through
-Apple&#39;s APNs. Device registration endpoints exist in multi-tenant mode only;
+in (<code>notify_done: true</code>). Be deliberate about that one: <code>done</code> is the end of
+every <em>turn</em>, not the end of a session, so an opted-in device is notified each
+time an agent hands control back to you — which on a busy session is often.
+Repeat alerts for the same session and kind are debounced to at most one per
+minute, which bounds a burst but not a normal back-and-forth, since most turns
+take longer than that. <code>blocked</code> is the one that fires rarely and always
+deserves a look. A session that first appears already <code>done</code> doesn&#39;t notify.
+A push payload contains the same session name and message your hook already
+sent to the board — nothing more — relayed through Apple&#39;s APNs. Device registration endpoints exist in multi-tenant mode only;
 see <a href="#api-device-push-endpoints">docs/api.md</a>.</p>
 <h3 id="self-hosting-pointing-clients-at-your-instance"><a class="anchor" href="#self-hosting-pointing-clients-at-your-instance">Pointing clients at your instance</a></h3>
 <ul>
@@ -1214,7 +1342,14 @@ under <a href="#api-legacy-single-tenant-endpoints">Legacy endpoints</a> apply.<
 }
 </code></pre>
 <p>Timestamps are epoch milliseconds. <code>status</code> is one of <code>idle</code>, <code>planning</code>,
-<code>coding</code>, <code>testing</code>, <code>blocked</code>, <code>done</code>. <code>host</code> says where the session runs
+<code>coding</code>, <code>testing</code>, <code>blocked</code>, <code>done</code>
+(<a href="#hooks-what-each-status-means">what each one means</a>). Two of them the
+server itself acts on: a transition into <code>blocked</code> — the agent has stopped and
+needs a human — pushes every registered device, and a transition into <code>done</code> —
+a turn finished and its answer is waiting to be read — pushes the devices that
+asked for it (<code>notify_done</code>). The bundled hooks send <code>done</code> at the end of every
+turn and <code>idle</code> only at <code>SessionStart</code>, so <code>idle</code> is close to unseen on a live
+board and <code>done</code> is where a card rests between prompts. <code>host</code> says where the session runs
 (see the <a href="#api-webhook-body-and-validation">webhook table</a>); it is <code>null</code> for
 the many sessions whose hook has not opted in, and the key is always present.</p>
 <h3 id="api-shared-endpoints-both-modes"><a class="anchor" href="#api-shared-endpoints-both-modes">Shared endpoints (both modes)</a></h3>
@@ -1266,7 +1401,7 @@ the same JSON body and upsert a session by <code>session_id</code>:</p>
 <td><code>name</code></td>
 <td>string</td>
 <td>no</td>
-<td>Human-readable title. Defaults to <code>session_id</code> if omitted. Truncated to 120 chars.</td>
+<td>Human-readable title. Defaults to <code>session_id</code> if omitted (and never yet set — on update an omitted <code>name</code> carries the stored one forward). Truncated to 120 chars. The bundled hooks pin it at <code>SessionStart</code>: the name a session is given there is the name it keeps, even if the session later changes directory. They hold the pin in a small local map and re-send it on every post rather than leaning on carry-forward, and a pin on file wins over any later <code>SessionStart</code> for the same id, so <code>/compact</code>, <code>/clear</code> and <code>--resume</code> leave the title alone.</td>
 </tr>
 <tr>
 <td><code>message</code></td>
@@ -1278,7 +1413,7 @@ the same JSON body and upsert a session by <code>session_id</code>:</p>
 <td><code>project</code></td>
 <td>string</td>
 <td>no</td>
-<td>Project or repo the session is working on. Truncated to 120 chars.</td>
+<td>Project or repo the session is working on. Truncated to 120 chars. Unlike <code>name</code>, the bundled hooks recompute it from the session&#39;s live working directory on every post, so after a <code>cd</code> the two legitimately disagree — the card keeps its original title while <code>project</code> follows the session. Per-project spend depends on that; see <a href="#api-usage-history-and-per-project-spend">Usage history and per-project spend</a>.</td>
 </tr>
 <tr>
 <td><code>source</code></td>
@@ -1361,6 +1496,13 @@ agent plan&#39;s rate limits is consumed, so dashboards can draw limit bars:</p>
 <td>Epoch ms when the window resets; anything invalid becomes <code>null</code>.</td>
 </tr>
 </tbody></table></div>
+<p>A report is stored per workspace, per <code>source</code>, per window id — <strong>never per
+session.</strong> A plan limit is account-wide, so every session of an agent reports
+the same numbers into the same set of windows and the newest report wins; the
+bars do not belong to a card, and dismissing a card does not clear them. The
+window id <code>session</code> is the plan&#39;s own name for its 5-hour rolling window (the
+bundled hooks label it &quot;Current session&quot;), not the agent session in front of
+you: it keeps counting across restarts and does not reset when a session ends.</p>
 <p>The server keeps the latest report per <code>source</code> (a re-post replaces the
 previous one), broadcasts the full usage list as an SSE <code>usage</code> event, and
 answers <code>{ok: true}</code>. Usage posts share the webhook rate-limit budget.
@@ -1431,6 +1573,18 @@ secret rules as the webhook) or <code>POST /w/&lt;token&gt;/usage/projects</code
 instead of double-counting. Reported tokens are input + output + cache
 creation; cache reads are excluded because they are ~94% of raw token volume
 but a small share of what a plan limit charges.</p>
+<p><strong>A row is a folder and a day, not a session.</strong> There is no session id and no
+card name in this series: every session that spent tokens in a folder on a day
+is summed into the same row. So one row can be several sessions&#39; work, and a
+session that moves between projects contributes to two rows, split at the point
+it moved — even though its card keeps the name it was pinned at <code>SessionStart</code>
+(see <a href="#api-webhook-body-and-validation">the webhook <code>name</code> field</a>). The two series
+answer different questions: a card says which session this is, these rows say
+where the quota went. How fine the split can be depends on the agent&#39;s own
+logs: Claude Code stamps every request with the directory it ran in, so a
+Claude session that moves is split at the moment it moved, while a Codex
+rollout names its directory once at the top of the file, so a Codex session
+that moves keeps all of its spend under the folder it started in.</p>
 <p><code>GET /api/usage/history</code> and <code>GET /w/&lt;token&gt;/api/usage/history</code> return both
 series. <code>?days=N</code> selects the range (default 30, capped at 90):</p>
 <pre><code class="language-json">{

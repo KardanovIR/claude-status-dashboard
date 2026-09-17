@@ -68,8 +68,8 @@ struct BoardView: View {
                         Button("Exit Demo") {
                             store.stopDemo()
                         }
-                        .font(.system(.subheadline, design: .rounded).weight(.semibold))
-                        .tint(Theme.accent)
+                        .font(.subheadline.weight(.semibold))
+                        .tint(Theme.textSecondary)
                     }
                     if store.board?.token != nil && store.connection != .boardGone {
                         Button {
@@ -415,16 +415,23 @@ struct BoardView: View {
         }
     }
 
+    /// Says where you are, quietly.
+    ///
+    /// It used to be drawn in `coding` blue while the control beside it took
+    /// the accent green — two different colours in one toolbar, neither of them
+    /// meaning anything. It is a label, not a state and not an action, so it
+    /// takes text colours: the chrome should say what it is without competing
+    /// with the cards, which are the only things on this screen carrying colour
+    /// that means something.
     private var demoBadge: some View {
         Text("DEMO")
-            .font(.system(.caption2, design: .rounded).weight(.bold))
+            .font(.caption2.weight(.bold))
             .kerning(1)
             .fixedSize()
-            .foregroundStyle(Theme.color(for: .coding))
+            .foregroundStyle(Theme.textTertiary)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background(Capsule().fill(Theme.color(for: .coding).opacity(0.15)))
-            .overlay(Capsule().strokeBorder(Theme.color(for: .coding).opacity(0.35)))
+            .overlay(Capsule().strokeBorder(Theme.cardBorder))
             .accessibilityLabel("Demo mode")
     }
 }

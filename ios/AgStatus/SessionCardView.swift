@@ -33,27 +33,39 @@ struct SessionCardView: View {
         let stale = session.status.isActive
             && now.timeIntervalSince(session.updatedDate) > Self.staleAfter
         return VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
-                // Name first and largest: it is how you know WHICH session this
-                // is, and the status only matters once you have found the right
-                // card. These used to share a line and compete for width, so
-                // the name was what truncated — exactly backwards.
-                Text(session.name)
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(Theme.textPrimary)
-                    .lineLimit(1)
+            VStack(alignment: .leading, spacing: Theme.Space.xs) {
+                // Name and status share the top line: the name leads, the status
+                // sits hard right. That is one row rather than two, which is a
+                // whole row of height back on every card — the difference
+                // between four and five cards on a phone screen.
+                //
+                // The name still wins the space. It carries a layout priority
+                // so a long project name pushes the status right rather than
+                // truncating itself, which is the failure the two-row version
+                // was introduced to solve in the first place: the name is how
+                // you know WHICH card this is, and it must never be the thing
+                // that gets cut.
+                HStack(alignment: .firstTextBaseline, spacing: Theme.Space.xs) {
+                    Text(session.name)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                        .lineLimit(1)
+                        .layoutPriority(1)
 
-                HStack(spacing: Theme.Space.xxs) {
-                    Image(systemName: Theme.symbol(for: session.status))
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(statusColor)
-                    Text(session.status.label.uppercased())
-                        .font(.caption2.weight(.semibold))
-                        .kerning(0.5)
-                        .foregroundStyle(statusColor)
+                    Spacer(minLength: Theme.Space.xxs)
+
+                    HStack(spacing: 3) {
+                        Image(systemName: Theme.symbol(for: session.status))
+                            .font(.caption2.weight(.semibold))
+                        Text(session.status.label.uppercased())
+                            .font(.caption2.weight(.semibold))
+                            .kerning(0.5)
+                    }
+                    .foregroundStyle(statusColor)
+                    .fixedSize()
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(session.status.label)
                 }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel(session.status.label)
 
 
                 if !session.message.isEmpty {
@@ -138,7 +150,8 @@ struct SessionCardView: View {
                 FocusRow(session: session, host: session.host, now: now)
             }
         }
-        .padding(Theme.Space.sm)
+        .padding(.horizontal, Theme.Space.sm)
+        .padding(.vertical, Theme.Space.xs)
         .frame(maxWidth: .infinity, alignment: .leading)
         // The whole surface carries the state, so the board can be sorted by
         // colour before a word is read. This replaces a 4pt coloured stripe

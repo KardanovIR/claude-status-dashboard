@@ -108,6 +108,31 @@ const PROJECT_FILE_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 // ignores this and reads everything.
 const PROJECT_SCAN_BYTE_BUDGET = 8 * 1024 * 1024;
 
+// A pinned session name outlives its usefulness once the server has expired
+// the card it names: 24h after that session's last event (src/config.ts,
+// DEFAULT_MULTI_TENANT_TTL_MS).
+const SESSION_NAME_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+// A session still running past that cut-off must not be pruned out from under
+// itself, so an event this far past the last write re-stamps the entry — one
+// small write an hour per session, rather than one on every event.
+const SESSION_NAME_REFRESH_MS = 60 * 60 * 1000;
+// Entries kept. The server caps a workspace at 50 live sessions (src/store.ts
+// MAX_SESSIONS_PER_WORKSPACE); 200 is well past what one machine holds open
+// inside a TTL window.
+const MAX_PINNED_NAMES = 200;
+// ...but the count alone is not a bound on SIZE, and the read below rejects an
+// oversized file outright. A machine with long directory names could therefore
+// write a map it then refuses to read, renaming every live session at once —
+// the exact failure this pinning exists to prevent. Measured: 200 entries of
+// 250-char basenames serialise to ~64.5 KB, inside a hair of the read cap, and
+// multibyte names blow straight past it. So the write is bounded by BYTES too,
+// with headroom under the read cap, and drops oldest-first until it fits.
+const SESSION_NAME_WRITE_MAX_BYTES = 48 * 1024;
+// A names file bigger than that bound is not one this hook wrote: read it as
+// empty and let the next write replace it, rather than parsing an unbounded
+// file on an event that must never block the agent.
+const SESSION_NAME_MAX_BYTES = 64 * 1024;
+
 // Only Bash command text is truncated client-side (matching the bash hook);
 // the server caps every message at 300.
 const COMMAND_MAX = 120;
@@ -1792,6 +1817,153 @@ async function endHostRecord(base, session) {
   writeHostRecord(file, record);
 }
 
+// ---- Session names (pinned at SessionStart) ---------------------------------
+//
+// A card's name is the one thing a person navigates the board by, so it has to
+// hold still. It used to be recomputed on every event as
+// path.basename(payload.cwd), which let a session rename its own card the
+// moment the agent changed directory — one live session read "backend" and
+// later "docs"; another read "claude-status" while its transcript sat under a
+// different project entirely. The name a session is given at SessionStart is
+// now the name it keeps for the rest of its life — through a `cd`, and through
+// the SessionStart that `/compact` fires halfway down a session.
+//
+// The pin has to survive between hook runs (every event is its own process)
+// and it has to work with Focus OFF, which rules out the session records under
+// the Focus state dir: that directory exists only for a machine that opted in,
+// and host.test.ts pins the promise that the hook writes nothing there
+// otherwise. So this follows the per-project usage state instead (see
+// projectStateFile): one small JSON file in the system temp dir, keyed by
+// board and source, replaced whole through temp + rename, and read as empty
+// whenever it cannot be trusted. Losing the file costs a name carried over
+// from an earlier event — never an event, and never a throw.
+
+function sessionNameFile(base) {
+  const key = crypto.createHash('sha256').update(`${base}\n${SOURCE}`).digest('hex').slice(0, 12);
+  return path.join(os.tmpdir(), `agstatus-names-${key}.json`);
+}
+
+/**
+ * The map as { id: { name, at } }, already pruned of entries the server would
+ * have expired. Missing, oversized, unparseable or malformed all read as an
+ * empty map: a lost pin degrades to the live cwd, which is exactly what the
+ * hook sent before pinning existed. Null-prototype so a session id of
+ * "__proto__" is an ordinary key and not a prototype write.
+ */
+function loadSessionNames(file) {
+  const out = Object.create(null);
+  try {
+    if (fs.statSync(file).size > SESSION_NAME_MAX_BYTES) return out;
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const names = parsed && typeof parsed === 'object' ? parsed.names : null;
+    if (!names || typeof names !== 'object') return out;
+    const now = Date.now();
+    for (const id of Object.keys(names)) {
+      const entry = names[id];
+      if (!entry || typeof entry !== 'object') continue;
+      const name = str(entry.name);
+      const at = typeof entry.at === 'number' && isFinite(entry.at) ? entry.at : 0;
+      // Aged out on the way in, so every write prunes without a second pass.
+      if (name !== '' && now - at < SESSION_NAME_MAX_AGE_MS) out[id] = { name, at };
+    }
+  } catch {
+    // Unreadable is indistinguishable from absent here, and both are fine.
+  }
+  return out;
+}
+
+/**
+ * Replaces the file, dropping the least recently stamped entries over the cap.
+ * Temp + rename so a reader in another process sees one whole map or the
+ * other, never a half-written one. Two events writing at once can still cost
+ * the loser's entry — a read-modify-write, not a lock — and that costs at most
+ * one name, which the next event of that session re-pins.
+ */
+function writeSessionNames(file, names) {
+  const ids = Object.keys(names);
+  ids.sort((a, b) => names[b].at - names[a].at); // newest first: drop the oldest
+  for (const id of ids.slice(MAX_PINNED_NAMES)) delete names[id];
+
+  // Then bound the serialised size, because the count cannot. Newest entries
+  // are kept: the oldest are the likeliest to belong to a session the server
+  // has already expired. A map that cannot be made to fit is not written at
+  // all — leaving the previous readable file in place beats replacing it with
+  // one the next read will reject.
+  // Buffer.byteLength, not String.length: the read cap is a stat() on the file
+  // in BYTES, while a JS string's length counts UTF-16 code units. A map of
+  // multibyte directory names is up to three times larger on disk than its
+  // length suggests, which would write a file the next read rejects — the same
+  // trap as the count-only bound, one layer down.
+  let payload = JSON.stringify({ names });
+  let kept = Math.min(ids.length, MAX_PINNED_NAMES);
+  while (Buffer.byteLength(payload) > SESSION_NAME_WRITE_MAX_BYTES && kept > 1) {
+    kept = Math.floor(kept / 2);
+    for (const id of ids.slice(kept)) delete names[id];
+    payload = JSON.stringify({ names });
+  }
+  if (Buffer.byteLength(payload) > SESSION_NAME_WRITE_MAX_BYTES) return;
+
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmp, payload);
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    // A rename that cannot land leaves the temp file behind; take it with us
+    // rather than leaking one per invocation into the user's temp directory.
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* Nothing more to do: tmp is swept by the OS. */
+    }
+    dbg(`session name write failed: ${err && err.message ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * The name this session's card carries: the first name it was ever given, held
+ * for the life of the session. Normally that is SessionStart's working
+ * directory; when nothing is on file — the hook was installed mid-session, or
+ * a temp sweep took the map — the first event to notice pins `live` instead
+ * and the session holds still from there on. `live` is path.basename(cwd), so
+ * the fallback posts exactly what the hook posted before pinning existed.
+ *
+ * An entry that exists always wins, including against a later SessionStart.
+ * Claude Code fires SessionStart again mid-session for `/compact`, `/clear`
+ * and `--resume` (its `source` field says which), and a session that had
+ * changed directory by then would be renamed by the re-pin — which is the
+ * exact bug this function exists to prevent. A genuinely new session brings a
+ * new id, so it finds no entry and pins normally.
+ */
+function pinnedName(base, session, live) {
+  const file = sessionNameFile(base);
+  const names = loadSessionNames(file);
+  const entry = names[session];
+  if (entry) {
+    // Re-stamp a long-running session so the age prune cannot drop a name out
+    // from under a session that is still using it.
+    if (Date.now() - entry.at > SESSION_NAME_REFRESH_MS) {
+      entry.at = Date.now();
+      writeSessionNames(file, names);
+    }
+    return entry.name;
+  }
+  // basename('/') is '' — nothing worth pinning, and the server already falls
+  // back to the session id for an empty name.
+  if (live === '') return '';
+  names[session] = { name: live, at: Date.now() };
+  writeSessionNames(file, names);
+  return live;
+}
+
+/** SessionEnd deletes the card, so its pin has nothing left to name. */
+function forgetSessionName(base, session) {
+  const file = sessionNameFile(base);
+  const names = loadSessionNames(file);
+  if (!(session in names)) return;
+  delete names[session];
+  writeSessionNames(file, names);
+}
+
 async function main() {
   const rawUrl = configValue('CLAUDE_STATUS_URL', 'url');
   if (!rawUrl) return;
@@ -1805,6 +1977,10 @@ async function main() {
   if (!session) return;
 
   if (event === 'SessionEnd') {
+    // The card is about to be deleted, so keep the name map to sessions that
+    // still exist instead of leaving it to the age prune. Synchronous and
+    // tiny, and a failure inside it is already swallowed.
+    forgetSessionName(base, session);
     // Side by side: the `ps` endHostRecord may need is bounded, but running it
     // in front of the DELETE would stack two timeouts against the safety exit.
     // allSettled, not all: send() rejects on an unreachable board, and a
@@ -1822,6 +1998,9 @@ async function main() {
   let message = '';
 
   if (event === 'SessionStart') {
+    // The only `idle` the hook still sends, and deliberately so: a session that
+    // exists but has not been asked for anything yet. A turn that ran to its
+    // end is `done` (see Stop, below), not idle.
     status = 'idle';
     message = 'Session started';
   } else if (event === 'Notification' || event === 'PermissionRequest') {
@@ -1869,18 +2048,44 @@ async function main() {
     }
     message = message.slice(0, COMMAND_MAX);
   } else if (event === 'Stop') {
-    status = 'idle';
-    message = 'Waiting for input';
+    // The end of an agent turn, and the only clean finish either agent reports.
+    // Neither payload carries an error or an abort flag: Claude Code's Stop
+    // adds `stop_hook_active`, which is not one — it is the loop guard saying a
+    // Stop hook already blocked once and the turn resumed, so the Stop carrying
+    // it is still a turn reaching its end, just a later one. A turn the user
+    // interrupts fires no Stop at all (the card keeps its last tool status
+    // until the next event, exactly as before). There is therefore no dirty
+    // Stop to tell apart: every Stop that reaches us is a finished turn.
+    status = 'done';
+    message = 'Turn finished';
   } else {
     return;
   }
 
   const cwd = typeof payload.cwd === 'string' && payload.cwd !== '' ? payload.cwd : process.cwd();
+  // `name` and `project` used to be one value sent under two keys, recomputed
+  // here on every event. They part company now, because they answer different
+  // questions. `name` is the session's IDENTITY — pinned at SessionStart, so a
+  // `cd` mid-turn can no longer rename a live card. `project` is the session's
+  // LOCATION, and stays live on purpose:
+  //   - it is the only thing left on the wire that says where the agent is
+  //     working right now, and a status post is otherwise all "now" (status,
+  //     message and host all describe this instant);
+  //   - it lines up with the per-project USAGE totals, which are keyed by the
+  //     folder each log record was written in — /usage/projects aggregates
+  //     spend per folder per day across sessions, and a session that moves
+  //     really does spend tokens in both, so that scan keeps reading the cwd
+  //     out of each record (scanClaudeLogs / scanCodexLogs), untouched here;
+  //   - the iOS card already draws `project` only when it differs from `name`
+  //     (SessionCardView.swift), so a moved session grows a subtitle naming
+  //     the folder it moved into, exactly when that is worth saying, and shows
+  //     nothing at all for the sessions that never left home.
   const project = path.basename(cwd);
+  const name = pinnedName(base, session, project);
 
   const body = {
     session_id: session,
-    name: project,
+    name,
     status,
     message,
     project,

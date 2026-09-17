@@ -665,7 +665,7 @@ describe('sidecar hook config', () => {
     const ws = workspace({ source: 'codex' }, null);
     const posted = fireEvent({ hook_event_name: 'Stop' }, { ...ws.env, ...NO_ENV_URL }, installedHook(null));
     expect(posted?.source).toBe('claude');
-    expect(posted?.status).toBe('idle');
+    expect(posted?.status).toBe('done');
   });
 
   it('falls through to ~/.agstatus.json for url and secret when there is no sidecar', () => {
@@ -673,7 +673,7 @@ describe('sidecar hook config', () => {
     const ws = workspace({});
     const posted = fireEvent({ hook_event_name: 'Stop' }, { ...ws.env, ...NO_ENV_URL }, installedHook(null));
     expect(posted?.session_id).toBe('msg-test');
-    expect(posted?.status).toBe('idle');
+    expect(posted?.status).toBe('done');
   });
 
   it('stays silent when a malformed sidecar is the only configuration', () => {
@@ -684,5 +684,198 @@ describe('sidecar hook config', () => {
     const ws = workspace(null, null);
     // Unreadable config is "not configured", never a crash and never a post.
     expect(fireEvent({ hook_event_name: 'Stop' }, { ...ws.env, ...NO_ENV_URL }, hook)).toBeUndefined();
+  });
+});
+
+/**
+ * The two things a card carries between events: the status a finished turn
+ * reports, and the name it keeps while the session moves around the disk.
+ *
+ * The pin lives in one small JSON file in the system temp dir (the hook's
+ * sessionNameFile), so every test here gets a TMPDIR of its own — os.tmpdir()
+ * reads TMPDIR on POSIX, and without that a session id would carry its pinned
+ * name from one test into the next, exactly as it is meant to inside one
+ * machine's real temp dir.
+ */
+describe('finished turns and pinned names', () => {
+  /** A private temp dir, so one test's name map never reaches another. */
+  function isolated(): Record<string, string> {
+    return { TMPDIR: fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-names-')) };
+  }
+
+  /** The hook's name map, by shape rather than by recomputing its hashed path. */
+  function nameFiles(tmp: string): string[] {
+    return fs.readdirSync(tmp).filter((n) => n.startsWith('agstatus-names-')).sort();
+  }
+
+  it('reports a finished turn as done, not idle', () => {
+    const ws = workspace(null, null);
+    const posted = fireEvent(
+      { hook_event_name: 'Stop', session_id: 'turn-1' },
+      { ...ws.env, ...isolated() },
+    );
+    expect(posted?.status).toBe('done');
+    expect(posted?.message).toBe('Turn finished');
+  });
+
+  it('keeps idle for a session that has not been asked for anything yet', () => {
+    const ws = workspace(null, null);
+    const posted = fireEvent(
+      { hook_event_name: 'SessionStart', session_id: 'turn-2' },
+      { ...ws.env, ...isolated() },
+    );
+    // SessionStart is the only idle left, which is what makes done meaningful.
+    expect(posted?.status).toBe('idle');
+    expect(posted?.message).toBe('Session started');
+  });
+
+  it('keeps the name it was given at SessionStart after the session moves', () => {
+    const ws = workspace(null, null);
+    const env = { ...ws.env, ...isolated() };
+
+    const started = fireEvent(
+      { hook_event_name: 'SessionStart', session_id: 'pin-1', cwd: '/tmp/backend' },
+      env,
+    );
+    expect(started?.name).toBe('backend');
+    expect(started?.project).toBe('backend');
+
+    // The agent cd's into a sibling checkout mid-turn. The card is the same
+    // card: same name, and `project` follows the session's feet.
+    const moved = fireEvent(
+      { hook_event_name: 'PreToolUse', session_id: 'pin-1', cwd: '/tmp/docs',
+        tool_name: 'Edit', tool_input: { file_path: '/tmp/docs/readme.md' } },
+      env,
+    );
+    expect(moved?.name).toBe('backend');
+    expect(moved?.project).toBe('docs');
+
+    const finished = fireEvent(
+      { hook_event_name: 'Stop', session_id: 'pin-1', cwd: '/tmp/docs' },
+      env,
+    );
+    expect(finished?.name).toBe('backend');
+    expect(finished?.status).toBe('done');
+
+    // /compact fires a second SessionStart under the same id, from wherever
+    // the session is standing now. The card is not renamed by it.
+    const compacted = fireEvent(
+      { hook_event_name: 'SessionStart', session_id: 'pin-1', cwd: '/tmp/docs', source: 'compact' },
+      env,
+    );
+    expect(compacted?.name).toBe('backend');
+
+    // A different session in the same map is named from its own directory —
+    // the pin is per session, not per board.
+    const other = fireEvent(
+      { hook_event_name: 'SessionStart', session_id: 'pin-2', cwd: '/tmp/docs' },
+      env,
+    );
+    expect(other?.name).toBe('docs');
+
+    // And pin-1 still holds after pin-2 rewrote the file around it.
+    const again = fireEvent(
+      { hook_event_name: 'Stop', session_id: 'pin-1', cwd: '/tmp/elsewhere' },
+      env,
+    );
+    expect(again?.name).toBe('backend');
+  });
+
+  it('forgets the pin when the session ends', () => {
+    const ws = workspace(null, null);
+    const env = { ...ws.env, ...isolated() };
+    fireEvent({ hook_event_name: 'SessionStart', session_id: 'gone-1', cwd: '/tmp/backend' }, env);
+    fireEvent({ hook_event_name: 'SessionEnd', session_id: 'gone-1', cwd: '/tmp/backend' }, env);
+
+    // The card was deleted, so a session id reused later starts fresh rather
+    // than inheriting a name from a session that no longer exists.
+    const reused = fireEvent(
+      { hook_event_name: 'Stop', session_id: 'gone-1', cwd: '/tmp/docs' },
+      env,
+    );
+    expect(reused?.name).toBe('docs');
+  });
+
+  it('falls back to the working directory when SessionStart was never seen', () => {
+    const ws = workspace(null, null);
+    const env = { ...ws.env, ...isolated() };
+
+    // Installed mid-session: the first event this hook ever sees is a Stop.
+    const late = fireEvent(
+      { hook_event_name: 'Stop', session_id: 'late-1', cwd: '/tmp/late-install' },
+      env,
+    );
+    expect(late?.name).toBe('late-install');
+    expect(late?.project).toBe('late-install');
+
+    // Having adopted that name, it holds it like any other pin.
+    const after = fireEvent(
+      { hook_event_name: 'Stop', session_id: 'late-1', cwd: '/tmp/somewhere-else' },
+      env,
+    );
+    expect(after?.name).toBe('late-install');
+    expect(after?.project).toBe('somewhere-else');
+  });
+
+  it('survives a corrupt name map, and repairs it', () => {
+    const ws = workspace(null, null);
+    const tmp = isolated();
+    const env = { ...ws.env, ...tmp };
+    fireEvent({ hook_event_name: 'SessionStart', session_id: 'bad-1', cwd: '/tmp/backend' }, env);
+
+    const [file] = nameFiles(tmp.TMPDIR);
+    expect(file).toBeDefined();
+    const full = path.join(tmp.TMPDIR, file);
+
+    // Half a write, a stray editor, a truncated disk — unparseable either way.
+    fs.writeFileSync(full, '{"names": {"bad-1": ');
+    const corrupt = fireEvent(
+      { hook_event_name: 'Stop', session_id: 'bad-1', cwd: '/tmp/docs' },
+      env,
+    );
+    // The event still goes out; only the pin was lost, so the name degrades to
+    // the live directory — what the hook sent before pinning existed.
+    expect(corrupt?.status).toBe('done');
+    expect(corrupt?.name).toBe('docs');
+    // And the file is a usable map again, with the name it just re-pinned.
+    expect(JSON.parse(fs.readFileSync(full, 'utf8')).names['bad-1'].name).toBe('docs');
+
+    // Entries that survive parsing but are the wrong shape are dropped one by
+    // one, without taking the rest of the map with them.
+    fs.writeFileSync(full, JSON.stringify({
+      names: { 'bad-1': 'not-an-object', 'bad-2': { name: 'kept', at: Date.now() } },
+    }));
+    expect(fireEvent({ hook_event_name: 'Stop', session_id: 'bad-1', cwd: '/tmp/x' }, env)?.name)
+      .toBe('x');
+    expect(fireEvent({ hook_event_name: 'Stop', session_id: 'bad-2', cwd: '/tmp/y' }, env)?.name)
+      .toBe('kept');
+
+    // A map too big to be ours is read as empty rather than parsed.
+    fs.writeFileSync(full, JSON.stringify({ names: { 'bad-2': { name: 'kept', at: Date.now() } } })
+      + ' '.repeat(64 * 1024));
+    expect(fireEvent({ hook_event_name: 'Stop', session_id: 'bad-2', cwd: '/tmp/z' }, env)?.name)
+      .toBe('z');
+  });
+
+  it('posts as usual when the name map cannot be read or written at all', () => {
+    const ws = workspace(null, null);
+    const tmp = isolated();
+    const env = { ...ws.env, ...tmp };
+    fireEvent({ hook_event_name: 'SessionStart', session_id: 'stuck-1', cwd: '/tmp/backend' }, env);
+
+    const [file] = nameFiles(tmp.TMPDIR);
+    const full = path.join(tmp.TMPDIR, file);
+    // A directory where the file belongs: every read throws EISDIR and every
+    // rename onto it fails too, so neither path can fall back on the other.
+    fs.rmSync(full);
+    fs.mkdirSync(full);
+
+    const posted = fireEvent(
+      { hook_event_name: 'Stop', session_id: 'stuck-1', cwd: '/tmp/docs' },
+      env,
+    );
+    expect(posted?.status).toBe('done');
+    expect(posted?.name).toBe('docs');
+    expect(fs.statSync(full).isDirectory()).toBe(true);
   });
 });

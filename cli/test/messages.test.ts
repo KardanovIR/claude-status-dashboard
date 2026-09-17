@@ -175,8 +175,8 @@ describe('hook status messages', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-home-'));
     fs.writeFileSync(path.join(home, '.agstatus.json'), JSON.stringify({ url: base }));
     const posted = fireEvent({ hook_event_name: 'Stop' }, { CLAUDE_STATUS_URL: '', HOME: home });
-    expect(posted?.status).toBe('idle');
-    expect(posted?.message).toBe('Waiting for input');
+    expect(posted?.status).toBe('done');
+    expect(posted?.message).toBe('Turn finished');
   });
 
   it('flips to planning the moment the user submits a prompt', () => {

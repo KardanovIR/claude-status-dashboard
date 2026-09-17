@@ -168,11 +168,18 @@ struct BoardView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .environment(\.openSession) { path.append($0) }
         .navigationDestination(for: String.self) { sessionId in
             SessionHistoryView(sessionId: sessionId)
         }
         .refreshable { await store.refresh() }
-        .animation(.snappy, value: store.sessions)
+        // Keyed on the ORDER of cards, not their contents. Animating on
+        // `store.sessions` crossfaded every card whenever any field changed, so
+        // a session whose message updated drew the old and new text on top of
+        // each other for the length of the transition — it read as a rendering
+        // bug, which is what it was. Motion on this board should mean a card
+        // arrived, left or moved; a message changing in place is not news.
+        .animation(.snappy, value: store.sessions.map(\.id))
         .safeAreaInset(edge: .bottom) {
             if showsPushTip {
                 pushTip
@@ -512,10 +519,17 @@ private struct UsageBarRow: View {
         min(max(window.usedPct / 100, 0), 1)
     }
 
+    /// Neutral until it matters, then the alarm colour — the same two steps the
+    /// web board's meter uses.
+    ///
+    /// This was a three-step traffic light borrowing `testing` teal for the
+    /// middle band. A plan limit is not a status, so dressing it in a status
+    /// colour put a second meaning into the one channel this board reserves for
+    /// what a session is doing — and it made a bar at 62% look like a different
+    /// KIND of thing from a bar at 41%, when it is the same measure a bit
+    /// further along. Only the last stretch is worth a colour.
     private var barColor: Color {
-        if window.usedPct >= 85 { return Theme.color(for: .blocked) }
-        if window.usedPct >= 60 { return Theme.color(for: .testing) }
-        return Theme.color(for: .done)
+        window.usedPct >= 85 ? Theme.color(for: .blocked) : Theme.textSecondary
     }
 
     private var pctText: String {

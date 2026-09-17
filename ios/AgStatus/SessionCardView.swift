@@ -202,6 +202,7 @@ struct SessionCardView: View {
 /// stays history (docs/design/focus-protocol.md §7).
 private struct FocusRow: View {
     @Environment(SessionStore.self) private var store
+    @Environment(\.openSession) private var openSession
     let session: Session
     /// Optional: a session whose machine never opted into Focus still gets a
     /// Details button, so every card has the same controls in the same place.
@@ -228,9 +229,15 @@ private struct FocusRow: View {
         VStack(alignment: .leading, spacing: 6) {
             // Side by side when the labels fit, stacked when a long machine
             // name plus "Resume" would overflow a phone-width card.
+            // Left-aligned and hugging their labels, not centred in equal
+            // halves — two controls floating in the middle of a wide card read
+            // as decoration rather than as things to press.
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) { buttons }
-                VStack(alignment: .leading, spacing: 8) { buttons }
+                HStack(spacing: Theme.Space.xs) {
+                    buttons
+                    Spacer(minLength: 0)
+                }
+                VStack(alignment: .leading, spacing: Theme.Space.xxs) { buttons }
             }
 
             if let state {
@@ -255,7 +262,13 @@ private struct FocusRow: View {
 
     @ViewBuilder
     private var buttons: some View {
-        NavigationLink(value: session.id) {
+        // A plain Button driving the path, NOT a NavigationLink. Inside a List a
+        // NavigationLink draws its own disclosure chevron and tints the label
+        // with the app's accent colour, so the row came out with a stray ">"
+        // and a bright blue eye — two SwiftUI defaults overriding the design.
+        Button {
+            openSession(session.id)
+        } label: {
             Label("Details", systemImage: "eye")
         }
         .buttonStyle(FocusButtonStyle())
@@ -323,13 +336,27 @@ private struct FocusButtonStyle: ButtonStyle {
             .foregroundStyle(isEnabled ? Theme.textSecondary : Theme.textTertiary)
             .padding(.horizontal, Theme.Space.sm)
             .frame(minHeight: 44)
-            .frame(maxWidth: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
                     .fill(configuration.isPressed ? Theme.raised : Color.clear)
             )
             .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
             .opacity(isEnabled ? 1 : 0.55)
+    }
+}
+
+/// How a card asks the board to open a session's detail.
+///
+/// A closure rather than a NavigationLink: the link brings a disclosure chevron
+/// and the app accent colour with it, and neither belongs on a card control.
+private struct OpenSessionKey: EnvironmentKey {
+    static let defaultValue: (String) -> Void = { _ in }
+}
+
+extension EnvironmentValues {
+    var openSession: (String) -> Void {
+        get { self[OpenSessionKey.self] }
+        set { self[OpenSessionKey.self] = newValue }
     }
 }
 

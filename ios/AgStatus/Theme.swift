@@ -89,25 +89,42 @@ enum Theme {
 
     /// A card's own surface, tinted by its state.
     ///
-    /// The tint is not decoration — it is what lets you sort the board by
-    /// colour before reading a word. 10% is not a guess either: text contrast
-    /// was solved against every tinted surface, and at 10% (14% for blocked)
-    /// with `textTertiary` lifted to 64.5% lightness the worst ratio anywhere
-    /// is 4.53:1, still WCAG AA. At 6% the meta line fell to 4.01:1 and failed.
+    /// These are PRECOMPUTED from the web's `color-mix(in oklab, card 90%,
+    /// state)` — 86% for blocked — rather than mixed here at run time.
     ///
-    /// What this deliberately is NOT: a coloured stripe down the card's edge.
-    /// That is the most overused device in dashboard UI and never reads as
-    /// intentional, whatever colour or corner radius it is given.
+    /// The first cut mixed in linear sRGB and looked nothing like the web: a
+    /// bright colour dominates a linear blend, so "10%" landed three to four
+    /// times heavier than intended and the cards came out as saturated slabs
+    /// of blue, teal and red. `blocked` rendered 0x672A24, a strong red, where
+    /// the web's own mix gives 0x30231D — a warmth you have to look for.
+    /// Perceptual and linear blending are not interchangeable at these
+    /// lightnesses, and the tint is subtle enough that being wrong by 3x is
+    /// the difference between a design and a mess.
+    ///
+    /// Baking them also means the two platforms cannot drift: change a state
+    /// colour and both tables are regenerated from the same oklab maths.
     static func cardSurface(for status: AgentStatus) -> Color {
-        mix(card, color(for: status), amount: status == .blocked ? 0.14 : 0.10)
+        switch status {
+        case .idle: rgb(0x1E231F)
+        case .planning: rgb(0x202425)
+        case .coding: rgb(0x1D2525)
+        case .testing: rgb(0x1C2623)
+        case .blocked: rgb(0x30231D)
+        case .done: rgb(0x1C271F)
+        }
     }
 
-    /// A card's border, tinted the same way. Blocked gets a brighter edge,
-    /// because it is the one state that means a human is required.
+    /// A card's border, from the same mix against `cardBorder`. Blocked keeps a
+    /// brighter edge, because it is the one state that means a human is needed.
     static func cardEdge(for status: AgentStatus) -> Color {
-        status == .blocked
-            ? color(for: .blocked).opacity(0.42)
-            : mix(cardBorder, color(for: status), amount: 0.38)
+        switch status {
+        case .idle: rgb(0x4C544E)
+        case .planning: rgb(0x535866)
+        case .coding: rgb(0x475E69)
+        case .testing: rgb(0x43615F)
+        case .done: rgb(0x43664F)
+        case .blocked: color(for: .blocked).opacity(0.42)
+        }
     }
 
     /// The SF Symbol for a status.
@@ -170,32 +187,6 @@ enum Theme {
     }
 
     // MARK: - Conversion
-
-    /// Mixes two colours in linear sRGB, which is close enough to the web's
-    /// `color-mix(in oklab, …)` at these small amounts that the two platforms
-    /// land on the same surface. Doing it here rather than writing six more
-    /// literals keeps the tint derived from the state, the way the stylesheet
-    /// does — the palette this replaces carried twelve hand-typed tints that
-    /// had already drifted from the colours they came from.
-    private static func mix(_ base: Color, _ other: Color, amount: Double) -> Color {
-        let b = components(base), o = components(other)
-        func lin(_ c: Double) -> Double { c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4) }
-        func srgb(_ c: Double) -> Double { c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1 / 2.4) - 0.055 }
-        let r = srgb(lin(b.0) * (1 - amount) + lin(o.0) * amount)
-        let g = srgb(lin(b.1) * (1 - amount) + lin(o.1) * amount)
-        let bl = srgb(lin(b.2) * (1 - amount) + lin(o.2) * amount)
-        return Color(red: r, green: g, blue: bl)
-    }
-
-    private static func components(_ color: Color) -> (Double, Double, Double) {
-        #if canImport(UIKit)
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a)
-        return (Double(r), Double(g), Double(b))
-        #else
-        return (0, 0, 0)
-        #endif
-    }
 
     private static func rgb(_ hex: UInt32) -> Color {
         Color(red: Double((hex >> 16) & 0xFF) / 255,

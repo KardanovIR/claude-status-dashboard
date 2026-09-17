@@ -519,18 +519,15 @@ private struct UsageBarRow: View {
         min(max(window.usedPct / 100, 0), 1)
     }
 
-    /// Neutral until it matters, then the alarm colour — the same two steps the
-    /// web board's meter uses.
+    /// Green, amber, red as the window fills — see Theme.limitColor.
     ///
-    /// This was a three-step traffic light borrowing `testing` teal for the
-    /// middle band. A plan limit is not a status, so dressing it in a status
-    /// colour put a second meaning into the one channel this board reserves for
-    /// what a session is doing — and it made a bar at 62% look like a different
-    /// KIND of thing from a bar at 41%, when it is the same measure a bit
-    /// further along. Only the last stretch is worth a colour.
-    private var barColor: Color {
-        window.usedPct >= 85 ? Theme.color(for: .blocked) : Theme.textSecondary
-    }
+    /// An earlier pass made this neutral-until-85% on the argument that colour
+    /// on this board means state. That was the wrong call: the entire point of
+    /// a limit bar is to be caught before it lands, and a grey bar at 62% tells
+    /// you nothing you would act on. The middle band is amber rather than the
+    /// `testing` teal it used to borrow, so the meter reads as its own scale
+    /// instead of wearing a status colour.
+    private var barColor: Color { Theme.limitColor(window.usedPct) }
 
     private var pctText: String {
         "\(Int(window.usedPct.rounded()))%"

@@ -127,6 +127,39 @@ enum Theme {
         }
     }
 
+    // MARK: - Limits
+    //
+    // A plan meter is the one place a traffic light is right. It is not a
+    // status — it is one measure travelling toward a hard stop, and the whole
+    // reason to look at it is to catch it before it lands. Amber here is the
+    // caution convention doing its actual job, which is why it belongs on a
+    // limit even though it was wrong as the board's accent.
+    //
+    // Green and amber share a lightness (76%/78%) so amber reads as WARMER
+    // rather than dimmer; red drops to 68% because it should also feel heavier.
+    // All three clear AA on a card: 8.75, 8.82 and 5.70 to 1.
+
+    /// oklch(78% 0.150 80)
+    static let limitWarn = rgb(0xE9AB2B)
+
+    /// The meter's colour at `percent` of its limit.
+    static func limitColor(_ percent: Double) -> Color {
+        if percent >= 85 { return color(for: .blocked) }
+        if percent >= 60 { return limitWarn }
+        return color(for: .done)
+    }
+
+    /// The agent behind a session.
+    ///
+    /// Simple geometry, deliberately NOT Anthropic's or OpenAI's logo: this
+    /// board is open source and self-hosted by other people, and shipping
+    /// someone else's trademark inside it is a different thing from naming
+    /// their tool. They identify the integration in a 13pt slot, which is all
+    /// the badge needs to do.
+    static func agentSymbol(for source: String) -> String {
+        source.lowercased().hasPrefix("codex") ? "hexagon" : "asterisk"
+    }
+
     /// The SF Symbol for a status.
     ///
     /// Shape first, colour second: peripheral vision resolves form long before

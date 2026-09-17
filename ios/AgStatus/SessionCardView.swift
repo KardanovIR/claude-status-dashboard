@@ -5,6 +5,7 @@ import SwiftUI
 /// runs also gets a footer with the "Bring to front" control.
 struct SessionCardView: View {
     @Environment(SessionStore.self) private var store
+    @Environment(\.openSession) private var openSession
     let session: Session
 
     /// An active card gone quiet for this long is probably a dead agent
@@ -67,16 +68,20 @@ struct SessionCardView: View {
                 // control's label, so two sessions of the same project on two
                 // machines were indistinguishable at a glance.
                 HStack(spacing: Theme.Space.xxs) {
-                    Text(session.source.uppercased())
-                        .font(.system(size: 10, weight: .semibold))
-                        .kerning(0.4)
-                        .foregroundStyle(Theme.textTertiary)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: Theme.Radius.sm)
-                                .strokeBorder(Theme.cardBorder)
-                        )
+                    HStack(spacing: 3) {
+                        Image(systemName: Theme.agentSymbol(for: session.source))
+                            .font(.system(size: 8, weight: .bold))
+                        Text(session.source.uppercased())
+                            .font(.system(size: 10, weight: .semibold))
+                            .kerning(0.4)
+                    }
+                    .foregroundStyle(Theme.textTertiary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.Radius.sm)
+                            .strokeBorder(Theme.cardBorder)
+                    )
                     if let host = session.host {
                         Text("·").foregroundStyle(Theme.hairlineStrong)
                         Text(store.machineLabel(for: host))
@@ -103,7 +108,16 @@ struct SessionCardView: View {
                 }
                 .font(.caption)
             }
+            // The tap lives on the CONTENT, not the whole card, so it cannot
+            // reach across the divider and steal the control's tap the way the
+            // old full-card NavigationLink overlay did. Opening history is the
+            // harmless thing to do with a card; raising a window on another
+            // machine is not, so only the harmless one is a whole-card gesture.
+            .contentShape(Rectangle())
+            .onTapGesture { openSession(session.id) }
             .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint("Opens this session's history")
             .accessibilityActions {
                 if let host = session.host, store.isMachineOnline(host.machine.id) {
                     Button("Bring to front on \(store.machineLabel(for: host))") {
@@ -112,16 +126,17 @@ struct SessionCardView: View {
                 }
             }
 
-            // Both actions, always present and always explicit: Details opens
-            // this session's history, Focus raises its window on the machine
-            // running it. Divided from the body by a hairline so the card reads
-            // as content-then-controls rather than one undifferentiated block.
-            Divider()
-                .overlay(Theme.cardBorder)
-                .padding(.top, Theme.Space.sm)
-                .padding(.bottom, Theme.Space.xxs)
+            // Only when there is something to divide. A session whose machine
+            // never opted into Focus has no control, and a rule followed by
+            // empty space reads as a card that failed to finish loading.
+            if session.host != nil || store.focus[session.id] != nil {
+                Divider()
+                    .overlay(Theme.cardBorder)
+                    .padding(.top, Theme.Space.sm)
+                    .padding(.bottom, Theme.Space.xxs)
 
-            FocusRow(session: session, host: session.host, now: now)
+                FocusRow(session: session, host: session.host, now: now)
+            }
         }
         .padding(Theme.Space.sm)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -202,10 +217,9 @@ struct SessionCardView: View {
 /// stays history (docs/design/focus-protocol.md §7).
 private struct FocusRow: View {
     @Environment(SessionStore.self) private var store
-    @Environment(\.openSession) private var openSession
     let session: Session
-    /// Optional: a session whose machine never opted into Focus still gets a
-    /// Details button, so every card has the same controls in the same place.
+    /// Optional: a session whose machine never opted into Focus shows no
+    /// control at all — the card's own tap still opens its history.
     let host: Host?
     let now: Date
 
@@ -262,17 +276,10 @@ private struct FocusRow: View {
 
     @ViewBuilder
     private var buttons: some View {
-        // A plain Button driving the path, NOT a NavigationLink. Inside a List a
-        // NavigationLink draws its own disclosure chevron and tints the label
-        // with the app's accent colour, so the row came out with a stray ">"
-        // and a bright blue eye — two SwiftUI defaults overriding the design.
-        Button {
-            openSession(session.id)
-        } label: {
-            Label("Details", systemImage: "eye")
-        }
-        .buttonStyle(FocusButtonStyle())
-
+        // Details is no longer a button. Opening a session's history is the
+        // ordinary, harmless thing to do with a card, so it is the card's own
+        // tap — which is what an iOS list row is expected to do anyway. That
+        // leaves one control, and one control can afford to look like a button.
         if host != nil {
             // Just "Focus": the machine's name now sits in the card's meta
             // line, so repeating it here was the same word twice on one card —
@@ -280,7 +287,7 @@ private struct FocusRow: View {
             Button {
                 send(.focus)
             } label: {
-                Label("Focus", systemImage: "dot.viewfinder")
+                Label("Bring to front", systemImage: "macwindow.on.rectangle")
             }
             .buttonStyle(FocusButtonStyle())
             .disabled(!online)
@@ -293,7 +300,7 @@ private struct FocusRow: View {
             Button {
                 send(.resume)
             } label: {
-                Label("Resume", systemImage: "play.fill")
+                Label("Resume", systemImage: "play.circle.fill")
             }
             .buttonStyle(FocusButtonStyle())
             .disabled(!online)
@@ -315,40 +322,48 @@ private struct FocusRow: View {
 
 /// A small capsule in the card's own idiom; greyed, not hidden, when the
 /// machine is offline so the reason underneath still makes sense.
-/// A card control.
+/// The card's one control.
 ///
-/// Deliberately neutral. These used to be drawn in `planning` blue — a STATE
-/// colour on a control — which put a second, unrelated meaning into the one
-/// channel this board reserves for "what is this session doing". A control is
-/// not a state, so it takes text colours and earns its emphasis from the
-/// surface it sits on.
+/// It used to be bare text with an icon and no surface, which read as a label
+/// someone had forgotten to style rather than something to press. Now that
+/// Details has moved to the card tap there is only this one, so it can carry a
+/// real affordance: its own raised surface, a hairline, and a tinted glyph.
 ///
-/// 44pt minimum height because these are tapped one-handed, often while
-/// walking away from the desk — Apple's minimum target, and the same floor the
-/// web board uses on a phone.
+/// Still neutral rather than accented. A control is not a state, and the accent
+/// on this board means "ready for you" — spending it on a button that is
+/// present on every card would make the one colour that matters ordinary.
+///
+/// 44pt because it is tapped one-handed, often while walking away from the
+/// desk, and because the action reaches across to another machine and moves a
+/// window: a mis-tap is not free.
 private struct FocusButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.subheadline.weight(.medium))
+            .font(.subheadline.weight(.semibold))
             .lineLimit(1)
-            .foregroundStyle(isEnabled ? Theme.textSecondary : Theme.textTertiary)
-            .padding(.horizontal, Theme.Space.sm)
+            .foregroundStyle(isEnabled ? Theme.textPrimary : Theme.textTertiary)
+            .padding(.horizontal, Theme.Space.md)
             .frame(minHeight: 44)
             .background(
                 RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
-                    .fill(configuration.isPressed ? Theme.raised : Color.clear)
+                    .fill(configuration.isPressed ? Theme.cardBorder : Theme.raised)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
+                    .strokeBorder(Theme.cardBorder)
             )
             .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
-            .opacity(isEnabled ? 1 : 0.55)
+            .opacity(isEnabled ? 1 : 0.5)
     }
 }
 
 /// How a card asks the board to open a session's detail.
 ///
-/// A closure rather than a NavigationLink: the link brings a disclosure chevron
-/// and the app accent colour with it, and neither belongs on a card control.
+/// A closure rather than a NavigationLink: a link inside a List draws its own
+/// disclosure chevron and tints with the app accent, and it has to cover the
+/// whole row — which is how it ended up swallowing taps meant for the control.
 private struct OpenSessionKey: EnvironmentKey {
     static let defaultValue: (String) -> Void = { _ in }
 }

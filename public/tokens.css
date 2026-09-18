@@ -98,7 +98,12 @@
   --st-done:     oklch(76% 0.125 155);
   --st-blocked:  oklch(68% 0.190 28);
   --st-idle:     oklch(66% 0.020 155);
-  --st-planning: oklch(72% 0.075 285);
+  /* Pushed off 285 and up in chroma. At oklch(72% 0.075 285) the tinted card
+   * surface landed 0.107 OKLab ΔE from idle's — under the ~0.02-per-step a
+   * peripheral glance can separate once both are mixed 10% into --ink-900.
+   * 320 walks it toward magenta, away from the blue of `coding` on its other
+   * side, and the extra chroma buys the separation without lighting it up. */
+  --st-planning: oklch(78% 0.100 320);
   --st-coding:   oklch(74% 0.085 240);
   --st-testing:  oklch(74% 0.080 200);
 

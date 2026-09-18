@@ -66,6 +66,11 @@ enum Theme {
     //   THE AGENT IS WORKING, receding:
     //     planning / coding / testing — nothing is required of you
     //
+    // `planning` was 0.075 chroma at hue 285 and measured 0.107 ΔE from `idle`
+    // in OKLab: close enough that a planning card read as an idle one. It is
+    // 0.169 away now, and still capped under `done`'s chroma so an
+    // agent-is-working state can never out-shout a your-turn one.
+    //
     // An earlier pass ranked these by stage, which put the brightest colour on
     // `coding` (the most COMMON state) and the dimmest on the states that
     // actually need you. Backwards for a board read at a glance: the accent
@@ -76,7 +81,7 @@ enum Theme {
     static func color(for status: AgentStatus) -> Color {
         switch status {
         case .idle: rgb(0x89968D)      // oklch(66% 0.020 155)
-        case .planning: rgb(0x9F9ED2)  // oklch(72% 0.075 285)
+        case .planning: rgb(0xD4A3DF)  // oklch(78% 0.100 320)
         case .coding: rgb(0x78B2DB)    // oklch(74% 0.085 240)
         case .testing: rgb(0x69BABF)   // oklch(74% 0.080 200)
         case .blocked: rgb(0xF75E51)   // oklch(68% 0.190 28)
@@ -106,7 +111,7 @@ enum Theme {
     static func cardSurface(for status: AgentStatus) -> Color {
         switch status {
         case .idle: rgb(0x1E231F)
-        case .planning: rgb(0x202425)
+        case .planning: rgb(0x242426)
         case .coding: rgb(0x1D2525)
         case .testing: rgb(0x1C2623)
         case .blocked: rgb(0x30231D)
@@ -119,7 +124,7 @@ enum Theme {
     static func cardEdge(for status: AgentStatus) -> Color {
         switch status {
         case .idle: rgb(0x4C544E)
-        case .planning: rgb(0x535866)
+        case .planning: rgb(0x66596A)
         case .coding: rgb(0x475E69)
         case .testing: rgb(0x43615F)
         case .done: rgb(0x43664F)

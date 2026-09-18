@@ -553,14 +553,21 @@ listener is installed, and it can do exactly one thing.
 
 `agstatus listener install` writes a launcher, `agstatus-resume`, into the
 state directory (mode `0700`, owned by you). Its entire content is three
-fixed lines, with the absolute paths of Node and of the CLI baked in at
-install time and nothing else interpolated, ever:
+fixed lines, with exactly one path interpolated at install time — the
+launcher shim — and nothing else, ever:
 
 ```sh
 #!/bin/sh
 # AgStatus Focus resume launcher — written by `agstatus listener install`.
-exec "<node>" "<cli.js>" listener resume-exec "$1"
+exec "<shim>" listener resume-exec "$1"
 ```
+
+It used to bake in the absolute paths of Node and of `dist/cli.js`, which
+made this file a second frozen snapshot of the same doomed pair as the
+LaunchAgent plist: one `nvm install` and a Resume tap opened a window that
+printed "no such file or directory" and closed. Delegating to the shim
+leaves exactly one place where Node is resolved, and it is resolved at
+every start.
 
 A Resume plan opens a terminal and hands it that launcher and the session
 id — nothing else. The launcher checks that the id is a uuid, reads the
@@ -619,7 +626,7 @@ What cannot, and why:
 
 A respawn has to prove itself before the board hears `resumed`. `open -n -b`
 exits as soon as macOS accepts the request, and `agtermctl session new`
-exits as soon as the pane exists, so the listener waits (up to twelve
+exits as soon as the pane exists, so the listener waits (up to eight
 seconds) for the hook to write a record for that session — the sign that an
 agent actually came up. Nothing arrives, the tap answers `respawn-failed`.
 The step that raises the window afterwards is best-effort: a session sitting

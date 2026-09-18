@@ -198,7 +198,7 @@ Rules: multiplexer vars override `TERM_PROGRAM` (they are set later in the chain
    focus leg after a mux respawn): the session exists, and a failed raise must not report that nothing came up.
    Evidence, because exit 0 proves nothing here — `open -n -b` returns as soon as LaunchServices takes the request, and the
    window may then close with "no local record" in it: after the last step the runtime polls `<state>/sessions/<id>/` for up
-   to 12 s for a record the hook did not write before (a new pid, or a newer written_at, at SessionStart). None → failed/
+   to 8 s (`RESPAWN_CONFIRM_MS`) for a record the hook did not write before (a new pid, or a newer written_at, at SessionStart). None → failed/
    respawn-failed. Only then is the ack `resumed`.
 5  verify: poll `lsappinfo front` ≤ 500 ms; ack focused/activated only if the target bundle is frontmost, else `selected` — macOS keeps the current app in front while the user is typing [V].
 6  ack {result, reach, reason}; log {id, plan, per-step exit codes, frontmost before/after}.

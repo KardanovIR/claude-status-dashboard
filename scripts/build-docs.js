@@ -18,9 +18,13 @@ const { marked } = require('marked');
 const ROOT = path.join(__dirname, '..');
 const REPO = 'https://github.com/KardanovIR/claude-status-dashboard';
 
-// Order is the reading order: setup first, then running your own, then API.
+// Order is the reading order: setup first, then what Focus reaches, then
+// running your own, then API. Focus support sits second because it is the
+// question people ask immediately after wiring the hook up — "will it work
+// with my terminal?" — and the answer is narrow enough to need saying early.
 const DOCS = [
   { id: 'hooks', file: 'docs/hooks.md', nav: 'Integration' },
+  { id: 'focus-support', file: 'docs/focus-support.md', nav: 'Focus support' },
   { id: 'self-hosting', file: 'docs/self-hosting.md', nav: 'Self-hosting' },
   { id: 'api', file: 'docs/api.md', nav: 'HTTP API' },
 ];

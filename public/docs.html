@@ -158,6 +158,13 @@
           <li><a href="#hooks-manual-setup-the-bash-hook-deprecated">Manual setup: the bash hook (deprecated)</a></li>
           <li><a href="#hooks-troubleshooting">Troubleshooting</a></li>
         </ul></li>
+      <li class="toc-doc"><a href="#focus-support">Focus support</a>
+        <ul>
+          <li><a href="#focus-support-what-works-today">What works today</a></li>
+          <li><a href="#focus-support-what-does-not-work-and-why">What does not work, and why</a></li>
+          <li><a href="#focus-support-things-this-page-does-not-claim">Things this page does not claim</a></li>
+          <li><a href="#focus-support-when-focus-declines-what-you-see">When Focus declines, what you see</a></li>
+        </ul></li>
       <li class="toc-doc"><a href="#self-hosting">Self-hosting</a>
         <ul>
           <li><a href="#self-hosting-quick-start">Quick start</a></li>
@@ -177,6 +184,7 @@
           <li><a href="#api-webhook-body-and-validation">Webhook body and validation</a></li>
           <li><a href="#api-plan-usage">Plan usage</a></li>
           <li><a href="#api-usage-history-and-per-project-spend">Usage history and per-project spend</a></li>
+          <li><a href="#api-per-session-token-totals">Per-session token totals</a></li>
           <li><a href="#api-session-history">Session history</a></li>
           <li><a href="#api-focus-commands">Focus commands</a></li>
           <li><a href="#api-legacy-single-tenant-endpoints">Legacy (single-tenant) endpoints</a></li>
@@ -775,12 +783,18 @@ that starts the session again on that machine. It is on by default once the
 listener is installed, and it can do exactly one thing.</p>
 <p><code>agstatus listener install</code> writes a launcher, <code>agstatus-resume</code>, into the
 state directory (mode <code>0700</code>, owned by you). Its entire content is three
-fixed lines, with the absolute paths of Node and of the CLI baked in at
-install time and nothing else interpolated, ever:</p>
+fixed lines, with exactly one path interpolated at install time — the
+launcher shim — and nothing else, ever:</p>
 <pre><code class="language-sh">#!/bin/sh
 # AgStatus Focus resume launcher — written by `agstatus listener install`.
-exec &quot;&lt;node&gt;&quot; &quot;&lt;cli.js&gt;&quot; listener resume-exec &quot;$1&quot;
+exec &quot;&lt;shim&gt;&quot; listener resume-exec &quot;$1&quot;
 </code></pre>
+<p>It used to bake in the absolute paths of Node and of <code>dist/cli.js</code>, which
+made this file a second frozen snapshot of the same doomed pair as the
+LaunchAgent plist: one <code>nvm install</code> and a Resume tap opened a window that
+printed &quot;no such file or directory&quot; and closed. Delegating to the shim
+leaves exactly one place where Node is resolved, and it is resolved at
+every start.</p>
 <p>A Resume plan opens a terminal and hands it that launcher and the session
 id — nothing else. The launcher checks that the id is a uuid, reads the
 local record itself, and runs the recorded agent binary with exactly
@@ -834,7 +848,7 @@ it has to be a directory you own.</li>
 </ul>
 <p>A respawn has to prove itself before the board hears <code>resumed</code>. <code>open -n -b</code>
 exits as soon as macOS accepts the request, and <code>agtermctl session new</code>
-exits as soon as the pane exists, so the listener waits (up to twelve
+exits as soon as the pane exists, so the listener waits (up to eight
 seconds) for the hook to write a record for that session — the sign that an
 agent actually came up. Nothing arrives, the tap answers <code>respawn-failed</code>.
 The step that raises the window afterwards is best-effort: a session sitting
@@ -1024,6 +1038,225 @@ tail -f ~/.claude/logs/*.log
 fine and the problem is in <code>settings.json</code> — check that the <code>hooks</code> entries
 survived any hand-edits, and remember Claude Code reads settings at session
 start, so restart the session after changes.</p>
+
+</section>
+<hr class="doc-split" />
+<section class="doc" aria-labelledby="focus-support">
+<h2 id="focus-support">What Focus can and cannot reach</h2>
+<p>Focus is the feature where you tap a session on the board and the terminal
+running that agent comes to the front on the machine it runs on.</p>
+<p>This page is the honest version of where that works. It is written from the
+listener&#39;s source, not from intentions: the supported set below is a literal
+transcription of the table in <code>cli/src/listener/plan.ts</code>.</p>
+<p><strong>The two sentences that answer most questions:</strong></p>
+<ol>
+<li><strong>Focus is macOS-only.</strong> There is no Linux or Windows listener. The
+installers on those platforms deliberately install nothing and say so.</li>
+<li><strong>Support is a closed list, not a capability.</strong> The listener raises apps it
+has an entry for. An app it does not recognise is refused outright rather
+than attempted — you get <code>unsupported-host</code>, not a silent failure.</li>
+</ol>
+<hr>
+<h3 id="focus-support-what-works-today"><a class="anchor" href="#focus-support-what-works-today">What works today</a></h3>
+<p>Everything here is macOS. &quot;Exact&quot; means the specific tab, pane or session is
+selected. &quot;App only&quot; means the application comes forward and whatever was last
+focused inside it stays focused.</p>
+<h4 id="focus-support-exact"><a class="anchor" href="#focus-support-exact">Exact</a></h4>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Host</th>
+<th>How</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>agterm</strong></td>
+<td><code>agtermctl window select</code> + <code>session select</code></td>
+<td>window and session</td>
+</tr>
+<tr>
+<td><strong>Herdr</strong></td>
+<td><code>herdr agent focus &lt;pane&gt;</code></td>
+<td>pane</td>
+</tr>
+<tr>
+<td><strong>tmux</strong></td>
+<td><code>select-window</code>, <code>select-pane</code>, <code>switch-client</code></td>
+<td>pane, then the outer terminal is raised</td>
+</tr>
+<tr>
+<td><strong>Zellij</strong></td>
+<td><code>zellij action focus-pane-id</code></td>
+<td>pane</td>
+</tr>
+<tr>
+<td><strong>GNU screen</strong></td>
+<td><code>screen -X select</code></td>
+<td>window</td>
+</tr>
+<tr>
+<td><strong>kitty</strong></td>
+<td><code>kitten @ focus-window --match id:</code></td>
+<td><strong>only if you configured <code>allow_remote_control</code> and a <code>listen_on unix:</code> socket</strong> — off by default</td>
+</tr>
+<tr>
+<td><strong>iTerm2</strong></td>
+<td><code>iterm2:reveal?sessionid=</code></td>
+<td>session</td>
+</tr>
+<tr>
+<td><strong>WezTerm</strong></td>
+<td><code>wezterm cli activate-pane</code></td>
+<td>pane</td>
+</tr>
+<tr>
+<td><strong>Codex Desktop</strong></td>
+<td><code>codex://threads/&lt;id&gt;</code></td>
+<td>the thread</td>
+</tr>
+<tr>
+<td><strong>JetBrains IDEs, Zed, Android Studio</strong></td>
+<td><code>open -b &lt;bundle&gt; &lt;project root&gt;</code></td>
+<td>the project window</td>
+</tr>
+</tbody></table></div>
+<h4 id="focus-support-app-only"><a class="anchor" href="#focus-support-app-only">App only</a></h4>
+<p>Terminal.app · Ghostty · Alacritty · Warp · Hyper · Tabby · Rio · Xcode ·
+VS Code · VS Code Insiders · Cursor · Windsurf · Claude Desktop</p>
+<p>For these the app comes forward and that is all. The reason is the same for most
+of them and is worth stating plainly: <strong>tab-exact focus in Terminal.app and
+Ghostty needs Apple Events, and the listener sends none.</strong> A plain Node process
+cannot send Apple Events without triggering a consent prompt for every app it
+touches, so the mechanism waits for a signed helper app in a later release.
+There is no AppleScript anywhere in the shipped listener.</p>
+<hr>
+<h3 id="focus-support-what-does-not-work-and-why"><a class="anchor" href="#focus-support-what-does-not-work-and-why">What does not work, and why</a></h3>
+<h4 id="focus-support-linux-and-windows-no-listener-exists"><a class="anchor" href="#focus-support-linux-and-windows-no-listener-exists">Linux and Windows — no listener exists</a></h4>
+<p>Not &quot;degraded&quot;. Absent. <code>agstatus listener install</code> refuses on any non-Darwin
+platform, and the <code>install.sh</code> / <code>install.ps1</code> scripts skip the listener
+entirely rather than install something inert.</p>
+<p><code>agstatus listener run</code> is not platform-gated and will start in the foreground
+anywhere, but every plan it produces hard-codes macOS binaries (<code>/usr/bin/open</code>,
+<code>/usr/bin/lsappinfo</code>), so app-raising steps fail there. Multiplexer steps
+(tmux, Zellij, screen, Herdr) use portable commands and would plausibly select
+the right pane while raising nothing — plausibly, because that path has not been
+run on Linux and is untested.</p>
+<p>Two things worth knowing about the eventual ports, because they are not
+symmetrical problems:</p>
+<ul>
+<li><strong>Windows</strong> can target a <em>window</em> (<code>wt -w &lt;id&gt;</code>) but not a session. Windows
+Terminal already sets a per-tab <code>WT_SESSION</code> GUID and nothing consumes it for
+focus; a request to add that was closed as not planned. <code>SetForegroundWindow</code>
+also flashes the taskbar rather than raising, for an unprivileged caller.</li>
+<li><strong>Wayland</strong> is structurally hostile rather than merely unimplemented: a
+background daemon cannot hold a valid activation token by construction. This
+is not a gap we can close by writing more code, and it matters — Wayland is
+now the default session on mainstream desktops.</li>
+</ul>
+<h4 id="focus-support-no-window-exists-at-all"><a class="anchor" href="#focus-support-no-window-exists-at-all">No window exists at all</a></h4>
+<p>These are not failures to fix. There is genuinely nothing to raise, and the
+board should say so rather than offer a button that does nothing:</p>
+<ul>
+<li><strong>Cloud and web agents</strong> — Claude Code cloud sessions, Codex cloud, Cursor
+cloud agents, Jules, Codespaces and similar. The process is on someone else&#39;s
+VM.</li>
+<li><strong>Headless runs</strong> — <code>claude -p</code>, the Agent SDK, <code>codex exec</code>. The listener
+refuses these explicitly; there is no terminal they belonged to.</li>
+<li><strong>Detached multiplexer sessions.</strong> A detached tmux session has no attached
+client and therefore no window anywhere. It gets one again when you reattach.</li>
+<li><strong>CI runners and headless servers.</strong></li>
+</ul>
+<h4 id="focus-support-remote-sessions"><a class="anchor" href="#focus-support-remote-sessions">Remote sessions</a></h4>
+<p><strong>SSH without a multiplexer is refused</strong> (<code>remote</code>). The agent is on another
+machine; the window you want is the local terminal holding the SSH client, and
+the listener does not currently follow that chain.</p>
+<p><strong>SSH with tmux works</strong>, because tmux gives a join key that survives the machine
+boundary: the listener resolves the attached client&#39;s tty back to the local
+terminal and then selects the pane. This is the one remote case that is properly
+supported, and it is worth knowing about.</p>
+<h4 id="focus-support-containers-and-devcontainers-undocumented"><a class="anchor" href="#focus-support-containers-and-devcontainers-undocumented">Containers and devcontainers — undocumented</a></h4>
+<p>There is no container handling anywhere in this repo: no code, no tests, no
+documentation. In practice an agent inside a container has no macOS bundle id in
+its record and will be refused as <code>unsupported-host</code>, but that is inference from
+reading the code rather than a tested behaviour, and it is not a promise.</p>
+<h4 id="focus-support-ide-embedded-terminals"><a class="anchor" href="#focus-support-ide-embedded-terminals">IDE-embedded terminals</a></h4>
+<p>VS Code, Cursor and Windsurf get app-level activation only, and the obstacle is
+architectural rather than an oversight: <strong>VS Code runs one shared pty host
+process for every window</strong>, so walking up the process tree from an agent lands
+on a process that no window owns. Detecting VS Code is trivial; attributing a
+session to a <em>window</em> needs a side channel.</p>
+<p>The likely side channel already exists — the <code>~/.claude/ide/&lt;port&gt;.lock</code> files
+that Claude Code&#39;s own IDE integration writes, one per running IDE. The code
+comment in the bundle table already points at it. Not built.</p>
+<hr>
+<h3 id="focus-support-things-this-page-does-not-claim"><a class="anchor" href="#focus-support-things-this-page-does-not-claim">Things this page does not claim</a></h3>
+<p>The supported set above is transcribed from the listener&#39;s source and I checked
+it directly. The surrounding landscape — what other terminals and agent tools
+can do, and how common they are — comes from a research pass whose sources I did
+not re-verify individually. Where that research reported something as
+unconfirmed, it is described here as unconfirmed or left out.</p>
+<p>Three specific opportunities it surfaced that are <strong>not</strong> implemented and are
+recorded here only so they are not lost:</p>
+<ul>
+<li><strong>Ghostty 1.3+ ships an AppleScript dictionary</strong> with a <code>focus</code> command that
+brings a specific terminal&#39;s window to the front. That would move Ghostty from
+app-only to exact — subject to the same Apple Events consent problem that
+holds up Terminal.app.</li>
+<li><strong>Warp exposes a per-session focus URL</strong> resolving window, pane group and
+pane. It is undocumented, and it is inherited by child processes, so a stale
+value would raise the wrong window. Would need care.</li>
+<li><strong>Windsurf has been renamed to Devin Desktop.</strong> The bundle id in our table
+(<code>com.exafunction.windsurf</code>) may no longer be the shipping one.</li>
+</ul>
+<p>Several agent tools in common use have no entry at all: Antigravity, Kiro,
+Devin Desktop, Conductor, Nimbalyst, OpenHands&#39; desktop app and Amp among them.
+Each would raise only if its bundle id were added.</p>
+<hr>
+<h3 id="focus-support-when-focus-declines-what-you-see"><a class="anchor" href="#focus-support-when-focus-declines-what-you-see">When Focus declines, what you see</a></h3>
+<p>The listener answers with a reason rather than failing quietly:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Reason</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>unsupported-host</code></td>
+<td>the app is not in the table, or the record carries no bundle id</td>
+</tr>
+<tr>
+<td><code>remote</code></td>
+<td>an SSH session with no multiplexer</td>
+</tr>
+<tr>
+<td><code>not-running</code></td>
+<td>the agent&#39;s process is gone — this is what makes the board offer Resume</td>
+</tr>
+<tr>
+<td><code>app-not-running</code></td>
+<td>the app is in the table but is not open on that machine</td>
+</tr>
+<tr>
+<td><code>unsupported-type</code></td>
+<td>a headless entrypoint that was never a window</td>
+</tr>
+<tr>
+<td><code>no-record</code> / <code>bad-record</code></td>
+<td>nothing usable on disk for that session</td>
+</tr>
+<tr>
+<td><code>respawn-failed</code></td>
+<td>a Resume started something that never reported back in time</td>
+</tr>
+</tbody></table></div>
+<p>Three further reasons — <code>ambiguous</code>, <code>consent-needed</code> and <code>mux-detached</code> — are
+declared in the wire types and the boards can render them, but no code path
+currently emits any of them.</p>
+<p>A focus that runs but cannot confirm the app reached the front is reported as
+<code>selected</code> rather than <code>focused</code> — macOS keeps the current app in front while
+you are typing, and the listener does not pretend otherwise.</p>
 
 </section>
 <hr class="doc-split" />
@@ -1338,7 +1571,8 @@ under <a href="#api-legacy-single-tenant-endpoints">Legacy endpoints</a> apply.<
     &quot;app&quot;: { &quot;slug&quot;: &quot;herdr&quot;, &quot;name&quot;: &quot;herdr&quot;, &quot;kind&quot;: &quot;multiplexer&quot; }
   },
   &quot;createdAt&quot;: 1752096000000,
-  &quot;updatedAt&quot;: 1752096030000
+  &quot;updatedAt&quot;: 1752096030000,
+  &quot;tokens&quot;: 1284000
 }
 </code></pre>
 <p>Timestamps are epoch milliseconds. <code>status</code> is one of <code>idle</code>, <code>planning</code>,
@@ -1352,6 +1586,12 @@ turn and <code>idle</code> only at <code>SessionStart</code>, so <code>idle</cod
 board and <code>done</code> is where a card rests between prompts. <code>host</code> says where the session runs
 (see the <a href="#api-webhook-body-and-validation">webhook table</a>); it is <code>null</code> for
 the many sessions whose hook has not opted in, and the key is always present.</p>
+<p><code>tokens</code> is the lifetime token total this session&#39;s agent reports for it (see
+<a href="#api-per-session-token-totals">Per-session token totals</a>). Unlike <code>host</code> the key
+is <strong>absent</strong>, not <code>null</code>, when the board holds no total — and absent means
+<em>unknown</em>, never zero. It is not part of the webhook body: it arrives on its
+own endpoint and is attached to the card on the way out, so a board that never
+receives one emits exactly the session object it always did.</p>
 <h3 id="api-shared-endpoints-both-modes"><a class="anchor" href="#api-shared-endpoints-both-modes">Shared endpoints (both modes)</a></h3>
 <div class="table-wrap"><table>
 <thead>
@@ -1601,6 +1841,93 @@ series. <code>?days=N</code> selects the range (default 30, capped at 90):</p>
 <p>Each series keeps the last reading from <em>before</em> the requested range as its
 first point, so a step chart has a value to start from. Both are retained for
 90 days.</p>
+<h3 id="api-per-session-token-totals"><a class="anchor" href="#api-per-session-token-totals">Per-session token totals</a></h3>
+<p>The same pass over the same local logs that produces the project-day rows also
+keys them by session id — Claude stamps every assistant record with the session
+that produced it, and a Codex rollout is named after its session. The hook
+reports those totals with <code>POST /usage/sessions</code> (legacy, same secret rules as
+the webhook) or <code>POST /w/&lt;token&gt;/usage/sessions</code>:</p>
+<pre><code class="language-json">{
+  &quot;source&quot;: &quot;claude&quot;,
+  &quot;sessions&quot;: [
+    { &quot;session_id&quot;: &quot;019a7f3c-8b21-7c4e-9d6f-2b6e4a1c77d0&quot;, &quot;tokens&quot;: 1284000 },
+    { &quot;session_id&quot;: &quot;019a7f3c-9c02-7a55-b1e4-8d3f0c2a91b7&quot;, &quot;tokens&quot;: 96500 }
+  ]
+}
+</code></pre>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Required</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>source</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Agent kind, same rule as plan usage. Part of the key: the two agents mint session ids independently.</td>
+</tr>
+<tr>
+<td><code>sessions</code></td>
+<td>array</td>
+<td>yes</td>
+<td>1–100 rows. The cap keeps a report inside the 16 KB body limit; a longer run sends several.</td>
+</tr>
+<tr>
+<td><code>session_id</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Must match <code>^[A-Za-z0-9._:-]{1,64}$</code> — the webhook&#39;s charset, held to half its length (both agents use a uuid). The same id the webhook posts, so a row joins straight onto the card.</td>
+</tr>
+<tr>
+<td><code>tokens</code></td>
+<td>number</td>
+<td>yes</td>
+<td>The session&#39;s <strong>absolute lifetime total</strong>, never a delta. Clamped to ≥ 0 and floored.</td>
+</tr>
+</tbody></table></div>
+<p>A row is stored under (workspace, <code>source</code>, <code>session_id</code>) and <strong>replaces</strong> the
+value held, so a re-post is harmless and a post that never lands costs only
+freshness. It may legitimately move <strong>down</strong>: the hook&#39;s counter restarts when
+its state file is lost with the log already pruned, or when a session was
+evicted by the hook&#39;s own 400-entry cap and later resumed. The server stores
+what it is sent — it does not take the larger of the two, and a decrease is not
+an error. A duplicated <code>session_id</code> inside one body is not rejected either: the
+last one wins. A total for a session that has no card is accepted and kept, so
+a session that comes back finds its number waiting. Session-total posts share
+the webhook rate-limit budget. The response is <code>{&quot;ok&quot;: true, &quot;sessions&quot;: N}</code>,
+<code>N</code> being the rows stored after duplicates collapse.</p>
+<p><strong>Where it shows up.</strong> There is no read endpoint: the number is served as the
+<code>tokens</code> field of <a href="#api-the-session-object">the session object</a>, which the
+<code>snapshot</code> and <code>session</code> SSE events already carry, so a card gets its total the
+same way it gets every other change. When a report moves a number, every card
+it belongs to is rebroadcast as a <code>session</code> event; a report that repeats itself
+broadcasts nothing.</p>
+<p><strong>What the number is, and what it is not.</strong> It is the tokens <em>this session</em>
+spent, summed across days and — for Claude — across every folder it worked in.
+It is <strong>not</strong> a plan-limit percentage and does not convert into one: a limit
+window says how much of an account-wide allowance is gone
+(see <a href="#api-plan-usage">Plan usage</a>), while this counts tokens, and nothing here
+supplies a denominator. It is also <strong>not</strong> a slice of the per-project series:
+a project-day row sums across sessions, this sums across days, and adding the
+two together means nothing. Finally, the two agents count differently — Claude&#39;s
+figure is input + output + cache creation, Codex&#39;s is its own cumulative
+<code>total_token_usage</code>, which includes cache reads — so a Claude card&#39;s number and
+a Codex card&#39;s number are each exact about their own agent and are not
+comparable with each other. Anything showing them side by side should say whose
+they are rather than imply a shared scale.</p>
+<p><strong>Retention.</strong> A total is kept for <strong>7 days</strong> after the report that set it,
+on the server&#39;s own received-at clock — not the day-keyed retention the project
+rows use, and not the card&#39;s 24 hours. The hook reports on a 15-minute throttle
+and only for sessions whose number moved, so a session resumed after a weekend
+gets its card back from the first webhook but its total only from the next
+usage run; the stored value carries the card in between. Older totals are
+dropped from reads and from memory, and a workspace holds at most 500 (the
+oldest-updated is dropped first). Deleting a workspace removes its totals with
+everything else.</p>
 <h3 id="api-session-history"><a class="anchor" href="#api-session-history">Session history</a></h3>
 <p><code>GET /api/sessions/:id/history</code> (legacy) and
 <code>GET /w/&lt;token&gt;/api/sessions/:id/history</code> return a session&#39;s timeline —
@@ -1770,6 +2097,11 @@ new one goes out. Done and expired commands stay readable through <code>GET</cod
 <td>yes*</td>
 </tr>
 <tr>
+<td><code>POST /usage/sessions</code></td>
+<td>Report per-session token totals (see <a href="#api-per-session-token-totals">Per-session token totals</a>).</td>
+<td>yes*</td>
+</tr>
+<tr>
 <td><code>GET /events</code></td>
 <td>SSE stream (see <a href="#api-sse-event-format">format</a>); <code>?listener=</code> plus <code>Authorization: Bearer</code> subscribes a Focus listener (see <a href="#api-listener-presence">presence</a>).</td>
 <td>no; yes* with <code>?listener=</code></td>
@@ -1885,6 +2217,10 @@ workspace:</p>
 <tr>
 <td><code>POST /w/&lt;token&gt;/usage/projects</code></td>
 <td>Report per-project token spend (see <a href="#api-usage-history-and-per-project-spend">Usage history</a>).</td>
+</tr>
+<tr>
+<td><code>POST /w/&lt;token&gt;/usage/sessions</code></td>
+<td>Report per-session token totals (see <a href="#api-per-session-token-totals">Per-session token totals</a>).</td>
 </tr>
 <tr>
 <td><code>GET /w/&lt;token&gt;/api/usage</code></td>
@@ -2123,6 +2459,26 @@ are closed.</p>
 <td>Live workspaces</td>
 <td><code>MAX_WORKSPACES</code> (default 10000)</td>
 <td>Creation returns <code>503</code>.</td>
+</tr>
+<tr>
+<td>Rows per project-day report</td>
+<td>200</td>
+<td><code>400</code>; the hook sends several reports.</td>
+</tr>
+<tr>
+<td>Rows per session-total report</td>
+<td>100</td>
+<td><code>400</code>; the hook chunks at the same number.</td>
+</tr>
+<tr>
+<td>Per-session totals per workspace</td>
+<td>500</td>
+<td>The oldest-updated is dropped (soft-deleted).</td>
+</tr>
+<tr>
+<td>Per-session total retention</td>
+<td>7 days</td>
+<td>Dropped from reads and from memory; see <a href="#api-per-session-token-totals">Per-session token totals</a>.</td>
 </tr>
 <tr>
 <td>Request body</td>

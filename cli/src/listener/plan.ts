@@ -3,7 +3,7 @@ import type {
 } from './types';
 import {
   BUNDLE_RE, CODEX_ID_RE, HERDR_PANE_RE, INT_RE, ITERM_SESSION_RE, KITTY_LISTEN_RE, MUX_SESSION_RE,
-  SOCKET_RE, UUID_RE, ZELLIJ_PANE_RE, cleanEnv, isAbsPath,
+  SOCKET_RE, UUID_RE, WARP_FOCUS_RE, ZELLIJ_PANE_RE, cleanEnv, isAbsPath,
 } from './records';
 
 /**
@@ -171,6 +171,37 @@ const iterm2: Strategy = (ctx) => {
   ], 'pane', 'focused', true);
 };
 
+/**
+ * Warp's own per-session focus URL, which resolves window, pane group and pane
+ * — the only true per-session primitive any terminal here exposes besides
+ * iTerm2's, and the shape is identical: hand `open` a URL the app registered.
+ *
+ * Two things make this row more delicate than the iTerm2 one above.
+ *
+ * The variable is INHERITED. Warp exports WARP_FOCUS_URL into the session's
+ * environment and every child carries it, so an agent started from Warp but
+ * running somewhere else — inside another terminal, under a multiplexer — holds
+ * a perfectly well-formed URL naming a window that is not its own. Raising the
+ * wrong window is worse than raising none, because it looks like it worked.
+ * What makes that safe is not this function but the dispatch: a strategy is
+ * chosen by the RESOLVED host bundle, so this row runs only when the session's
+ * own app really is Warp. Inside a multiplexer the outer terminal decides, and
+ * a stale value carried in from elsewhere never selects this row.
+ *
+ * It is also UNDOCUMENTED — absent from Warp's published URI scheme — so it may
+ * change or vanish without notice. Hence `experimental`, and hence falling back
+ * to plain activation rather than failing when the value is missing or does not
+ * match: a Warp that stops exporting it should degrade to what Warp did before,
+ * not start refusing taps.
+ */
+const warp: Strategy = (ctx) => {
+  const url = ctx.env.WARP_FOCUS_URL;
+  if (!url || !WARP_FOCUS_RE.test(url)) return appOnly(ctx);
+  return leg('Warp session focus', [
+    { argv: [OPEN, url], expectFrontmost: ctx.bundle, label: 'open: warp session' },
+  ], 'pane', 'focused', true);
+};
+
 const wezterm: Strategy = (ctx) => {
   const wez = bin(ctx.bins, 'wezterm');
   const { WEZTERM_PANE: pane, WEZTERM_UNIX_SOCKET: socket } = ctx.env;
@@ -213,8 +244,8 @@ const STRATEGIES = new Map<string, Strategy>([
   ['com.apple.Terminal', appOnly],
   ['com.mitchellh.ghostty', appOnly],
   ['org.alacritty', appOnly],
-  ['dev.warp.Warp-Stable', appOnly],
-  ['dev.warp.Warp-Preview', appOnly],
+  ['dev.warp.Warp-Stable', warp],
+  ['dev.warp.Warp-Preview', warp],
   ['co.zeit.hyper', appOnly],
   ['org.tabby', appOnly],
   ['com.raphaelamorim.rio', appOnly],
@@ -601,6 +632,17 @@ function focusPlan(record: LocalRecord, facts: MachineFacts): PlanResult {
     if (!inner.ok) return inner;
     legs.push(inner.leg);
     const outer = facts.outer?.bundle;
+    // A detached multiplexer is refused outright rather than degraded to the
+    // pane. The tap asked for a window to come forward and there is no window
+    // anywhere; selecting a pane nobody can see and acking `selected` reports a
+    // visible change that did not happen. `Plan` carries no reason field, so
+    // "select the pane AND say it was detached" is not expressible here — and
+    // that is the right constraint: selecting a pane for a later reattach is a
+    // different feature with a different ack, not a side effect of this one.
+    //
+    // Only a mux that ANSWERED reaches this; "we could not ask" still degrades
+    // to the pane exactly as before (see OuterProbe in run.ts).
+    if (facts.muxDetached) return fail('mux-detached');
     if (outer === undefined) return finish(legs, 'pane', 'selected', true);
     if (!BUNDLE_RE.test(outer)) return fail('bad-record');
     const known = strategyFor(outer);

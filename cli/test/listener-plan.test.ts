@@ -342,6 +342,55 @@ describe('plan: multiplexers', () => {
     failed(focus(rec({ mux: HERDR }), facts({ bins: {} })), 'unsupported-host');
   });
 
+  it('warp: uses the session URL when it is one, and falls back to the app when it is not', () => {
+    const url = 'warp://session/019a7f3c-8b21-7c4e-9d6f-0123456789ab';
+    const good = ok(focus(inApp('dev.warp.Warp-Stable', { env: { WARP_FOCUS_URL: url } })));
+    expect(argvs(good)).toEqual([['/usr/bin/open', url]]);
+    expect(good.reach).toBe('pane');
+
+    // Fail CLOSED, not loud. Warp does not document this variable, so a Warp
+    // that stops exporting it must degrade to what Warp did before rather than
+    // start refusing taps. Every one of these is plain app activation.
+    const fallback = (env: Record<string, string>): void => {
+      expect(argvs(ok(focus(inApp('dev.warp.Warp-Stable', { env })))))
+        .toEqual([['/usr/bin/open', '-b', 'dev.warp.Warp-Stable']]);
+    };
+    fallback({});
+    // A foreign scheme must never reach `open` — it would pick a handler.
+    fallback({ WARP_FOCUS_URL: 'file:///etc/passwd' });
+    fallback({ WARP_FOCUS_URL: 'https://example.com/' });
+    // Right scheme, wrong shape.
+    fallback({ WARP_FOCUS_URL: 'warp://session/not-a-uuid' });
+    fallback({ WARP_FOCUS_URL: 'warp://window/019a7f3c-8b21-7c4e-9d6f-0123456789ab' });
+    fallback({ WARP_FOCUS_URL: `${url} ; open -a Calculator` });
+
+    // Preview carries the same row.
+    expect(argvs(ok(focus(inApp('dev.warp.Warp-Preview', { env: { WARP_FOCUS_URL: url } })))))
+      .toEqual([['/usr/bin/open', url]]);
+  });
+
+  it('refuses a detached multiplexer instead of reporting a pane nobody can see', () => {
+    // The mux answered that it has no attached client, so there is no window
+    // anywhere. Selecting the pane and acking `selected` would report a visible
+    // change that did not happen.
+    failed(focus(rec({ mux: HERDR }), facts({ muxDetached: true })), 'mux-detached');
+
+    // Without that fact the plan degrades to the pane exactly as it always did.
+    // This is the case the listener could not ask about — a missing binary, a
+    // bad socket, a non-darwin platform, an unknown uid — and it must NOT be
+    // reported as detachment.
+    const degraded = ok(focus(rec({ mux: HERDR }), facts()));
+    expect(degraded.reach).toBe('pane');
+    expect(degraded.result).toBe('selected');
+
+    // A detached session is refused even when the outer terminal is known:
+    // knowing which app it WOULD have been does not make a window exist.
+    failed(
+      focus(rec({ mux: HERDR }), facts({ muxDetached: true, outer: { bundle: 'com.mitchellh.ghostty' } })),
+      'mux-detached'
+    );
+  });
+
   it('tmux: parses session:@window.%pane into select-window, select-pane and an optional switch-client', () => {
     const p = ok(focus(rec({ mux: TMUX })));
     expect(argvs(p)).toEqual([

@@ -171,6 +171,19 @@ export interface MachineFacts {
   /** For tmux/herdr/screen/zellij: the outer terminal that the attached client sits in, if resolvable. */
   outer?: { bundle?: string; tty?: string; env?: Record<string, string> };
   /**
+   * True ONLY when a multiplexer was asked and answered that it has no attached
+   * client — a genuinely detached session, with no window anywhere to raise.
+   *
+   * It is deliberately not the same as `outer` being absent. That happens for
+   * five different reasons and only one of them is detachment: the binary is
+   * missing, the socket is unusable, `list-clients` exited non-zero, the
+   * platform is not darwin, or the uid is unknown. Reporting `mux-detached` for
+   * any of those would be a confident lie about the user's machine, so the
+   * resolvers distinguish "asked, and there are none" from "could not ask" and
+   * only the first sets this.
+   */
+  muxDetached?: boolean;
+  /**
    * Absolute path of `agstatus-resume`, the launcher the installer writes into
    * the state dir. It is the ONLY thing a resume plan ever runs: hosts that
    * take an argv array get it as argv[0], and hosts that only accept a command

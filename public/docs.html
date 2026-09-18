@@ -1106,6 +1106,11 @@ focused inside it stays focused.</p>
 <td>session</td>
 </tr>
 <tr>
+<td><strong>Warp</strong></td>
+<td><code>open warp://session/&lt;uuid&gt;</code></td>
+<td>window, pane group and pane — <strong>experimental</strong>, see below</td>
+</tr>
+<tr>
 <td><strong>WezTerm</strong></td>
 <td><code>wezterm cli activate-pane</code></td>
 <td>pane</td>
@@ -1122,7 +1127,7 @@ focused inside it stays focused.</p>
 </tr>
 </tbody></table></div>
 <h4 id="focus-support-app-only"><a class="anchor" href="#focus-support-app-only">App only</a></h4>
-<p>Terminal.app · Ghostty · Alacritty · Warp · Hyper · Tabby · Rio · Xcode ·
+<p>Terminal.app · Ghostty · Alacritty · Hyper · Tabby · Rio · Xcode ·
 VS Code · VS Code Insiders · Cursor · Windsurf · Claude Desktop</p>
 <p>For these the app comes forward and that is all. The reason is the same for most
 of them and is worth stating plainly: <strong>tab-exact focus in Terminal.app and
@@ -1203,9 +1208,17 @@ recorded here only so they are not lost:</p>
 brings a specific terminal&#39;s window to the front. That would move Ghostty from
 app-only to exact — subject to the same Apple Events consent problem that
 holds up Terminal.app.</li>
-<li><strong>Warp exposes a per-session focus URL</strong> resolving window, pane group and
-pane. It is undocumented, and it is inherited by child processes, so a stale
-value would raise the wrong window. Would need care.</li>
+<li><strong>Warp&#39;s per-session focus URL is now implemented</strong> — it moved to the exact
+table above. Two caveats stand. It is undocumented, absent from Warp&#39;s
+published URI scheme, so it may change without notice; that is why the row
+ships experimental and falls back to plain activation rather than refusing
+when the value is missing or malformed. And Warp exports the variable into
+the environment, so children inherit it: a session started from Warp but
+running elsewhere holds a well-formed URL naming someone else&#39;s window. What
+prevents that raising the wrong window is the dispatch, not the URL check —
+the row runs only when the session&#39;s resolved host really is Warp. Nobody
+here has a Warp install, so this is verified at the planner and <strong>not</strong>
+end to end.</li>
 <li><strong>Windsurf has been renamed to Devin Desktop.</strong> The bundle id in our table
 (<code>com.exafunction.windsurf</code>) may no longer be the shipping one.</li>
 </ul>

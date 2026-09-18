@@ -34,13 +34,14 @@ focused inside it stays focused.
 | **GNU screen** | `screen -X select` | window |
 | **kitty** | `kitten @ focus-window --match id:` | **only if you configured `allow_remote_control` and a `listen_on unix:` socket** — off by default |
 | **iTerm2** | `iterm2:reveal?sessionid=` | session |
+| **Warp** | `open warp://session/<uuid>` | window, pane group and pane — **experimental**, see below |
 | **WezTerm** | `wezterm cli activate-pane` | pane |
 | **Codex Desktop** | `codex://threads/<id>` | the thread |
 | **JetBrains IDEs, Zed, Android Studio** | `open -b <bundle> <project root>` | the project window |
 
 ### App only
 
-Terminal.app · Ghostty · Alacritty · Warp · Hyper · Tabby · Rio · Xcode ·
+Terminal.app · Ghostty · Alacritty · Hyper · Tabby · Rio · Xcode ·
 VS Code · VS Code Insiders · Cursor · Windsurf · Claude Desktop
 
 For these the app comes forward and that is all. The reason is the same for most
@@ -140,9 +141,17 @@ recorded here only so they are not lost:
   brings a specific terminal's window to the front. That would move Ghostty from
   app-only to exact — subject to the same Apple Events consent problem that
   holds up Terminal.app.
-- **Warp exposes a per-session focus URL** resolving window, pane group and
-  pane. It is undocumented, and it is inherited by child processes, so a stale
-  value would raise the wrong window. Would need care.
+- **Warp's per-session focus URL is now implemented** — it moved to the exact
+  table above. Two caveats stand. It is undocumented, absent from Warp's
+  published URI scheme, so it may change without notice; that is why the row
+  ships experimental and falls back to plain activation rather than refusing
+  when the value is missing or malformed. And Warp exports the variable into
+  the environment, so children inherit it: a session started from Warp but
+  running elsewhere holds a well-formed URL naming someone else's window. What
+  prevents that raising the wrong window is the dispatch, not the URL check —
+  the row runs only when the session's resolved host really is Warp. Nobody
+  here has a Warp install, so this is verified at the planner and **not**
+  end to end.
 - **Windsurf has been renamed to Devin Desktop.** The bundle id in our table
   (`com.exafunction.windsurf`) may no longer be the shipping one.
 

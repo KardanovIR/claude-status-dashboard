@@ -61,6 +61,22 @@ export const SOCKET_RE = /^\/[^\u0000-\u001f\u007f]{0,199}$/;
 /** kitty's `listen_on`, and only the unix: form — `fd:` and `tcp:` are useless to a stranger process. */
 export const KITTY_LISTEN_RE = /^unix:\/[^\u0000-\u001f\u007f]{0,199}$/;
 export const INT_RE = /^[0-9]{1,10}$/;
+/**
+ * Warp's per-session focus URL: `warp://session/<uuid>`, and nothing else.
+ *
+ * This value is handed straight to `/usr/bin/open`, so its shape is the whole
+ * defence. The scheme is pinned, the single path segment is pinned, and the id
+ * must be a uuid — a permissive pattern here would let a string read off the
+ * machine choose which URL handler runs, which is a different class of bug
+ * from a focus that misses.
+ *
+ * It cannot defend against staleness: Warp exports this into the environment
+ * and children inherit it, so a session launched FROM Warp but running
+ * somewhere else carries a perfectly well-formed URL pointing at the wrong
+ * window. Only the planner can catch that, by reaching this row solely when
+ * the resolved host bundle is already Warp.
+ */
+export const WARP_FOCUS_RE = /^warp:\/\/session\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const ITERM_SESSION_RE = /^w\d+t\d+p\d+:[0-9A-Fa-f-]{36}$/;
 /** Claude Code's own tmux target recipe: `session:@window.%pane`. */
 export const TMUX_TARGET_RE = /^[A-Za-z0-9_.-]{1,64}:@?\d{1,6}\.%?\d{1,6}$/;
@@ -118,6 +134,7 @@ const ENV_RULES = new Map<string, RegExp>([
   ['ITERM_SESSION_ID', ITERM_SESSION_RE], ['TERM_SESSION_ID', TEXT_RE],
   ['WEZTERM_PANE', INT_RE], ['WEZTERM_UNIX_SOCKET', SOCKET_RE], ['WEZTERM_EXECUTABLE', ABS_RE],
   ['ALACRITTY_WINDOW_ID', INT_RE], ['ALACRITTY_SOCKET', SOCKET_RE], ['WARP_IS_LOCAL_SHELL_SESSION', TEXT_RE],
+  ['WARP_FOCUS_URL', WARP_FOCUS_RE],
   ['VSCODE_PID', INT_RE], ['VSCODE_GIT_ASKPASS_MAIN', ABS_RE], ['CURSOR_TRACE_ID', TEXT_RE], ['ZED_TERM', TEXT_RE],
   ['CLAUDE_CODE_SSE_PORT', INT_RE], ['CLAUDE_CODE_HOST_SESSION_ID', TEXT_RE],
   ['TMUX', TMUX_VAR_RE], ['TMUX_PANE', TMUX_PANE_RE],

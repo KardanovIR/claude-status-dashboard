@@ -1327,6 +1327,42 @@ describe('resolveFacts', () => {
       process.getuid = getuid;
     }
     expect(none.calls).toEqual([]);
+    // The uid never arrived, so tmux was never asked — which is emphatically
+    // not the same as tmux answering that it has no clients.
+    expect((await resolveFacts(TMUX, { tmux }, none.execFile, true, 'darwin')).muxDetached).toBeUndefined();
+  });
+
+  it('tmux: tells a detached session apart from a tmux it could not ask', async () => {
+    const tmux = path.join(fx.root, 'bin', 'tmux');
+
+    // ASKED, AND THERE ARE NONE. tmux exits 0 and lists nothing: the session is
+    // real and detached, so there is no window anywhere to raise.
+    const detached = ps({ tmux: '' });
+    const yes = await resolveFacts(TMUX, { tmux }, detached.execFile, true, 'darwin', UID);
+    expect(yes.muxDetached).toBe(true);
+    expect(yes.outer).toBeUndefined();
+
+    // COULD NOT ASK — each of these must leave muxDetached unset. This half is
+    // the point of the change: the planner turns muxDetached into a refusal, so
+    // a false positive here would tell the user their session is detached on
+    // the strength of a missing binary or a bad socket.
+    const broke: ExecFile = async (file, args) =>
+      args[2] === 'list-clients' ? { code: 1, stdout: '' } : { code: 0, stdout: '' };
+    expect((await resolveFacts(TMUX, { tmux }, broke, true, 'darwin', UID)).muxDetached).toBeUndefined();
+
+    // No tmux on the machine at all.
+    expect((await resolveFacts(TMUX, {}, detached.execFile, true, 'darwin', UID)).muxDetached).toBeUndefined();
+
+    // tmux answered, but with something we do not understand. Unparsable is not
+    // evidence of detachment.
+    const garbled = ps({ tmux: 'not a client row\n' });
+    expect((await resolveFacts(TMUX, { tmux }, garbled.execFile, true, 'darwin', UID)).muxDetached).toBeUndefined();
+
+    // herdr never claims detachment: not finding a process of ours is a failure
+    // to look, not the multiplexer answering a question about itself.
+    const link = path.join(fx.root, 'bin', 'herdr');
+    expect((await resolveFacts(HERDR, { herdr: link }, ps({}).execFile, true, 'darwin', UID)).muxDetached)
+      .toBeUndefined();
   });
 });
 

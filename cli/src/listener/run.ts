@@ -430,6 +430,21 @@ async function outerOfTty(
   return { tty };
 }
 
+/**
+ * What a multiplexer probe learned. The two fields answer different questions
+ * and an empty object is the third answer:
+ *
+ *   { outer }          — there is an attached client, and this is its terminal
+ *   { detached: true } — the mux ANSWERED, and it has no attached client
+ *   {}                 — we could not ask, so we know nothing
+ *
+ * The distinction exists because the planner used to collapse all three into
+ * "stop at the pane and report `selected`", which made a detached session
+ * indistinguishable from a missing tmux binary. Only the middle case may become
+ * `mux-detached`; claiming it for the third would be a confident lie.
+ */
+type OuterProbe = { outer?: MachineFacts['outer']; detached?: boolean };
+
 /** tmux: the most recently active attached client, by its own accounting. */
 async function tmuxOuter(
   mux: NonNullable<LocalRecord['mux']>,
@@ -437,25 +452,30 @@ async function tmuxOuter(
   exec: ExecFile,
   platform: NodeJS.Platform,
   uid: number
-): Promise<MachineFacts['outer']> {
+): Promise<OuterProbe> {
   const tmux = bins.tmux;
   const { socket } = mux;
-  if (!isAbsPath(tmux) || !socket || !SOCKET_RE.test(socket)) return undefined;
+  if (!isAbsPath(tmux) || !socket || !SOCKET_RE.test(socket)) return {};
   const clients = await exec(
     tmux,
     ['-S', socket, 'list-clients', '-F', '#{client_pid} #{client_tty} #{client_activity}'],
     { env: PS_ENV, timeout: PS_TIMEOUT_MS }
   );
-  if (clients.code !== 0) return undefined;
+  if (clients.code !== 0) return {};
   let newest: { pid: number; tty: string; activity: number } | undefined;
+  let rows = 0;
   for (const line of clients.stdout.split('\n')) {
     const m = /^(\d{1,10}) (\S+) (\d{1,12})$/.exec(line.trim());
     if (!m) continue;
+    rows += 1;
     const client = { pid: Number(m[1]), tty: m[2], activity: Number(m[3]) };
     if (!newest || client.activity > newest.activity) newest = client;
   }
-  if (!newest) return undefined;
-  return outerOfTty(newest.pid, newest.tty, exec, platform, uid);
+  // tmux exited 0 and listed nothing parsable. Zero rows is what a detached
+  // session looks like; rows that all failed the pattern mean tmux said
+  // something we do not understand, which is not evidence of detachment.
+  if (!newest) return rows === 0 && clients.stdout.trim() === '' ? { detached: true } : {};
+  return { outer: await outerOfTty(newest.pid, newest.tty, exec, platform, uid) };
 }
 
 /**
@@ -471,9 +491,9 @@ async function herdrOuter(
   exec: ExecFile,
   platform: NodeJS.Platform,
   uid: number
-): Promise<MachineFacts['outer']> {
+): Promise<OuterProbe> {
   const herdr = bins.herdr;
-  if (!isAbsPath(herdr)) return undefined;
+  if (!isAbsPath(herdr)) return {};
   const paths = new Set([herdr]);
   try {
     paths.add(fs.realpathSync(herdr));
@@ -485,7 +505,7 @@ async function herdrOuter(
     timeout: PS_TIMEOUT_MS,
     maxBuffer: TABLE_MAX_BUFFER,
   });
-  if (table.code !== 0) return undefined;
+  if (table.code !== 0) return {};
   let newest: { pid: number; tty: string } | undefined;
   for (const line of table.stdout.split('\n')) {
     const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*?)\s*$/.exec(line);
@@ -499,8 +519,13 @@ async function herdrOuter(
     const row = { pid: Number(pid), tty: `/dev/${tty}` };
     if (!newest || row.pid > newest.pid) newest = row;
   }
-  if (!newest) return undefined;
-  return outerOfTty(newest.pid, newest.tty, exec, platform, uid);
+  // `ps` succeeded and no herdr client of ours owns a tty. Unlike tmux, this is
+  // not the mux answering a question about itself — it is us failing to find a
+  // process, which a client started as a bare `herdr` through PATH also looks
+  // like (see the argv[0] rule above). Too weak to call detachment, so it stays
+  // "we could not tell" and the plan degrades to the pane as it always did.
+  if (!newest) return {};
+  return { outer: await outerOfTty(newest.pid, newest.tty, exec, platform, uid) };
 }
 
 export interface FactsOptions {
@@ -553,10 +578,14 @@ export async function resolveFacts(
   if (!record.mux || uid === undefined) return facts;
   if (!agentAlive && !opts.respawn) return facts;
   try {
-    let outer: MachineFacts['outer'];
-    if (record.mux.kind === 'tmux') outer = await tmuxOuter(record.mux, bins, exec, platform, uid);
-    else if (record.mux.kind === 'herdr') outer = await herdrOuter(bins, exec, platform, uid);
-    if (outer) facts.outer = outer;
+    let probe: OuterProbe = {};
+    if (record.mux.kind === 'tmux') probe = await tmuxOuter(record.mux, bins, exec, platform, uid);
+    else if (record.mux.kind === 'herdr') probe = await herdrOuter(bins, exec, platform, uid);
+    if (probe.outer) facts.outer = probe.outer;
+    // Only tmux and herdr are probed at all, so zellij and screen never set
+    // this and never report detachment — they would need their own probe
+    // (`zellij list-sessions`, `screen -ls`) to say anything honest about it.
+    if (probe.detached) facts.muxDetached = true;
   } catch {
     /* the planner degrades to the pane */
   }

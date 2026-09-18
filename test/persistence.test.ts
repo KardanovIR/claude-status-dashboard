@@ -71,7 +71,7 @@ describe.skipIf(!TEST_PG_URL)('persistence (PostgreSQL)', () => {
     }
   });
 
-  it('a session host survives a restart, and every soft delete scrubs it from the row', async () => {
+  it('a session host survives a restart, and every soft delete keeps it on the row', async () => {
     const host = {
       machine: { id: '9f2c'.repeat(8), name: 'Mac' },
       app: { slug: 'herdr', name: 'herdr', kind: 'multiplexer' },
@@ -94,8 +94,12 @@ describe.skipIf(!TEST_PG_URL)('persistence (PostgreSQL)', () => {
       expect(byId.get('dismissed')).toEqual(host);
       expect(byId.get('bare')).toBeNull();
 
-      // One session dismissed, then the whole workspace: both soft deletes
-      // must leave the row flagged AND without its host.
+      // One session dismissed, then the whole workspace. Both soft deletes must
+      // leave the row FLAGGED AND STILL CARRYING ITS HOST. Every one of these
+      // paths used to null the column — dismiss, workspace delete, cap
+      // eviction, clear, and the daily TTL sweep — which destroyed the machine
+      // and app a session ran on rather than hiding it. Deleting hides; it does
+      // not erase.
       await request(second.app).delete(`/w/${token}/sessions/dismissed`).expect(200);
       await request(second.app).delete(`/w/${token}`).expect(200);
       await second.store.flush();
@@ -113,7 +117,11 @@ describe.skipIf(!TEST_PG_URL)('persistence (PostgreSQL)', () => {
       expect(rows.rows).toHaveLength(2);
       for (const row of rows.rows as Array<{ id: string; host: string | null; deleted_at: string | null }>) {
         expect(row.deleted_at, row.id).not.toBeNull();
-        expect(row.host, row.id).toBeNull();
+        // Flagged AND intact. This assertion is inverted from what it was: it
+        // used to require the host be gone, which is what made a delete
+        // destructive. If a future change reintroduces a `host = NULL` on any
+        // soft-delete path, this fails.
+        expect(row.host, row.id).not.toBeNull();
       }
     } finally {
       await pool.end();

@@ -130,8 +130,9 @@
 
   <div class="callout">
     <p><strong>The short version.</strong> There are no accounts and no tracking. The server stores
-      only the small status updates your own machine sends it, deletes them automatically after
-      24 hours, and you can delete everything at any time.</p>
+      only the small status updates your own machine sends it, stops serving them automatically
+      after 24 hours, and you can delete everything at any time. Deleted records are flagged as
+      deleted rather than erased on the spot — see Retention and deletion.</p>
   </div>
 
   <h2>What the server stores</h2>
@@ -180,8 +181,8 @@
     <strong>Nothing about your files, folders, terminal, or environment leaves the
     machine</strong> — those details stay in a local file only the listener reads, and are
     removed when Focus is turned off and the listener is uninstalled (the listener ships in a
-    later release). Turning Focus off clears the labels from your board. Machines with Focus off
-    send exactly what the table above lists.</p>
+    later release). Turning Focus off stops any further labels being sent; labels already on
+    your board stay there. Machines with Focus off send exactly what the table above lists.</p>
 
   <h2>What we do not collect</h2>
   <ul>
@@ -206,18 +207,18 @@
 
   <h2>Retention and deletion</h2>
   <ul>
-    <li>Sessions are deleted automatically <strong>24 hours</strong> after their last update.</li>
+    <li>Sessions stop being shown or served automatically <strong>24 hours</strong> after their
+      last update.</li>
     <li>Usage history and per-project token totals are kept for <strong>90 days</strong>.</li>
-    <li>Boards untouched for <strong>60 days</strong> are deleted with all their data.</li>
+    <li>Boards untouched for <strong>60 days</strong> are removed from the service along with all
+      their data — flagged as deleted rather than erased, as below.</li>
     <li>You can delete a board and everything in it at any time, from the app
       (Settings → "Delete board") or with one request:
       <code>curl -X DELETE https://agstatus.online/w/&lt;token&gt;</code></li>
   </ul>
   <p>Deleting removes data from the service immediately: it stops being served, shown, or returned
-    by the API, on every device. Records are flagged as deleted rather than erased on the spot, so
-    a copy can remain in the database that backs the service. If you want something erased
-    outright, <a href="https://github.com/KardanovIR/claude-status-dashboard/issues">open an
-    issue</a> and it will be removed.</p>
+    by the API, on every device. It does not erase it. Records are flagged as deleted and the rows
+    stay in the database that backs the service.</p>
 
   <h2>Self-hosting</h2>
   <p>AgStatus is open source under the MIT license. You can run the entire server yourself, in

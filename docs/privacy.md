@@ -13,9 +13,10 @@ server operated by the project maintainer.
 - **Minimal data.** The server stores only what your own machine sends it:
   a session id, a project folder name, a status word, and a short status
   message. Nothing else is collected.
-- **Short retention.** On the hosted server, sessions are deleted
-  automatically 24 hours after their last update. Boards untouched for 60
-  days are deleted entirely.
+- **Short retention.** On the hosted server, sessions stop being shown or
+  served automatically 24 hours after their last update, and boards
+  untouched for 60 days go the same way. Both are flagged as deleted rather
+  than erased on the spot — see Retention and deletion.
 - **No tracking.** No analytics, no advertising identifiers, no third-party
   SDKs. The app talks only to the status-board server you configure.
 - **You can delete everything at any time.**
@@ -68,8 +69,9 @@ receive taps; it sends nothing but the acknowledgement of a tap. Nothing
 about your files, folders, terminal, or environment leaves the machine —
 those details stay in a local file only the listener reads, and are removed
 when Focus is turned off and the listener is uninstalled (the listener ships
-in a later release). Turning Focus off clears the labels from your board.
-Machines with Focus off send exactly what the table above lists.
+in a later release). Turning Focus off stops any further labels being sent;
+labels already on your board stay there. Machines with Focus off send exactly
+what the table above lists.
 
 ## Push notifications
 
@@ -92,16 +94,17 @@ On the hosted server:
 
 - Sessions expire **24 hours** after their last update.
 - Usage history and per-project token totals are kept for **90 days**.
-- Boards idle for **60 days** are deleted with all their data.
+- Boards idle for **60 days** are removed from the service along with all
+  their data — flagged as deleted rather than erased, as below.
 - You can delete a board and all its data immediately, at any time, from the
   app (Settings → "Delete board") or with one request:
   `curl -X DELETE https://<server>/w/<token>`
 
 Deleting removes data from the service immediately: it stops being served,
-shown, or returned by the API. Records are flagged as deleted rather than
-erased on the spot (see the soft-delete note in
-[self-hosting](self-hosting.md#persistence-postgresql)), so a copy can remain
-in the backing database. To have something erased outright, open an issue.
+shown, or returned by the API, on every device. It does not erase it. Records
+are flagged as deleted (see the soft-delete note in
+[self-hosting](self-hosting.md#persistence-postgresql)) and the rows stay in
+the database that backs the service.
 
 ## Self-hosting
 

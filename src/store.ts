@@ -723,7 +723,12 @@ export class Store {
     this.listenerWindows.delete(wsId);
     if (existed) {
       const now = Date.now();
-      this.exec('UPDATE sessions SET deleted_at = $2, host = NULL WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
+      // `host` used to be nulled here, which was the one place this store
+      // DESTROYED data rather than hiding it: the machine label and the app a
+      // session ran in were overwritten and unrecoverable. Every other column
+      // survives a delete, and now so does this one. Deleting a board flags its
+      // rows; it does not erase them.
+      this.exec('UPDATE sessions SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
       this.exec('UPDATE devices SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
       this.exec('UPDATE usage_limits SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
       this.exec('UPDATE session_events SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
@@ -775,8 +780,11 @@ export class Store {
       }
       if (oldest) {
         map.delete(oldest.id);
+        // Flagged, not erased — `host` stays on the row. This used to null it,
+        // which made a cap eviction destroy the machine and app a session ran
+        // on, unrecoverably and without anyone asking for a delete at all.
         this.exec(
-          'UPDATE sessions SET deleted_at = $3, host = NULL WHERE workspace_id = $1 AND id = $2',
+          'UPDATE sessions SET deleted_at = $3 WHERE workspace_id = $1 AND id = $2',
           [wsId, oldest.id, now]
         );
         this.dropEvents(wsId, oldest.id);
@@ -1216,8 +1224,10 @@ export class Store {
   deleteSession(wsId: string, id: string): boolean {
     const removed = this.sessions.get(wsId)?.delete(id) ?? false;
     if (removed) {
+      // Flagged, not erased. `host` stays on the row like every other column:
+      // dismissing a card hides it, and hiding is not destroying.
       this.exec(
-        'UPDATE sessions SET deleted_at = $3, host = NULL WHERE workspace_id = $1 AND id = $2',
+        'UPDATE sessions SET deleted_at = $3 WHERE workspace_id = $1 AND id = $2',
         [wsId, id, Date.now()]
       );
       this.dropEvents(wsId, id);
@@ -1233,8 +1243,9 @@ export class Store {
       map.clear();
     }
     this.cancelCommands(wsId, null);
+    // Flagged, not erased — `host` survives a clear like every other column.
     this.exec(
-      'UPDATE sessions SET deleted_at = $2, host = NULL WHERE workspace_id = $1 AND deleted_at IS NULL',
+      'UPDATE sessions SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL',
       [wsId, Date.now()]
     );
   }
@@ -1520,8 +1531,12 @@ export class Store {
       for (const [id, s] of map) {
         if (s.updatedAt < cutoff) {
           map.delete(id);
+          // Flagged, not erased. This is the path that matters most: the TTL
+          // fires on its own every day, so nulling `host` here destroyed the
+          // machine and app of every session that simply went quiet — without
+          // anyone asking for anything to be deleted.
           this.exec(
-            'UPDATE sessions SET deleted_at = $3, host = NULL WHERE workspace_id = $1 AND id = $2',
+            'UPDATE sessions SET deleted_at = $3 WHERE workspace_id = $1 AND id = $2',
             [wsId, id, Date.now()]
           );
           this.dropEvents(wsId, id);

@@ -49,6 +49,15 @@ const PROJECT_NAME_MAX = 120;
 // Sized to fit inside the 16kb JSON body limit (~65 bytes a row); a backfill
 // spanning more than this sends several reports.
 const MAX_PROJECT_DAYS_PER_REPORT = 200;
+// A session row is wider than a project-day row (an id where the other has a
+// folder name and a day), so fewer fit the same 16kb body: 100 rows of
+// {"session_id":"<uuid>","tokens":<n>} measure ~6.5kb, and ~11kb at the 64-char
+// id bound below. The hook chunks at the same number (MAX_SESSION_TOTALS_PER_POST).
+const MAX_SESSION_TOTALS_PER_REPORT = 100;
+// Session ids on this endpoint share the webhook's charset but are held to
+// half its length: both agents name sessions with a uuid (36 chars), and the
+// bound is what turns the body estimate above into an actual limit.
+const SESSION_TOTAL_ID_MAX = 64;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DEFAULT_HISTORY_DAYS = 30;
 // Focus: a tap is {id, type, session_id}; the id is a client uuid so a retry
@@ -444,6 +453,84 @@ export function createApp(cfg: AppConfig): CreatedApp {
     res.json({ ok: true, days: days.length });
   }
 
+  /**
+   * Lifetime token totals per session, from the same pass over the same local
+   * logs that feeds /usage/projects — a second key on those records, not a
+   * second measure of the same thing. A project-day sums across sessions; a
+   * session total sums across days and folders. Neither converts into the
+   * other, and neither is a share of any plan limit.
+   *
+   * The card is where this number is read, so a stored total is attached to
+   * the session on its way out (Store.withTokens) and the cards that moved are
+   * rebroadcast below. That keeps SSE the one delivery path for anything a
+   * card shows: no second stream to join, no polling, and a client that has
+   * never heard of the field simply ignores it.
+   */
+  function handleSessionUsage(wsId: string, req: Request, res: Response): void {
+    if (cfg.multiTenant && cfg.rateLimit && !store.allowWebhook(wsId)) {
+      res.status(429).json({ error: 'rate limit exceeded' });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const source = typeof body.source === 'string' ? body.source : '';
+    if (!USAGE_SOURCE_RE.test(source)) {
+      res.status(400).json({ error: `source must match ${USAGE_SOURCE_RE}` });
+      return;
+    }
+    const raw = body.sessions;
+    if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_SESSION_TOTALS_PER_REPORT) {
+      res.status(400).json({ error: `sessions must be 1-${MAX_SESSION_TOTALS_PER_REPORT} objects` });
+      return;
+    }
+    // Keyed while parsing, so a repeated id inside one body replaces its
+    // earlier value — last one wins, rather than a 400 over something the
+    // store would collapse anyway.
+    const byId = new Map<string, number>();
+    for (const item of raw) {
+      if (typeof item !== 'object' || item === null) {
+        res.status(400).json({ error: 'each session must be an object' });
+        return;
+      }
+      const t = item as Record<string, unknown>;
+      const sessionId = typeof t.session_id === 'string' ? t.session_id : '';
+      // Bounded above as well as below. `Number.isFinite` alone accepts 1e300,
+      // which survives `Math.floor`, is stored, and is then served to three
+      // clients that format it for a card — and past MAX_SAFE_INTEGER the
+      // value has stopped being an exact integer at all, so it cannot mean
+      // what the wire contract says it means ("a non-negative integer").
+      // Rejecting is right rather than clamping: a number that large is a bug
+      // or an attack at the sender, and silently storing a plausible-looking
+      // ceiling would hide it.
+      const tokens =
+        typeof t.tokens === 'number' && Number.isFinite(t.tokens) ? Math.max(0, Math.floor(t.tokens)) : -1;
+      if (
+        !sessionId ||
+        sessionId.length > SESSION_TOTAL_ID_MAX ||
+        !SESSION_ID_RE.test(sessionId) ||
+        tokens < 0 ||
+        tokens > Number.MAX_SAFE_INTEGER
+      ) {
+        res.status(400).json({
+          error:
+            `each session needs a session_id matching ^[A-Za-z0-9._:-]{1,${SESSION_TOTAL_ID_MAX}}$ ` +
+            'and numeric tokens',
+        });
+        return;
+      }
+      byId.set(sessionId, tokens);
+    }
+    const rows = Array.from(byId, ([sessionId, tokens]) => ({ sessionId, tokens }));
+    // Only the cards on this board whose number actually moved: a report that
+    // repeats itself broadcasts nothing, and a total for a session that has no
+    // card (already expired, or never posted to this board) is stored for the
+    // card's return without waking any viewer.
+    for (const id of store.setSessionTotals(wsId, source, rows)) {
+      const session = store.getSession(wsId, id);
+      if (session && session.source === source) broadcast(wsId, 'session', session);
+    }
+    res.json({ ok: true, sessions: rows.length });
+  }
+
   /** Both series behind the usage detail screen: limit over time, and by project. */
   function handleUsageHistory(wsId: string, req: Request, res: Response): void {
     const asked = Number(req.query.days);
@@ -766,6 +853,10 @@ export function createApp(cfg: AppConfig): CreatedApp {
       handleProjectUsage(LEGACY_WS, req, res)
     );
 
+    app.post('/usage/sessions', requireSecret, (req, res) =>
+      handleSessionUsage(LEGACY_WS, req, res)
+    );
+
     app.get('/api/usage', (_req, res) => {
       res.json(store.getUsage(LEGACY_WS));
     });
@@ -927,6 +1018,12 @@ export function createApp(cfg: AppConfig): CreatedApp {
       const wsId = resolveWs(req, res);
       if (!wsId) return;
       handleProjectUsage(wsId, req, res);
+    });
+
+    app.post('/w/:token/usage/sessions', (req, res) => {
+      const wsId = resolveWs(req, res);
+      if (!wsId) return;
+      handleSessionUsage(wsId, req, res);
     });
 
     app.get('/w/:token/api/usage', (req, res) => {

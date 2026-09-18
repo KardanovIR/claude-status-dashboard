@@ -43,6 +43,26 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
     /// Where the session runs, when its hook opted in to Focus; nil for the
     /// many sessions that haven't (the server always sends the key).
     var host: Host?
+    /// What THIS session has spent over its lifetime, as the board last heard
+    /// — and nil whenever the board holds no figure for it.
+    ///
+    /// Nil means UNKNOWN, never zero. The server omits the key entirely (it
+    /// never sends null) when usage reporting is off on that machine, when the
+    /// agent is neither Claude nor Codex, when nothing has been reported for
+    /// the session yet, or when the total aged out. A card showing "0" there
+    /// would claim an agent that has been working all evening spent nothing,
+    /// so an absent figure must render as no number at all.
+    ///
+    /// It is a count, not a share: Claude's figure is input + output +
+    /// cache-creation tokens, Codex's is its own cumulative total with cache
+    /// reads included. The two are each exact about their own agent and are
+    /// not comparable with each other, and neither carries a denominator —
+    /// this must never be drawn against a plan limit.
+    ///
+    /// It can go DOWN as well as up (the hook's counter legitimately restarts
+    /// after a lost state file, or an evicted session resumes), so each frame
+    /// REPLACES this value. Nothing may keep a high-water mark of it.
+    var tokens: Int64?
 
     var updatedDate: Date {
         Date(timeIntervalSince1970: Double(updatedAt) / 1000)
@@ -56,7 +76,8 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
          source: String = "claude",
          createdAt: Int64,
          updatedAt: Int64,
-         host: Host? = nil) {
+         host: Host? = nil,
+         tokens: Int64? = nil) {
         self.id = id
         self.name = name
         self.status = status
@@ -66,10 +87,11 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.host = host
+        self.tokens = tokens
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, status, message, project, source, createdAt, updatedAt, host
+        case id, name, status, message, project, source, createdAt, updatedAt, host, tokens
     }
 
     /// Tolerant decoding: unknown status strings become `.idle`, missing
@@ -84,15 +106,25 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
         project = (try? container.decode(String.self, forKey: .project)) ?? ""
         let rawSource = (try? container.decode(String.self, forKey: .source)) ?? ""
         source = rawSource.isEmpty ? "claude" : rawSource
-        createdAt = Self.decodeMillis(container, .createdAt) ?? 0
-        updatedAt = Self.decodeMillis(container, .updatedAt) ?? createdAt
+        createdAt = Self.decodeInteger(container, .createdAt) ?? 0
+        updatedAt = Self.decodeInteger(container, .updatedAt) ?? createdAt
         // null, absent, or malformed all mean "no host" — never a dropped card.
         host = try? container.decode(Host.self, forKey: .host)
+        // Absent, null, negative or malformed all mean "no figure", which the
+        // card renders as nothing at all. Zero is NOT that case: a server that
+        // says 0 is reporting a session that has genuinely spent nothing, and
+        // it is kept as the number it is.
+        if let reported = Self.decodeInteger(container, .tokens), reported >= 0 {
+            tokens = reported
+        } else {
+            tokens = nil
+        }
     }
 
-    /// Accepts integral or floating epoch-milliseconds values.
-    private static func decodeMillis(_ container: KeyedDecodingContainer<CodingKeys>,
-                                     _ key: CodingKeys) -> Int64? {
+    /// Accepts integral or floating JSON numbers — JavaScript emits both, for
+    /// epoch milliseconds and for token counts alike.
+    private static func decodeInteger(_ container: KeyedDecodingContainer<CodingKeys>,
+                                      _ key: CodingKeys) -> Int64? {
         if let value = try? container.decode(Int64.self, forKey: key) {
             return value
         }
@@ -102,6 +134,39 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
             return millis
         }
         return nil
+    }
+}
+
+extension Session {
+
+    /// This session's spend, formatted for a glance — "48.2K", "1.4M" — or nil
+    /// when the board has no figure and the card must show nothing.
+    var tokensLabel: String? {
+        tokens.map { Session.tokensLabel(for: $0) }
+    }
+
+    /// One decimal from a thousand up, and a raw count below it.
+    ///
+    /// This is a card figure, not an accounting one: 1,438,902 is read at arm's
+    /// length as "1.4M", and a grouped integer would be five glyphs longer and
+    /// no more useful. The one decimal is kept even at three digits ("486.0K")
+    /// so the width holds still while the number ticks — the card pairs it with
+    /// `.monospacedDigit()` for the same reason.
+    ///
+    /// Deliberately not UsageDetailView's `fmtTokens`, which drops the decimal
+    /// in the thousands ("48K"). That screen totals a month across projects,
+    /// where 200 tokens of precision is noise; here the figure belongs to one
+    /// session, and 48.2K against 48.9K is a real difference to the person
+    /// deciding which agent is burning their week.
+    static func tokensLabel(for tokens: Int64) -> String {
+        let value = Double(max(0, tokens))
+        // The thresholds are where one decimal ROUNDS UP into the next unit,
+        // not the unit boundaries: 999,999 divided by 1e3 prints as "1000.0K",
+        // a figure the reader has to convert in their head. It becomes "1.0M".
+        if value >= 999.95e6 { return String(format: "%.1fB", value / 1e9) }
+        if value >= 999.95e3 { return String(format: "%.1fM", value / 1e6) }
+        if value >= 1e3 { return String(format: "%.1fK", value / 1e3) }
+        return "\(max(0, tokens))"
     }
 }
 

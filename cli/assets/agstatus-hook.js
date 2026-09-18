@@ -28,8 +28,9 @@
  *   AGSTATUS_DETAIL=off   (optional; send tool names instead of command text;
  *                          "detail": "off" in either config file)
  *   AGSTATUS_USAGE=off    (optional; never report plan-usage percentages, and
- *                          never scan local logs for per-project token spend)
- *   AGSTATUS_PROJECT_FORCE=1 (optional; skip the per-project scan's throttle)
+ *                          never scan local logs for per-project or
+ *                          per-session token spend)
+ *   AGSTATUS_PROJECT_FORCE=1 (optional; skip the local-log scan's throttle)
  *   AGSTATUS_SOURCE       (optional; agent kind tag, defaults to "claude" —
  *                          the Codex sidecar sets "source": "codex")
  *   AGSTATUS_FOCUS=off    (optional; ignore "focus": true in ~/.agstatus.json —
@@ -107,6 +108,25 @@ const PROJECT_FILE_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 // steady state is only what an agent appended since the last run. `--backfill`
 // ignores this and reads everything.
 const PROJECT_SCAN_BYTE_BUDGET = 8 * 1024 * 1024;
+// Per-SESSION totals are a second key on the SAME pass over the same records —
+// no extra scan, no extra byte budget, nothing re-read. Everything below sizes
+// how they are kept and posted, not how they are gathered.
+//
+// A session row is wider than a project-day row (an id where the other has a
+// folder name and a day), so fewer of them fit the server's 16kb body: worst
+// case {"session_id":"<64 chars>","tokens":<16 digits>} is ~110 bytes, and 100
+// of those plus the envelope leave most of the body spare.
+const MAX_SESSION_TOTALS_PER_POST = 100;
+// Both agents name sessions with a uuid (36 chars). Refusing anything longer is
+// what turns the estimate above into an actual bound, and keeps an id read out
+// of a log from becoming an unbounded string on the wire.
+const SESSION_ID_MAX_CHARS = 64;
+// Entries kept in the scan state, oldest-seen dropped first. At ~70 bytes an
+// entry this bounds the tmp file at ~28kb. A session that falls off the end and
+// is then resumed restarts its count from zero and the board takes that smaller
+// number: the honest cost of a state file that cannot grow forever, and 400
+// live sessions inside the retention window is already far past one machine.
+const MAX_SESSION_TOTALS = 400;
 
 // A pinned session name outlives its usefulness once the server has expired
 // the card it names: 24h after that session's last event (src/config.ts,
@@ -820,7 +840,23 @@ function byNewest(a, b) {
  */
 function readNewLines(file, seen, size, budget) {
   let from = typeof seen === 'number' && seen >= 0 ? seen : 0;
-  if (from > size) from = 0; // truncated or replaced — start over
+  if (from > size) {
+    // The file shrank: truncated, rotated, or replaced in place.
+    //
+    // This used to start over at byte 0, which silently DOUBLE-COUNTS. The
+    // totals these lines feed — state.days and state.sessions — are cumulative
+    // and already hold the bytes consumed before the shrink, so replaying the
+    // file adds them a second time. Offsets prevent double-counting on append,
+    // which is the only case that gets tested; they do not prevent it here.
+    //
+    // Nothing can un-count what is already in the totals, so the safe direction
+    // for a monotonic counter is to skip whatever the replacement already
+    // contains and count only what it appends from here. That under-reports a
+    // rotated log rather than over-reporting it, and a stale total is a far
+    // better failure than a wrong one. `--backfill` rebuilds from empty state
+    // and remains the way to repair a total after a rotation.
+    return { lines: [], consumed: size };
+  }
   if (from === size) return { lines: [], consumed: size };
   const want = Math.min(size - from, budget === undefined ? Infinity : Math.max(0, budget));
   if (want === 0) return { lines: [], consumed: from };
@@ -884,6 +920,18 @@ function scanClaudeLogs(state, full) {
         (u.input_tokens || 0) + (u.output_tokens || 0) + (u.cache_creation_input_tokens || 0);
       if (tokens <= 0) continue;
       addTokens(state, project, dayKey(at), tokens);
+      // Second key, same record, same pass: Claude stamps every assistant
+      // record with the id of the session that produced it, right next to the
+      // usage block this line already parsed.
+      //
+      // The asymmetry worth naming: that cwd above is the record's OWN, so a
+      // Claude session that `cd`s mid-run splits its spend across two project
+      // folders, while a Codex rollout reads cwd once at the top and files the
+      // whole session under where it started. Per SESSION the asymmetry
+      // disappears — the id does not change when the folder does, so the
+      // session's number stays whole on either agent. It is the per-PROJECT
+      // view that the two agents disagree about, and it stays as it is.
+      addSessionTokens(state, str(o.sessionId), tokens, at);
     }
     state.files[file] = { at: consumed, seen: Date.now() };
   }
@@ -904,6 +952,12 @@ function scanCodexLogs(state, full) {
     const prev = state.files[file] || {};
     const { lines, consumed } = readNewLines(file, full ? 0 : prev.at, size, budget);
     budget -= consumed - (full ? 0 : prev.at || 0);
+    // One rollout is one session and its id names the file, so this costs a
+    // filename parse per file rather than a field read per line. A resumed
+    // Codex session opens a NEW rollout under a NEW id and replays its history
+    // into it, so a resumed session's total legitimately starts again — the
+    // board sees a new session there too, because that is what Codex made.
+    const sessionId = codexRolloutSessionId(file);
     let project = prev.project || '';
     let running = typeof prev.cum === 'number' ? prev.cum : 0;
     for (const line of lines) {
@@ -925,7 +979,10 @@ function scanCodexLogs(state, full) {
       // one) restarts rather than subtracting.
       const delta = total >= running ? total - running : total;
       running = total;
-      if (delta > 0 && !Number.isNaN(at)) addTokens(state, project || 'unknown', dayKey(at), delta);
+      if (delta > 0 && !Number.isNaN(at)) {
+        addTokens(state, project || 'unknown', dayKey(at), delta);
+        addSessionTokens(state, sessionId, delta, at);
+      }
     }
     state.files[file] = { at: consumed, cum: running, project, seen: Date.now() };
   }
@@ -935,6 +992,55 @@ function addTokens(state, project, day, tokens) {
   const key = `${project}\n${day}`;
   state.days[key] = (state.days[key] || 0) + tokens;
   state.dirty[key] = true;
+}
+
+/** rollout-<timestamp>-<session id>.jsonl — the id is in the name, not the log. */
+const CODEX_ROLLOUT_NAME_RE = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl$/;
+
+function codexRolloutSessionId(file) {
+  const m = CODEX_ROLLOUT_NAME_RE.exec(path.basename(file));
+  return m ? m[1] : '';
+}
+
+/**
+ * A session's running token total, accumulated on the same pass as the
+ * per-project one.
+ *
+ * What stops a cumulative counter from double-counting is not arithmetic here
+ * but the byte offsets in state.files: readNewLines() hands out only the bytes
+ * this state has never consumed, so a re-scan of a log contributes nothing and
+ * the total only grows by what the agent appended since the last run. The same
+ * mechanism the project totals rely on, unchanged — which is also why a
+ * `--backfill` (offsets reset, every log read from zero) lands on exactly the
+ * number an unbroken series of incremental runs would have reached.
+ *
+ * That holds for a log that only ever APPENDS, which is the normal case and the
+ * one the tests cover. A log that SHRINKS — truncated, rotated, replaced in
+ * place — has no offset that means anything any more, and readNewLines skips to
+ * the new end rather than replaying from zero precisely because replaying would
+ * add the pre-shrink bytes to a total that already contains them. See the note
+ * there; the short version is that this counter can under-report a rotated log
+ * and must never over-report one.
+ *
+ * `at` is the record's own timestamp and doubles as the row's freshness for
+ * pruning; a log with no usable time still counts, dated now.
+ */
+function addSessionTokens(state, id, tokens, at) {
+  // `.` and `..` pass SESSION_ID_RE — it allows dots so that ids like `a.b`
+  // survive — but they are path segments, not session ids, and this value is
+  // read out of a log file and then put on a wire that promises only a number
+  // and an id. The same two are already refused where a session id becomes a
+  // filename; refusing them here keeps the wire honest too.
+  if (!id || id === '.' || id === '..') return;
+  if (id.length > SESSION_ID_MAX_CHARS || !SESSION_ID_RE.test(id)) return;
+  if (!(tokens > 0)) return;
+  const when = typeof at === 'number' && isFinite(at) ? at : Date.now();
+  const prev = state.sessions[id];
+  state.sessions[id] = {
+    tokens: (prev ? prev.tokens : 0) + tokens,
+    seen: prev && prev.seen > when ? prev.seen : when,
+  };
+  state.sessionDirty[id] = true;
 }
 
 /** Drops files and days that have aged past what the server will keep. */
@@ -947,11 +1053,67 @@ function pruneProjectState(state) {
   for (const [file, meta] of Object.entries(state.files)) {
     if (!meta || typeof meta.seen !== 'number' || meta.seen < cutoff) delete state.files[file];
   }
+  // Session totals age out on the same clock as the offsets that feed them: a
+  // session whose file is still tracked must keep its counter, or resuming it
+  // would report a total smaller than the one already on the board.
+  for (const [id, row] of Object.entries(state.sessions)) {
+    if (!row || typeof row.seen !== 'number' || row.seen < cutoff) delete state.sessions[id];
+  }
+  const ids = Object.keys(state.sessions);
+  if (ids.length > MAX_SESSION_TOTALS) {
+    // Newest first — but a session scanned on THIS run is never evicted.
+    //
+    // This prune runs before the rows are built, and the bytes behind a
+    // just-scanned session are already marked consumed in state.files. Dropping
+    // it here would lose those tokens permanently: the log is never re-read, and
+    // the row has not been posted yet, so the board would never hear the number
+    // at all. That is silent data loss, not a smaller cache.
+    //
+    // So the cap is soft for the length of one run. A dirty row becomes
+    // evictable on the next pass, once it has actually been reported.
+    ids.sort((a, b) => state.sessions[b].seen - state.sessions[a].seen);
+    const dirty = new Set(Object.keys(state.sessionDirty));
+    let budget = Math.max(0, MAX_SESSION_TOTALS - dirty.size);
+    for (const id of ids) {
+      if (dirty.has(id)) continue;
+      if (budget > 0) {
+        budget -= 1;
+        continue;
+      }
+      delete state.sessions[id];
+    }
+  }
 }
 
 function projectStateFile(base) {
   const key = crypto.createHash('sha256').update(`${base}\n${SOURCE}`).digest('hex').slice(0, 12);
   return path.join(os.tmpdir(), `agstatus-projects-${key}.json`);
+}
+
+/** The state a first run, a lost file or a `--backfill` all start from. */
+function emptyScanState() {
+  return { lastAttemptAt: 0, files: {}, days: {}, dirty: {}, sessions: {}, sessionDirty: {} };
+}
+
+/**
+ * Session totals as they come back off disk. A cumulative counter is only as
+ * trustworthy as what it resumes from, so every entry is re-validated rather
+ * than trusted: anything malformed is dropped and that session starts again
+ * from zero, which is the one failure mode a missing file already has.
+ */
+function loadSessionTotals(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [id, row] of Object.entries(raw)) {
+    if (!row || typeof row !== 'object') continue;
+    if (id === '.' || id === '..') continue;
+    if (id.length > SESSION_ID_MAX_CHARS || !SESSION_ID_RE.test(id)) continue;
+    const tokens = typeof row.tokens === 'number' && isFinite(row.tokens) ? Math.floor(row.tokens) : 0;
+    const seen = typeof row.seen === 'number' && isFinite(row.seen) ? row.seen : 0;
+    if (tokens <= 0 || seen <= 0) continue;
+    out[id] = { tokens, seen };
+  }
+  return out;
 }
 
 function loadProjectState(file) {
@@ -962,24 +1124,48 @@ function loadProjectState(file) {
       files: parsed.files && typeof parsed.files === 'object' ? parsed.files : {},
       days: parsed.days && typeof parsed.days === 'object' ? parsed.days : {},
       dirty: {},
+      sessions: loadSessionTotals(parsed.sessions),
+      sessionDirty: {},
     };
   } catch {
-    return { lastAttemptAt: 0, files: {}, days: {}, dirty: {} };
+    return emptyScanState();
   }
 }
 
 /**
- * Scan this agent's own logs and report per-project token totals for the days
- * that changed. `full` rescans every log from byte zero — the backfill path.
+ * One report, in bodies the server will accept. Chunks within one endpoint go
+ * out one at a time — a backfill can produce thousands of rows and must not
+ * open a socket per chunk — while the two endpoints run in parallel, because
+ * the hook's 4s safety exit is the only budget this path can actually overrun.
+ */
+async function postRows(url, rows, perPost, wrap) {
+  for (let i = 0; i < rows.length; i += perPost) {
+    await send('POST', url, wrap(rows.slice(i, i + perPost)));
+  }
+}
+
+/**
+ * Scan this agent's own logs once and report what changed: per-project totals
+ * for the days that moved, and per-session totals for the sessions that spent.
+ * `full` rescans every log from byte zero — the backfill path.
+ *
+ * The two numbers are gathered on one pass but are NOT the same measure, and
+ * nothing downstream should add them together or convert one into the other:
+ *   - a project-day is a sum across sessions, a session total is a sum across
+ *     days and (for Claude) across folders;
+ *   - Claude's tokens are input + output + cache creation, while Codex's come
+ *     from its own cumulative total_token_usage, which counts cached reads as
+ *     well. A Claude card's number and a Codex card's number are each exact
+ *     about their own agent and are not comparable with each other. Anything
+ *     that shows them side by side should say whose they are, not imply a
+ *     shared scale — and neither is a percentage of any limit.
  */
 async function reportProjectUsage(base, full) {
   if (process.env.AGSTATUS_USAGE === 'off') return 0;
   if (SOURCE !== 'claude' && SOURCE !== 'codex') return 0;
 
   const stateFile = projectStateFile(base);
-  const state = full
-    ? { lastAttemptAt: 0, files: {}, days: {}, dirty: {} }
-    : loadProjectState(stateFile);
+  const state = full ? emptyScanState() : loadProjectState(stateFile);
   // AGSTATUS_PROJECT_FORCE skips the wait without discarding the consumed
   // offsets — the way to pick up a just-finished session immediately, and how
   // the tests exercise a second incremental pass.
@@ -1001,28 +1187,50 @@ async function reportProjectUsage(base, full) {
       return { project: k.slice(0, at), day: k.slice(at + 1), tokens: state.days[k] };
     });
 
+  // Absolute lifetime totals, not deltas — the same shape as a project-day
+  // row, and for the same reason: the server replaces the value it holds, so a
+  // post that never lands costs nothing but freshness. A session that keeps
+  // spending corrects itself on the next run; a session that stops and whose
+  // last post failed keeps the board's older number, which is a stale total,
+  // never a wrong one.
+  const sessionChanged = full ? Object.keys(state.sessions) : Object.keys(state.sessionDirty);
+  const sessionRows = sessionChanged
+    .filter((id) => state.sessions[id] && state.sessions[id].tokens > 0)
+    .map((id) => ({ session_id: id, tokens: state.sessions[id].tokens }));
+
   state.lastAttemptAt = Date.now();
   try {
     fs.writeFileSync(stateFile, JSON.stringify({
       lastAttemptAt: state.lastAttemptAt, files: state.files, days: state.days,
+      sessions: state.sessions,
     }));
   } catch {
     // Unwritable tmp: reporting still works, it just rescans next time.
   }
-  if (rows.length === 0) {
-    dbg('no project token changes to report');
+  if (rows.length === 0 && sessionRows.length === 0) {
+    dbg('no token changes to report');
     return 0;
   }
-  // The server replaces whole days, so chunks are independent and a partial
-  // failure just leaves those days to the next run.
-  for (let i = 0; i < rows.length; i += MAX_PROJECT_DAYS_PER_POST) {
-    await send('POST', `${base}/usage/projects`, {
-      source: SOURCE,
-      days: rows.slice(i, i + MAX_PROJECT_DAYS_PER_POST),
-    });
-  }
-  dbg(`reported ${rows.length} project-day total(s)`);
-  return rows.length;
+  // Two endpoints rather than one body with two arrays. The rows are keyed
+  // differently (project + day against a session id), they answer different
+  // questions and the server keeps them with different retention; their chunk
+  // sizes differ because their rows are different widths; and a run very often
+  // has one kind of change and not the other, which in a shared body would
+  // mean posting an empty array that the receiving end has to accept as "no
+  // change" instead of rejecting as a malformed report. Additive either way: a
+  // board that has never heard of /usage/sessions answers 404, and the hook —
+  // which ignores response status by design — carries on reporting projects.
+  //
+  // The server replaces whole days and whole session totals, so chunks are
+  // independent; a partial failure just leaves those rows to a later run.
+  await Promise.all([
+    postRows(`${base}/usage/projects`, rows, MAX_PROJECT_DAYS_PER_POST,
+      (days) => ({ source: SOURCE, days })),
+    postRows(`${base}/usage/sessions`, sessionRows, MAX_SESSION_TOTALS_PER_POST,
+      (sessions) => ({ source: SOURCE, sessions })),
+  ]);
+  dbg(`reported ${rows.length} project-day and ${sessionRows.length} session total(s)`);
+  return rows.length + sessionRows.length;
 }
 
 async function maybeReportUsage(base, sessionId) {
@@ -2137,7 +2345,7 @@ if (process.argv.includes('--backfill')) {
   process.stderr.write(`agstatus: scanning ${SOURCE} logs — this can take a minute…\n`);
   reportProjectUsage(backfillBase, true)
     .then((n) => {
-      process.stderr.write(`agstatus: reported ${n} project-day total(s) for ${SOURCE}\n`);
+      process.stderr.write(`agstatus: reported ${n} usage total(s) for ${SOURCE}\n`);
       process.exit(0);
     })
     .catch((err) => {

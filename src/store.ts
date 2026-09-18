@@ -93,6 +93,14 @@ export interface Session {
   host?: Host | null;
   createdAt: number;
   updatedAt: number;
+  /**
+   * Lifetime tokens the agent's own logs attribute to this session, when the
+   * board holds a total for it. Never part of the stored card: it arrives on
+   * its own endpoint, is keyed by (source, id) rather than by the card, and
+   * is attached on the way out (see withTokens). Absent — not zero — when
+   * nothing has been reported, so a card never claims a session spent nothing.
+   */
+  tokens?: number;
 }
 
 export interface UpsertInput {
@@ -152,6 +160,54 @@ export interface ProjectDay {
   day: string; // YYYY-MM-DD, UTC
   tokens: number;
 }
+
+/**
+ * One session's lifetime token total, as the agent's own logs report it.
+ *
+ * Keyed by (source, sessionId) and NOT by the card: the two agents mint ids
+ * independently, and the number does not mean quite the same thing in each
+ * (Claude counts input + output + cache creation, Codex reports its own
+ * cumulative total which includes cache reads) — so the source has to travel
+ * with it, and two agents can never collide on one id.
+ *
+ * This is not a slice of the project-day series: a project-day sums across
+ * sessions, this sums across days and, for Claude, across folders. Neither
+ * converts into the other and neither is a percentage of any plan limit.
+ */
+export interface SessionTotal {
+  source: string;
+  sessionId: string;
+  /** Absolute lifetime tokens for that session — what was reported, never a delta. */
+  tokens: number;
+  /** When the server received this value; the clock retention runs on. */
+  updatedAt: number;
+}
+
+/**
+ * How long a session total outlives its last report.
+ *
+ * Not the card's 24 hours. The total arrives on the hook's own schedule (a
+ * 15-minute throttle, and only for sessions whose number moved), so a session
+ * resumed after a weekend gets its card back from the first webhook but its
+ * total only from the first usage run after that. Retention shorter than the
+ * gap would show a live card with no number for as long as a quarter of an
+ * hour, every time.
+ *
+ * Not the 90 days the project-day rows get either. Those are a series a chart
+ * looks back over; this number is only ever read through a card, and a card
+ * cannot be older than SESSION_TTL_MS. A week covers a weekend plus the slack,
+ * and is the shortest window that does.
+ */
+export const SESSION_TOTAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Totals held per workspace, oldest-updated dropped first. A workspace holds
+ * at most 50 live sessions and a week of turnover is nowhere near this — the
+ * cap is not about honest boards but about the memory anyone holding the
+ * token could otherwise pin: the endpoint shares the webhook budget
+ * (120 posts a minute) and takes 100 rows a post.
+ */
+const MAX_SESSION_TOTALS_PER_WORKSPACE = 500;
 
 export const COMMAND_TYPES = ['focus', 'resume'] as const;
 export type CommandType = (typeof COMMAND_TYPES)[number];
@@ -269,6 +325,10 @@ export class Store {
   private usagePoints = new Map<string, Map<string, UsagePoint[]>>();
   // Token spend per agent and project, wsId → `${source}\n${project}\n${day}` → row.
   private projectDays = new Map<string, Map<string, ProjectDay>>();
+  // Lifetime tokens per session, wsId → `${source}\n${sessionId}` → row. Kept
+  // apart from `sessions` on purpose: the rows arrive on their own endpoint,
+  // outlive the cards they describe, and exist for ids that never had a card.
+  private sessionTotals = new Map<string, Map<string, SessionTotal>>();
   // Next seq per `${wsId}\n${sessionId}` — spans soft-deleted rows so a
   // restarted server never reuses a primary key.
   private eventSeq = new Map<string, number>();
@@ -368,6 +428,15 @@ export class Store {
         updated_at BIGINT NOT NULL,
         deleted_at BIGINT,
         PRIMARY KEY (workspace_id, source, project, day)
+      );
+      CREATE TABLE IF NOT EXISTS usage_session_totals (
+        workspace_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        tokens BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL,
+        deleted_at BIGINT,
+        PRIMARY KEY (workspace_id, source, session_id)
       );
       CREATE TABLE IF NOT EXISTS session_events (
         workspace_id TEXT NOT NULL,
@@ -516,6 +585,39 @@ export class Store {
       });
     }
 
+    // Session totals run on their own retention (SESSION_TOTAL_TTL_MS, by
+    // received-at rather than by day), so they need their own filter here:
+    // anything older is left on disk, per the soft-delete rule, and never
+    // reaches memory. Ordered oldest-first so the per-workspace cap below
+    // keeps the freshest rows when a database holds more than memory should.
+    const totalsSince = Date.now() - SESSION_TOTAL_TTL_MS;
+    const sessionTotals = await pool.query(
+      `SELECT workspace_id, source, session_id, tokens, updated_at FROM usage_session_totals
+       WHERE deleted_at IS NULL AND updated_at >= $1 ORDER BY updated_at`,
+      [totalsSince]
+    );
+    for (const row of sessionTotals.rows as Array<{
+      workspace_id: string; source: string; session_id: string; tokens: string; updated_at: string;
+    }>) {
+      let ws = this.sessionTotals.get(row.workspace_id);
+      if (!ws) {
+        ws = new Map();
+        this.sessionTotals.set(row.workspace_id, ws);
+      }
+      ws.set(`${row.source}\n${row.session_id}`, {
+        source: row.source,
+        sessionId: row.session_id,
+        tokens: Number(row.tokens),
+        updatedAt: Number(row.updated_at),
+      });
+      // Insertion order is the load order, which is oldest-first: dropping
+      // from the front keeps the newest MAX_SESSION_TOTALS_PER_WORKSPACE.
+      if (ws.size > MAX_SESSION_TOTALS_PER_WORKSPACE) {
+        const oldest = ws.keys().next();
+        if (!oldest.done) ws.delete(oldest.value);
+      }
+    }
+
     const events = await pool.query(
       `SELECT workspace_id, session_id, seq, status, message, at FROM session_events
        WHERE deleted_at IS NULL ORDER BY seq`
@@ -615,6 +717,7 @@ export class Store {
     this.events.delete(wsId);
     this.usagePoints.delete(wsId);
     this.projectDays.delete(wsId);
+    this.sessionTotals.delete(wsId);
     this.commands.delete(wsId);
     this.commandWindows.delete(wsId);
     this.listenerWindows.delete(wsId);
@@ -626,6 +729,7 @@ export class Store {
       this.exec('UPDATE session_events SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
       this.exec('UPDATE usage_history SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
       this.exec('UPDATE usage_project_days SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
+      this.exec('UPDATE usage_session_totals SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL', [wsId, now]);
       this.exec('UPDATE workspaces SET deleted_at = $2 WHERE id = $1', [wsId, now]);
     }
     return existed;
@@ -707,7 +811,7 @@ export class Store {
         session.updatedAt,
       ]
     );
-    return { session, evictedId, prevStatus: prev?.status ?? null };
+    return { session: this.withTokens(wsId, session), evictedId, prevStatus: prev?.status ?? null };
   }
 
   /**
@@ -917,6 +1021,124 @@ export class Store {
       );
   }
 
+  /**
+   * Replaces the stored total for each (source, session_id) row and returns
+   * the ids whose value actually moved, so only cards with news are
+   * rebroadcast.
+   *
+   * A reported total is ABSOLUTE and replaces what is held — including
+   * downwards. A decrease is not corruption and must not be max()'d away: the
+   * hook's counter legitimately restarts when its state file is lost with the
+   * log already pruned, or when a session was evicted by its 400-entry cap and
+   * later resumed. Storing what we are sent keeps the board agreeing with the
+   * machine that can actually see the logs; keeping the larger number would
+   * pin a wrong figure on the card forever.
+   *
+   * Replacement also makes the post idempotent: a duplicate costs nothing and
+   * one that never lands costs only freshness.
+   */
+  setSessionTotals(
+    wsId: string,
+    source: string,
+    rows: Array<{ sessionId: string; tokens: number }>
+  ): string[] {
+    let ws = this.sessionTotals.get(wsId);
+    if (!ws) {
+      ws = new Map();
+      this.sessionTotals.set(wsId, ws);
+      // Same legacy-mode concern as upsertSession: keep the workspace row
+      // present so persisted rows satisfy the workspace_id relationship.
+      if (this.pool && !this.workspaces.has(wsId)) {
+        const now = Date.now();
+        this.exec(Store.INSERT_WS, [wsId, now, now]);
+      }
+    }
+    const now = Date.now();
+    const changed: string[] = [];
+    for (const row of rows) {
+      const key = `${source}\n${row.sessionId}`;
+      const prev = ws.get(key);
+      // Re-set rather than mutate so the entry moves to the end of the Map:
+      // insertion order is what the cap below evicts by.
+      ws.delete(key);
+      ws.set(key, { source, sessionId: row.sessionId, tokens: row.tokens, updatedAt: now });
+      if (!prev || prev.tokens !== row.tokens) changed.push(row.sessionId);
+      this.exec(
+        `INSERT INTO usage_session_totals (workspace_id, source, session_id, tokens, updated_at)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (workspace_id, source, session_id) DO UPDATE SET
+           tokens = EXCLUDED.tokens, updated_at = EXCLUDED.updated_at, deleted_at = NULL`,
+        [wsId, source, row.sessionId, row.tokens, now]
+      );
+    }
+    this.pruneSessionTotals(wsId, ws, now);
+    return changed;
+  }
+
+  /**
+   * Drops totals past the retention window and, past the per-workspace cap,
+   * the oldest ones. Runs on the write path rather than on a timer: the map
+   * only grows when a report arrives, and that report has already walked it.
+   */
+  private pruneSessionTotals(wsId: string, ws: Map<string, SessionTotal>, now: number): void {
+    const cutoff = now - SESSION_TOTAL_TTL_MS;
+    for (const [key, total] of ws) {
+      if (total.updatedAt < cutoff) this.dropSessionTotal(wsId, ws, key, total, now);
+    }
+    // Insertion order is freshness order (setSessionTotals re-inserts on every
+    // write), so the front of the Map is the oldest.
+    while (ws.size > MAX_SESSION_TOTALS_PER_WORKSPACE) {
+      const oldest = ws.entries().next();
+      if (oldest.done) break;
+      const [key, total] = oldest.value;
+      this.dropSessionTotal(wsId, ws, key, total, now);
+    }
+  }
+
+  /** Forgets one total: out of memory now, flagged (never removed) on disk. */
+  private dropSessionTotal(
+    wsId: string,
+    ws: Map<string, SessionTotal>,
+    key: string,
+    total: SessionTotal,
+    now: number
+  ): void {
+    ws.delete(key);
+    this.exec(
+      `UPDATE usage_session_totals SET deleted_at = $4
+       WHERE workspace_id = $1 AND source = $2 AND session_id = $3 AND deleted_at IS NULL`,
+      [wsId, total.source, total.sessionId, now]
+    );
+  }
+
+  /**
+   * The lifetime tokens held for one session, or null when there is none.
+   *
+   * Filtered on read as well as on the write path, the way getUsage() drops a
+   * stale percentage: a value whose retention ran out between two reports must
+   * not surface just because nothing has posted since.
+   */
+  getSessionTokens(wsId: string, source: string, sessionId: string): number | null {
+    const total = this.sessionTotals.get(wsId)?.get(`${source}\n${sessionId}`);
+    if (!total || total.updatedAt < Date.now() - SESSION_TOTAL_TTL_MS) return null;
+    return total.tokens;
+  }
+
+  /**
+   * The card as it goes on the wire: the stored session plus whatever total is
+   * held under its (source, id). The key is absent, not zero, when nothing has
+   * been reported — a board with usage reporting off, an agent other than
+   * Claude or Codex, or a session whose total aged out all look the same to a
+   * client, and none of them means "this session spent nothing".
+   *
+   * The stored object is returned unchanged in that case, so a board that
+   * never receives a total emits exactly the frames it emitted before.
+   */
+  private withTokens(wsId: string, session: Session): Session {
+    const tokens = this.getSessionTokens(wsId, session.source, session.id);
+    return tokens === null ? session : { ...session, tokens };
+  }
+
   /** Current plan usage for a workspace, freshest first. Stale entries are dropped. */
   getUsage(wsId: string): Usage[] {
     const map = this.usageBySource.get(wsId);
@@ -979,13 +1201,16 @@ export class Store {
   }
 
   getSession(wsId: string, id: string): Session | null {
-    return this.sessions.get(wsId)?.get(id) ?? null;
+    const session = this.sessions.get(wsId)?.get(id);
+    return session ? this.withTokens(wsId, session) : null;
   }
 
   getSessions(wsId: string): Session[] {
     const map = this.sessions.get(wsId);
     if (!map) return [];
-    return Array.from(map.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+    return Array.from(map.values(), (s) => this.withTokens(wsId, s)).sort(
+      (a, b) => b.updatedAt - a.updatedAt
+    );
   }
 
   deleteSession(wsId: string, id: string): boolean {

@@ -18,6 +18,15 @@ enum DemoData {
     static let offlineMachine = Host.Machine(id: "0c4e7a19b3d25f68e1a7c9d04b6f2e83", name: "MacBook")
 
     /// Four sessions that look like a real evening of agent work.
+    ///
+    /// Their token totals are sized to their ages — roughly what a session of
+    /// that length actually spends — and span the formats the card has to
+    /// render: hundreds of thousands, millions, and (data-pipeline) a session
+    /// with NO total at all. That last one is not an oversight. The totals
+    /// arrive on the hook's own 15-minute throttle, so a card younger than that
+    /// legitimately has no figure yet, and the design gets reviewed here: the
+    /// absent case has to be in front of the owner, showing no number rather
+    /// than a zero or a dash.
     static func initialSessions() -> [Session] {
         let now = nowMillis()
         return [
@@ -29,14 +38,18 @@ enum DemoData {
                     createdAt: now - 42 * 60_000,
                     updatedAt: now - 15_000,
                     host: Host(machine: onlineMachine,
-                               app: Host.App(slug: "agterm", name: "agterm", kind: "terminal"))),
+                               app: Host.App(slug: "agterm", name: "agterm", kind: "terminal")),
+                    tokens: 486_200),
             Session(id: "demo-webapp",
                     name: "webapp",
                     status: .testing,
                     message: "npm test — 42 passing, 1 pending",
                     project: "acme-web",
                     createdAt: now - 95 * 60_000,
-                    updatedAt: now - 70_000),
+                    updatedAt: now - 70_000,
+                    tokens: 1_438_000),
+            // Eighteen minutes old and nothing reported for it yet: the card
+            // that must show no number.
             Session(id: "demo-data-pipeline",
                     name: "data-pipeline",
                     status: .blocked,
@@ -47,7 +60,10 @@ enum DemoData {
                     host: Host(machine: offlineMachine,
                                app: Host.App(slug: "iterm2", name: "iTerm2", kind: "terminal"))),
             // A Codex session so the demo board shows both agents' limit
-            // blocks, not just Claude's.
+            // blocks, not just Claude's. Its total runs higher than a Claude
+            // session of the same length because Codex counts cache reads in
+            // its own cumulative figure — the two are not comparable, and the
+            // demo should not imply they are.
             Session(id: "demo-docs-site",
                     name: "docs-site",
                     status: .done,
@@ -55,7 +71,8 @@ enum DemoData {
                     project: "docs",
                     source: "codex",
                     createdAt: now - 3 * 3_600_000,
-                    updatedAt: now - 26 * 60_000),
+                    updatedAt: now - 26 * 60_000,
+                    tokens: 2_830_000),
         ]
     }
 
@@ -348,6 +365,55 @@ enum DemoData {
         assert((try? decoder.decode(CommandReceipt.self, from: Data(#"{"id":"c","delivered":false}"#.utf8)))?.delivered
                == false, "receipt false")
     }
+
+    /// The `tokens` contract, checked alongside the Focus models when demo mode
+    /// starts in a debug build.
+    ///
+    /// Absence is what these guard. The server omits the key entirely whenever
+    /// it has no figure — reporting off, a third-party agent, nothing heard
+    /// yet, a total aged out — and a client that quietly turned that into 0
+    /// would tell the owner a session that has been running all evening spent
+    /// nothing. Everything else here is the tolerance the rest of this file
+    /// already insists on: one odd value must never cost a whole card.
+    static func verifyTokenDecoding() {
+        let decoder = JSONDecoder()
+        func session(_ json: String) -> Session? {
+            try? decoder.decode(Session.self, from: Data(json.utf8))
+        }
+
+        // Absent / null / wrong type / negative → no figure, and the card still decodes.
+        assert(session(#"{"id":"s"}"#)?.tokens == nil, "absent tokens")
+        assert(session(#"{"id":"s","tokens":null}"#)?.tokens == nil, "null tokens")
+        assert(session(#"{"id":"s","tokens":"48200"}"#)?.tokens == nil, "string tokens")
+        assert(session(#"{"id":"s","tokens":-5}"#)?.tokens == nil, "negative tokens")
+        assert(session(#"{"id":"s","tokens":"48200"}"#) != nil, "the card itself still decodes")
+
+        // Zero is a REPORTED figure, not the absent case.
+        assert(session(#"{"id":"s","tokens":0}"#)?.tokens == 0, "zero is a figure")
+        // JavaScript emits both number shapes.
+        assert(session(#"{"id":"s","tokens":48200}"#)?.tokens == 48_200, "integer tokens")
+        assert(session(#"{"id":"s","tokens":48200.0}"#)?.tokens == 48_200, "float tokens")
+
+        // A session with no figure encodes without the key, so a round trip
+        // through this client cannot turn "unknown" into "zero" either.
+        if let bare = session(#"{"id":"s"}"#), let data = try? JSONEncoder().encode(bare) {
+            assert(!String(decoding: data, as: UTF8.self).contains("tokens"), "absent tokens stay absent")
+        } else {
+            assertionFailure("session encode")
+        }
+
+        // Glance formatting: one decimal from a thousand up, a raw count below
+        // it, and never a unit the reader has to convert themselves.
+        assert(Session.tokensLabel(for: 0) == "0", "zero")
+        assert(Session.tokensLabel(for: 907) == "907", "below a thousand")
+        assert(Session.tokensLabel(for: 48_200) == "48.2K", "thousands")
+        assert(Session.tokensLabel(for: 486_200) == "486.2K", "hundreds of thousands")
+        assert(Session.tokensLabel(for: 999_999) == "1.0M", "never 1000.0K")
+        assert(Session.tokensLabel(for: 1_438_000) == "1.4M", "millions")
+        assert(Session.tokensLabel(for: 999_999_999) == "1.0B", "never 1000.0M")
+        assert(Session(id: "s", name: "", status: .idle, message: "", project: "",
+                       createdAt: 0, updatedAt: 0).tokensLabel == nil, "no figure, no label")
+    }
     #endif
 
     // MARK: Internals
@@ -360,7 +426,27 @@ enum DemoData {
             next.message = messages[status]?.randomElement() ?? session.message
         }
         next.updatedAt = now
+        next.tokens = spend(next.tokens, working: status.isActive)
         return next
+    }
+
+    /// What a demo session's lifetime total does between ticks.
+    ///
+    /// Only a working agent spends, so a card sitting in `done` or `blocked`
+    /// holds its figure still — on this board a number that moves is supposed
+    /// to mean something changed.
+    ///
+    /// The session that starts without a total is the one worth watching: a
+    /// real one gets its first figure minutes after the card appears, on the
+    /// hook's 15-minute throttle, so the demo eventually hands it one. A
+    /// reviewer then sees both halves of the contract — a card with no number,
+    /// and the number turning up later without the card being rebuilt.
+    private static func spend(_ tokens: Int64?, working: Bool) -> Int64? {
+        guard working else { return tokens }
+        guard let tokens else {
+            return Double.random(in: 0..<1) < 0.2 ? Int64.random(in: 18_000...44_000) : nil
+        }
+        return tokens + Int64.random(in: 4_000...26_000)
     }
 
     /// Weighted plausible transitions (duplicates raise the odds of staying put).

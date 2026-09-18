@@ -684,6 +684,7 @@ final class SessionStore {
         stopDemoTask()
         #if DEBUG
         DemoData.verifyFocusDecoding()
+        DemoData.verifyTokenDecoding()
         #endif
         sessions = Self.sortedByUpdate(DemoData.initialSessions())
         usage = DemoData.usage()

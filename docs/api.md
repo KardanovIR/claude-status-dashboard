@@ -26,7 +26,8 @@ The server runs in one of two modes:
     "app": { "slug": "herdr", "name": "herdr", "kind": "multiplexer" }
   },
   "createdAt": 1752096000000,
-  "updatedAt": 1752096030000
+  "updatedAt": 1752096030000,
+  "tokens": 1284000
 }
 ```
 
@@ -41,6 +42,13 @@ turn and `idle` only at `SessionStart`, so `idle` is close to unseen on a live
 board and `done` is where a card rests between prompts. `host` says where the session runs
 (see the [webhook table](#webhook-body-and-validation)); it is `null` for
 the many sessions whose hook has not opted in, and the key is always present.
+
+`tokens` is the lifetime token total this session's agent reports for it (see
+[Per-session token totals](#per-session-token-totals)). Unlike `host` the key
+is **absent**, not `null`, when the board holds no total — and absent means
+*unknown*, never zero. It is not part of the webhook body: it arrives on its
+own endpoint and is attached to the card on the way out, so a board that never
+receives one emits exactly the session object it always did.
 
 ## Shared endpoints (both modes)
 
@@ -199,6 +207,74 @@ Each series keeps the last reading from *before* the requested range as its
 first point, so a step chart has a value to start from. Both are retained for
 90 days.
 
+## Per-session token totals
+
+The same pass over the same local logs that produces the project-day rows also
+keys them by session id — Claude stamps every assistant record with the session
+that produced it, and a Codex rollout is named after its session. The hook
+reports those totals with `POST /usage/sessions` (legacy, same secret rules as
+the webhook) or `POST /w/<token>/usage/sessions`:
+
+```json
+{
+  "source": "claude",
+  "sessions": [
+    { "session_id": "019a7f3c-8b21-7c4e-9d6f-2b6e4a1c77d0", "tokens": 1284000 },
+    { "session_id": "019a7f3c-9c02-7a55-b1e4-8d3f0c2a91b7", "tokens": 96500 }
+  ]
+}
+```
+
+| Field        | Type   | Required | Notes |
+| ------------ | ------ | -------- | ----- |
+| `source`     | string | yes      | Agent kind, same rule as plan usage. Part of the key: the two agents mint session ids independently. |
+| `sessions`   | array  | yes      | 1–100 rows. The cap keeps a report inside the 16 KB body limit; a longer run sends several. |
+| `session_id` | string | yes      | Must match `^[A-Za-z0-9._:-]{1,64}$` — the webhook's charset, held to half its length (both agents use a uuid). The same id the webhook posts, so a row joins straight onto the card. |
+| `tokens`     | number | yes      | The session's **absolute lifetime total**, never a delta. Clamped to ≥ 0 and floored. |
+
+A row is stored under (workspace, `source`, `session_id`) and **replaces** the
+value held, so a re-post is harmless and a post that never lands costs only
+freshness. It may legitimately move **down**: the hook's counter restarts when
+its state file is lost with the log already pruned, or when a session was
+evicted by the hook's own 400-entry cap and later resumed. The server stores
+what it is sent — it does not take the larger of the two, and a decrease is not
+an error. A duplicated `session_id` inside one body is not rejected either: the
+last one wins. A total for a session that has no card is accepted and kept, so
+a session that comes back finds its number waiting. Session-total posts share
+the webhook rate-limit budget. The response is `{"ok": true, "sessions": N}`,
+`N` being the rows stored after duplicates collapse.
+
+**Where it shows up.** There is no read endpoint: the number is served as the
+`tokens` field of [the session object](#the-session-object), which the
+`snapshot` and `session` SSE events already carry, so a card gets its total the
+same way it gets every other change. When a report moves a number, every card
+it belongs to is rebroadcast as a `session` event; a report that repeats itself
+broadcasts nothing.
+
+**What the number is, and what it is not.** It is the tokens *this session*
+spent, summed across days and — for Claude — across every folder it worked in.
+It is **not** a plan-limit percentage and does not convert into one: a limit
+window says how much of an account-wide allowance is gone
+(see [Plan usage](#plan-usage)), while this counts tokens, and nothing here
+supplies a denominator. It is also **not** a slice of the per-project series:
+a project-day row sums across sessions, this sums across days, and adding the
+two together means nothing. Finally, the two agents count differently — Claude's
+figure is input + output + cache creation, Codex's is its own cumulative
+`total_token_usage`, which includes cache reads — so a Claude card's number and
+a Codex card's number are each exact about their own agent and are not
+comparable with each other. Anything showing them side by side should say whose
+they are rather than imply a shared scale.
+
+**Retention.** A total is kept for **7 days** after the report that set it,
+on the server's own received-at clock — not the day-keyed retention the project
+rows use, and not the card's 24 hours. The hook reports on a 15-minute throttle
+and only for sessions whose number moved, so a session resumed after a weekend
+gets its card back from the first webhook but its total only from the next
+usage run; the stored value carries the card in between. Older totals are
+dropped from reads and from memory, and a workspace holds at most 500 (the
+oldest-updated is dropped first). Deleting a workspace removes its totals with
+everything else.
+
 ## Session history
 
 `GET /api/sessions/:id/history` (legacy) and
@@ -344,6 +420,7 @@ new one goes out. Done and expired commands stay readable through `GET` for
 | `POST /webhook`        | Create/update a session (see above; `host` included). | yes* |
 | `POST /usage`          | Report plan usage (see [Plan usage](#plan-usage)). | yes* |
 | `POST /usage/projects` | Report per-project token spend (see [Usage history](#usage-history-and-per-project-spend)). | yes* |
+| `POST /usage/sessions` | Report per-session token totals (see [Per-session token totals](#per-session-token-totals)). | yes* |
 | `GET /events`          | SSE stream (see [format](#sse-event-format)); `?listener=` plus `Authorization: Bearer` subscribes a Focus listener (see [presence](#listener-presence)). | no; yes* with `?listener=` |
 | `GET /api/sessions`    | JSON list of all sessions.                     | no   |
 | `GET /api/machines`    | Focus listeners currently online.              | no   |
@@ -402,6 +479,7 @@ workspace:
 | `POST /w/<token>/webhook`        | Create/update a session (same body as legacy, `host` included). `200` with `{ok, session}`; `400` on validation errors; `429` over the rate limit. |
 | `POST /w/<token>/usage`          | Report plan usage (see [Plan usage](#plan-usage)). |
 | `POST /w/<token>/usage/projects` | Report per-project token spend (see [Usage history](#usage-history-and-per-project-spend)). |
+| `POST /w/<token>/usage/sessions` | Report per-session token totals (see [Per-session token totals](#per-session-token-totals)). |
 | `GET /w/<token>/api/usage`       | Current plan usage list. |
 | `GET /w/<token>/api/usage/history` | Limit history + per-project spend. `?days=N` (default 30, max 90). |
 | `GET /w/<token>/api/sessions/:id/history` | Session timeline (see [Session history](#session-history)). |
@@ -531,6 +609,10 @@ To keep a shared instance healthy, multi-tenant workspaces are capped:
 | Session TTL | 24 h (`SESSION_TTL_MS`) | Expired sessions are swept and `remove` events broadcast. |
 | Idle workspaces | 60 days | Deleted by a periodic sweep (every 6 hours). |
 | Live workspaces | `MAX_WORKSPACES` (default 10000) | Creation returns `503`. |
+| Rows per project-day report | 200 | `400`; the hook sends several reports. |
+| Rows per session-total report | 100 | `400`; the hook chunks at the same number. |
+| Per-session totals per workspace | 500 | The oldest-updated is dropped (soft-deleted). |
+| Per-session total retention | 7 days | Dropped from reads and from memory; see [Per-session token totals](#per-session-token-totals). |
 | Request body | 16 KB | `413`. |
 
 In both modes: `name`/`project` truncate to 120 chars, `message` to 300,

@@ -37,8 +37,23 @@ struct BoardView: View {
                         sessionList
                     }
                 }
+
+                // Pinned under the list rather than inside it: the streak is
+                // about the board, not about any card, and a row that scrolled
+                // away with the sessions would be a different claim. It enters
+                // from the bottom the way the limit bars enter from the top, so
+                // the two pieces of board-level chrome behave as a pair.
+                //
+                // Absent until the first fetch lands, and absent again if it
+                // fails — `days > 0` covers both. A streak is ambient; an
+                // apology where a number should be is worse than silence.
+                if store.streak.days > 0 && store.connection != .boardGone {
+                    StreakBar(streak: store.streak)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
             .animation(.snappy, value: visibleUsage)
+            .animation(.snappy, value: store.streak)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.background.ignoresSafeArea())
             // A second destination, on its own value type so it can't collide
@@ -440,6 +455,131 @@ struct BoardView: View {
 
 /// Plan-limit bars pinned above the board, grouped into one block per agent
 /// (current 5-hour session, weekly caps, per-model caps).
+/// The streak, pinned under the board.
+///
+/// One row, and deliberately the quietest thing on screen: it reports, it does
+/// not ask. The cards are the only things here allowed to demand attention, and
+/// a streak that competed with a `blocked` card would be exactly backwards —
+/// this is ambient context, that is somebody waiting on you.
+///
+/// The metals are the only colour on this board that does not mean a state, so
+/// they are fenced to this row and never touch a card. The rank is also carried
+/// by a pip count, because roughly one man in twelve cannot separate five
+/// metals by hue and the board's second design principle says state is never
+/// carried by colour alone — a rank is no different.
+///
+/// Not interactive. The obvious destination would be the usage screen, but that
+/// screen is per-agent and a streak spans all of them, so a tap would have to
+/// pick one arbitrarily. A row that goes somewhere half-chosen is worse than a
+/// row that stays put.
+private struct StreakBar: View {
+    let streak: Streak
+
+    /// How far along the current rung, 0–1. Measured between the tier reached
+    /// and the next one rather than from zero, so the bar fills at a readable
+    /// rate instead of crawling for a month between Gold and Platinum.
+    private var progress: Double {
+        guard let next = streak.next else { return 1 }
+        let floor = streak.tier?.days ?? 0
+        let span = Double(next.days - floor)
+        guard span > 0 else { return 1 }
+        return min(1, max(0, Double(streak.days - floor) / span))
+    }
+
+    private var metal: Color {
+        switch streak.tier {
+        case .wood: Theme.tierWood
+        case .bronze: Theme.tierBronze
+        case .silver: Theme.tierSilver
+        case .gold: Theme.tierGold
+        case .platinum: Theme.tierPlatinum
+        case nil: Theme.textSecondary
+        }
+    }
+
+    /// The rank as a count, not only as a colour.
+    private var pips: Int { streak.tier?.pips ?? 0 }
+
+    var body: some View {
+        HStack(spacing: Theme.Space.sm) {
+            Image(systemName: streak.tier == nil ? "circle.dotted" : "star.fill")
+                .font(.system(size: 15))
+                .foregroundStyle(metal)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if let tier = streak.tier {
+                        Text(tier.name)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(metal)
+                        HStack(spacing: 3) {
+                            ForEach(0..<5, id: \.self) { index in
+                                Capsule()
+                                    .fill(index < pips ? metal : Theme.cardBorder)
+                                    .frame(width: 10, height: 3)
+                            }
+                        }
+                        .accessibilityHidden(true)
+                    }
+                    Text("\(streak.days) day\(streak.days == 1 ? "" : "s") active")
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.textTertiary)
+
+                    Spacer(minLength: Theme.Space.xs)
+
+                    if let next = streak.next, let togo = streak.daysToNext, togo > 0 {
+                        Text("\(togo)d to \(next.name)")
+                            .font(.caption)
+                            .monospacedDigit()
+                            .foregroundStyle(Theme.textTertiary)
+                            .fixedSize()
+                    }
+                }
+
+                // A track, not a meter. There is no target here and nothing to
+                // fail — it shows where the next rung sits, and that is all.
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Theme.raised)
+                        Capsule()
+                            .fill(metal)
+                            .frame(width: max(2, geo.size.width * progress))
+                    }
+                }
+                .frame(height: 3)
+            }
+        }
+        .padding(.horizontal, Theme.Space.md)
+        .padding(.top, Theme.Space.xs)
+        .padding(.bottom, Theme.Space.xxs)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.card)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Theme.cardBorder).frame(height: 1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityText)
+    }
+
+    /// Spelled out, because the pips and the metal say nothing to a screen
+    /// reader and "Silver, 14, 16" would be a riddle.
+    private var accessibilityText: String {
+        let run = "\(streak.days) day\(streak.days == 1 ? "" : "s") active"
+        guard let tier = streak.tier else {
+            if let next = streak.next, let togo = streak.daysToNext {
+                return "\(run). \(togo) more to reach \(next.name)."
+            }
+            return run
+        }
+        guard let next = streak.next, let togo = streak.daysToNext, togo > 0 else {
+            return "\(tier.name) tier. \(run). Top of the ladder."
+        }
+        return "\(tier.name) tier. \(run). \(togo) more to reach \(next.name)."
+    }
+}
+
 struct UsageBarsView: View {
     let usage: [UsageInfo]
 

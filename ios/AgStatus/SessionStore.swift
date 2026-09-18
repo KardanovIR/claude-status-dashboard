@@ -52,6 +52,32 @@ final class SessionStore {
         var awaitsAck: Bool { !done || provisional }
     }
 
+    /// How long a session sat waiting on a human, said once it has stopped
+    /// mattering — the closing beat.
+    ///
+    /// It is a READING, not a notification: no badge, no chrome, no demand. The
+    /// board's job is triage, and a thing that asks for a response competes
+    /// with the cards that genuinely need one.
+    ///
+    /// Derived entirely on this device. The transition is visible for exactly
+    /// one line in the `.upsert` branch, where the old session is still in the
+    /// array beside the new one; after that the old status and its timestamp
+    /// are gone and the wait is unrecoverable. Nothing is stored and no server
+    /// change was needed.
+    struct WaitBeat: Equatable, Sendable {
+        /// The state it was waiting in — `blocked` (it stopped to ask you) or
+        /// `done` (it finished and sat unseen).
+        let from: AgentStatus
+        /// How long it spent there.
+        let waited: TimeInterval
+    }
+
+    /// Below this, no beat. A wait you never noticed is not worth a line, and
+    /// with beats persisting until a card next changes — and firing on `done`,
+    /// the commonest state — every card would otherwise carry one permanently,
+    /// which is how a thing stops being read.
+    static let beatFloor: TimeInterval = 120
+
     /// No ack by then → "is it asleep?", provisionally: a later ack still
     /// corrects it, and `reconcilePendingCommands` polls on the next foreground.
     /// (The web board shows the same mark, then gives up near the server TTL.)
@@ -71,6 +97,19 @@ final class SessionStore {
     private(set) var machines: [String: MachinePresence] = [:]
     /// The command each card is waiting on or last heard about, by session id.
     private(set) var focus: [String: FocusState] = [:]
+
+    /// The closing beat each card is showing, by session id. Set when a session
+    /// leaves `blocked` or `done`, and cleared the next time that session
+    /// changes at all — so it lives exactly as long as the card it describes
+    /// stays put.
+    private(set) var beats: [String: WaitBeat] = [:]
+
+    /// Consecutive days this board did any work. Derived on this device from
+    /// the per-project token rows the board already stores, so it costs one
+    /// request and no new storage anywhere. `.none` until the first fetch
+    /// lands, and `.none` again if it fails — the bar is simply absent rather
+    /// than showing an error, because a streak is not worth an apology.
+    private(set) var streak: Streak = .none
 
     /// Wall clock of the last real board activity (a session update or
     /// removal; demo ticks count too). Drives the keep-awake idle countdown —
@@ -131,6 +170,8 @@ final class SessionStore {
         usage = []
         machines = [:]
         clearFocus()
+        beats.removeAll()
+        streak = .none
         cachedPairCode = nil
         connect()
     }
@@ -149,6 +190,8 @@ final class SessionStore {
         usage = []
         machines = [:]
         clearFocus()
+        beats.removeAll()
+        streak = .none
         cachedPairCode = nil
         connection = .idle
     }
@@ -179,6 +222,10 @@ final class SessionStore {
         cancelStream()
         connection = .connecting
         lastActivityAt = Date()
+        // Hooked here rather than in adopt() so a launch with a board already
+        // in the keychain gets a streak too — that is the common case, and it
+        // never calls adopt().
+        refreshStreak()
         streamTask = Task { [weak self] in
             await self?.runStream(for: board)
         }
@@ -222,6 +269,13 @@ final class SessionStore {
                             connection = .live
                             delay = 1
                             pruneFocus()
+                            // Every beat goes. A snapshot replaces the whole
+                            // list, so the transitions it implies happened
+                            // while the stream was down — announcing them now
+                            // would spray a beat across every card that moved
+                            // during a reconnect, which is noise wearing the
+                            // shape of news.
+                            beats.removeAll()
                             // Acks broadcast while the stream was down are gone;
                             // ask the server where anything still owed one got to.
                             if focus.values.contains(where: { $0.awaitsAck }) {
@@ -229,6 +283,11 @@ final class SessionStore {
                             }
                         case .upsert(let session):
                             if let index = sessions.firstIndex(where: { $0.id == session.id }) {
+                                // The ONE line where the transition exists. The
+                                // old session is still here beside the new one;
+                                // after the assignment its status and timestamp
+                                // are gone and the wait is unrecoverable.
+                                noteBeat(was: sessions[index], is: session)
                                 sessions[index] = session
                             } else {
                                 sessions.insert(session, at: 0)
@@ -654,6 +713,54 @@ final class SessionStore {
     }
 
     /// Drops focus entries for sessions no longer on the board.
+    /// Fetches the day grid the streak is derived from.
+    ///
+    /// The usage screen already calls this endpoint, but that is a screen you
+    /// navigate to, and a streak nobody sees is not a streak — so the board
+    /// pays for one request of its own when it connects. Ninety days of
+    /// per-project rows is a small response, and nothing is stored: the number
+    /// is derived on this device every time.
+    ///
+    /// A failure leaves `.none`, which renders as no bar at all. There is
+    /// deliberately no error state — a streak is ambient, and an apology where
+    /// a number should be is worse than silence.
+    private func refreshStreak() {
+        guard let board else { return }
+        Task { [weak self] in
+            let history = (try? await AgStatusAPI.usageHistory(days: UsageHistory.streakWindowDays,
+                                                              for: board)) ?? .empty
+            // The board may have been swapped or dropped while this was in
+            // flight; a streak from a board you have left is worse than none.
+            guard let self, self.board == board else { return }
+            self.streak = Streak.derive(from: history.projects)
+        }
+    }
+
+    /// Records how long a session waited, at the moment it stops waiting.
+    ///
+    /// Any existing beat is dropped first, unconditionally: a beat lives until
+    /// its card next changes, and this IS the card changing. Without that a
+    /// stale duration would sit under a card that has long since moved on.
+    ///
+    /// A beat is only worth a line when all three hold:
+    ///   - the old state was one that waited on a HUMAN (`blocked` asked you a
+    ///     question; `done` finished and sat unseen). An agent moving between
+    ///     `coding` and `testing` was never waiting for anyone.
+    ///   - the status actually changed. The hook re-posts the same status on
+    ///     every tool call, and a keep-alive is not a resolution.
+    ///   - it waited longer than the floor. A wait you never noticed is not
+    ///     news, and without this every `done` card would carry a line forever.
+    private func noteBeat(was old: Session, is new: Session) {
+        beats[new.id] = nil
+        guard old.status == .blocked || old.status == .done else { return }
+        guard old.status != new.status else { return }
+        let waited = new.updatedDate.timeIntervalSince(old.updatedDate)
+        // A negative gap means the two updates arrived out of order; there is
+        // no honest duration to report, so report none.
+        guard waited >= Self.beatFloor else { return }
+        beats[new.id] = WaitBeat(from: old.status, waited: waited)
+    }
+
     private func pruneFocus() {
         let present = Set(sessions.map(\.id))
         for id in focus.keys where !present.contains(id) {
@@ -685,11 +792,23 @@ final class SessionStore {
         #if DEBUG
         DemoData.verifyFocusDecoding()
         DemoData.verifyTokenDecoding()
+        // The forgiveness rule is the one part of the streak a screenshot
+        // cannot show: a bar reading "14 days" looks the same whether the
+        // window arithmetic is right or wrong. With no test target in this
+        // project, this is where it gets checked.
+        Streak.verifyDerivation()
         #endif
         sessions = Self.sortedByUpdate(DemoData.initialSessions())
         usage = DemoData.usage()
         machines = DemoData.machines()
         clearFocus()
+        beats.removeAll()
+        // Derived from the same seeded rows the usage screen draws, so the demo
+        // streak is a real derivation rather than a hard-coded number — and it
+        // has gaps in it, because `tokenRows` skips about one day in five. A
+        // demo that always showed an unbroken run would never exercise the
+        // forgiveness rule, which is the part most likely to be wrong.
+        streak = Streak.derive(from: DemoData.usageHistory(days: UsageHistory.streakWindowDays).projects)
         connection = .demo
         demoTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -709,6 +828,8 @@ final class SessionStore {
         usage = []
         machines = [:]
         clearFocus()
+        beats.removeAll()
+        streak = .none
         connection = .idle
         if board != nil {
             connect()

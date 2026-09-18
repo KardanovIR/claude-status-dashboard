@@ -424,6 +424,9 @@ private struct FocusStatusLine: View {
         return "\(name) is offline (\(SessionCardView.relativeTime(from: lastSeen, to: now)))"
     }
 
+    /// How long this session waited, once it has stopped waiting.
+    private var beat: SessionStore.WaitBeat? { store.beats[session.id] }
+
     var body: some View {
         Group {
             if let state {
@@ -431,12 +434,43 @@ private struct FocusStatusLine: View {
                     .accessibilityAddTraits(.updatesFrequently)
             } else if let offlineNote {
                 Text(offlineNote).foregroundStyle(Theme.textTertiary)
+            } else if let beat {
+                // Last in the order on purpose. A tap you are waiting on and a
+                // machine that has gone offline are both things you might act
+                // on; this is a fact about something already over, so it yields
+                // to either. It is also the quietest thing this line can say —
+                // tertiary, caption, no colour of its own. With beats lasting
+                // until a card next changes, and `done` being the commonest
+                // state, anything louder would be permanent furniture.
+                Text(beatLabel(beat)).foregroundStyle(Theme.textTertiary)
             }
         }
         .font(.caption)
         .padding(.top, Theme.Space.xxs)
         .animation(.snappy, value: state)
+        .animation(.snappy, value: beat)
         .accessibilityElement(children: .combine)
+    }
+
+    /// `blocked` was waiting on a decision; `done` was not waiting at all — it
+    /// finished and sat there. "Waited" would be wrong for the second, and the
+    /// card's own status has already moved on by the time this appears, so the
+    /// sentence has to carry its own context.
+    private func beatLabel(_ beat: SessionStore.WaitBeat) -> String {
+        switch beat.from {
+        case .blocked: "Waited \(duration(beat.waited))"
+        default: "Unseen for \(duration(beat.waited))"
+        }
+    }
+
+    /// "2h 14m", "18m". Coarse on purpose: a wait reported to the second reads
+    /// as precision nobody asked for, and this is a closing note, not a metric.
+    private func duration(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded())
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        if hours >= 1 { return minutes > 0 ? "\(hours)h \(minutes)m" : "\(hours)h" }
+        return "\(max(1, minutes))m"
     }
 
     private func color(for kind: SessionStore.FocusState.Kind) -> Color {

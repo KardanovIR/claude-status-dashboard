@@ -786,7 +786,225 @@ struct UsageHistory: Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - Streak
+
+/// A rank on the streak ladder. Reached, never lost.
+///
+/// Badges make people sprint at a threshold and slacken just past it, so
+/// nothing here takes a tier away — the ladder only goes up, and a forgiven day
+/// never costs one. `pips` exists because roughly one man in twelve cannot
+/// separate these by colour: the rank is countable as well as coloured.
+enum StreakTier: Int, CaseIterable, Sendable {
+    case wood = 3
+    case bronze = 7
+    case silver = 14
+    case gold = 30
+    case platinum = 60
+
+    var days: Int { rawValue }
+
+    var name: String {
+        switch self {
+        case .wood: "Wood"
+        case .bronze: "Bronze"
+        case .silver: "Silver"
+        case .gold: "Gold"
+        case .platinum: "Platinum"
+        }
+    }
+
+    /// One through five — the rank without relying on hue.
+    var pips: Int {
+        switch self {
+        case .wood: 1
+        case .bronze: 2
+        case .silver: 3
+        case .gold: 4
+        case .platinum: 5
+        }
+    }
+
+    /// The highest tier a run of `days` has reached, or nil below the first.
+    static func reached(_ days: Int) -> StreakTier? {
+        allCases.last { days >= $0.days }
+    }
+
+    /// The next rung up, or nil at the top.
+    var next: StreakTier? {
+        StreakTier.allCases.first { $0.days > days }
+    }
+}
+
+/// How many consecutive days this board did any work, and where that sits on
+/// the ladder.
+///
+/// It belongs to the BOARD, not to a person: identity here is a bearer token
+/// with no account behind it, so anyone who pairs a phone shares this number.
+/// It counts days active and never speed — the one thing this must not become
+/// is a reason to answer an agent faster without reading what it asked.
+struct Streak: Equatable, Sendable {
+    /// Consecutive active days ending today, counting forgiven gaps as intact.
+    var days: Int
+    /// True when today itself had activity. A run stays alive through a quiet
+    /// today; this is what lets the bar say so without claiming a day it has
+    /// not earned.
+    var activeToday: Bool
+
+    var tier: StreakTier? { StreakTier.reached(days) }
+
+    /// The rung being climbed towards, or nil at the top.
+    ///
+    /// The two nil cases are opposites and must not be conflated: no tier YET
+    /// means the first rung is next, while no tier LEFT means there is nothing
+    /// to point at. Writing this as `tier?.next ?? allCases.first` collapsed
+    /// them — at Platinum it fell through to Wood, and the bar read "0d to
+    /// Wood" at the top of the ladder.
+    var next: StreakTier? {
+        guard let tier else { return StreakTier.allCases.first }
+        return tier.next
+    }
+
+    var daysToNext: Int? { next.map { max(0, $0.days - days) } }
+
+    static let none = Streak(days: 0, activeToday: false)
+}
+
+extension Streak {
+
+    /// At most this many missed days inside any rolling window of
+    /// `forgivenessWindow` before the run ends.
+    static let forgivenessAllowance = 2
+    static let forgivenessWindow = 7
+
+    /// Days active, derived from the per-project token rows the board already
+    /// stores. No new storage, no new endpoint: a day counts when any project
+    /// spent anything on it.
+    ///
+    /// Gaps are forgiven by RULE rather than by a spendable allowance, because
+    /// there is nowhere to keep one — the server has no per-user state, and a
+    /// count kept on the device would disagree between a phone and an iPad and
+    /// reset on reinstall. So this walks backwards from today and ends the run
+    /// at the third miss inside any seven-day window, which survives an
+    /// ordinary weekend without making weekends a special case (the server
+    /// stores no timezone, so "weekend" could only ever mean UTC).
+    ///
+    /// A quiet TODAY does not end a run. You are usually looking at this board
+    /// in the morning before anything has happened.
+    static func derive(from projects: [UsageProjectDay], asOf grid: [String]? = nil) -> Streak {
+        let days = grid ?? UsageHistory.dayRange(UsageHistory.streakWindowDays)
+        guard !days.isEmpty else { return .none }
+
+        var spent = Set<String>()
+        for row in projects where row.tokens > 0 {
+            spent.insert(row.day)
+        }
+
+        // Newest first: the run is measured backwards from today.
+        let reversed = Array(days.reversed())
+        var run = 0
+        var misses: [Int] = []
+
+        for (offset, day) in reversed.enumerated() {
+            if spent.contains(day) {
+                run = offset + 1
+                continue
+            }
+            // A miss. It ends the run once the rolling window holds too many.
+            misses.append(offset)
+            let recent = misses.filter { offset - $0 < forgivenessWindow }
+            if recent.count > forgivenessAllowance { break }
+            // Forgiven: the run continues through it, but a forgiven day is not
+            // itself an active day, so `run` is left where the last real one
+            // put it and only extends again on the next day that spent.
+        }
+
+        return Streak(days: run, activeToday: spent.contains(reversed[0]))
+    }
+
+    /// Self-check for the forgiveness rule, in the idiom the other DEBUG checks
+    /// in this app use (`DemoData.verifyTokenDecoding` and friends).
+    ///
+    /// This project has no test target, and the rule is the one part of the
+    /// streak that a screenshot cannot show: a bar reading "14 days" looks
+    /// identical whether the window arithmetic is right or wrong. Walking
+    /// backwards through a rolling window has real edges — a gap on the newest
+    /// day, misses that fall just inside or just outside the window, a run that
+    /// ends exactly on the third one — so they are pinned here rather than
+    /// assumed.
+    static func verifyDerivation() {
+        /// A grid oldest-first, the same shape `dayRange` produces. The last
+        /// element is "today".
+        func grid(_ count: Int) -> [String] {
+            (1...count).map { String(format: "2026-01-%02d", $0) }
+        }
+        func rows(_ days: [String], tokens: Double = 1) -> [UsageProjectDay] {
+            days.map { UsageProjectDay(source: "claude", project: "p", day: $0, tokens: tokens) }
+        }
+
+        let ten = grid(10)
+
+        // Nothing reported at all — not a run of zero-length, just no run.
+        assert(derive(from: [], asOf: ten).days == 0, "no rows")
+        assert(derive(from: [], asOf: []).days == 0, "no grid")
+
+        // Every day spent.
+        let all = derive(from: rows(ten), asOf: ten)
+        assert(all.days == 10, "unbroken run")
+        assert(all.activeToday, "today counted")
+
+        // A quiet TODAY does not end a run — you look at this board in the
+        // morning before anything has happened. The forgiven day still counts
+        // toward the span, the way a streak freeze does everywhere else, so
+        // this is 10 and not 9; `activeToday` is what keeps the UI honest.
+        let quietToday = derive(from: rows(Array(ten.dropLast())), asOf: ten)
+        assert(quietToday.days == 10, "quiet today keeps the run")
+        assert(!quietToday.activeToday, "but today is not claimed as active")
+
+        // Three consecutive misses end it; the run keeps what it had.
+        let threeMissed = derive(from: rows(Array(ten.suffix(6))), asOf: ten)
+        assert(threeMissed.days == 6, "third miss ends the run")
+
+        // Two misses twenty days apart are both forgiven — the window is
+        // rolling, so an old miss cannot combine with a recent one.
+        let twenty = grid(20)
+        let spread = twenty.filter { $0 != "2026-01-05" && $0 != "2026-01-15" }
+        assert(derive(from: rows(spread), asOf: twenty).days == 20, "isolated misses forgiven")
+
+        // Two misses INSIDE one window are forgiven; a third is not.
+        let twoInWindow = twenty.filter { $0 != "2026-01-18" && $0 != "2026-01-17" }
+        assert(derive(from: rows(twoInWindow), asOf: twenty).days == 20, "two in a window forgiven")
+        let threeInWindow = twenty.filter {
+            $0 != "2026-01-18" && $0 != "2026-01-17" && $0 != "2026-01-16"
+        }
+        assert(derive(from: rows(threeInWindow), asOf: twenty).days == 2, "three in a window ends it")
+
+        // A day that reported zero tokens reported no work.
+        assert(derive(from: rows(ten, tokens: 0), asOf: ten).days == 0, "zero tokens is not activity")
+
+        // The ladder.
+        assert(StreakTier.reached(2) == nil, "below the first rung")
+        assert(StreakTier.reached(3) == .wood, "wood at three")
+        assert(StreakTier.reached(13) == .bronze, "one short of silver")
+        assert(StreakTier.reached(14) == .silver, "silver at fourteen")
+        assert(StreakTier.reached(600) == .platinum, "nothing above platinum")
+        assert(StreakTier.silver.next == .gold, "silver leads to gold")
+        assert(StreakTier.platinum.next == nil, "platinum is the top")
+
+        // Before the first tier the bar still has somewhere to point.
+        let two = Streak(days: 2, activeToday: true)
+        assert(two.tier == nil, "no tier yet")
+        assert(two.next == .wood, "next rung is wood")
+        assert(two.daysToNext == 1, "one day to wood")
+        assert(Streak(days: 60, activeToday: true).daysToNext == nil, "nothing left to reach")
+    }
+}
+
 extension UsageHistory {
+
+    /// How far back a streak may reach. The server loads project-days for 90
+    /// days and no further, so a longer window would show a number the storage
+    /// cannot back — which is why the ladder tops out at 60 rather than 365.
+    static let streakWindowDays = 90
 
     /// The `days` UTC days ending today, oldest first, as "YYYY-MM-DD".
     static func dayRange(_ days: Int) -> [String] {

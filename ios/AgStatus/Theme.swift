@@ -147,6 +147,36 @@ enum Theme {
     /// oklch(78% 0.150 80)
     static let limitWarn = rgb(0xE9AB2B)
 
+    // MARK: - Tiers
+    //
+    // The streak ladder's five metals. They are the ONLY colour on this board
+    // that does not mean a state, which is why they are fenced off: they appear
+    // on the pinned streak bar and nowhere else — never as a card tint, never
+    // on a session card. Colour there means `blocked` or `done`, and a tier
+    // borrowing chroma would compete with the two states that actually ask for
+    // a human.
+    //
+    // Deliberately off the six state hues for the same reason. Wood and bronze
+    // sit warm at 55-60, clear of `blocked` at 28; silver and platinum carry
+    // almost no chroma at all; gold at 85 is the one with real saturation and
+    // it is the tier most people will sit at longest.
+    //
+    // The ladder is also legible without colour: each tier shows a pip count,
+    // one through five. Roughly one man in twelve cannot separate these by hue,
+    // and the board's second design principle says state is never carried by
+    // colour alone — a rank is no different.
+
+    /// oklch(58% 0.055 60)
+    static let tierWood = rgb(0x7A6250)
+    /// oklch(66% 0.095 55)
+    static let tierBronze = rgb(0xA57453)
+    /// oklch(82% 0.010 240)
+    static let tierSilver = rgb(0xC9CBD0)
+    /// oklch(80% 0.130 85)
+    static let tierGold = rgb(0xD9A43C)
+    /// oklch(90% 0.025 220)
+    static let tierPlatinum = rgb(0xDFE8EF)
+
     /// The meter's colour at `percent` of its limit.
     static func limitColor(_ percent: Double) -> Color {
         if percent >= 85 { return color(for: .blocked) }

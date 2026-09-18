@@ -166,16 +166,21 @@ enum Theme {
     // and the board's second design principle says state is never carried by
     // colour alone — a rank is no different.
 
-    /// oklch(58% 0.055 60)
-    static let tierWood = rgb(0x7A6250)
+    /// oklch(70% 0.040 60) — lifted from 58%, which measured 3.7:1 on the card
+    /// surface and failed AA outright. It is the palest warm tone here rather
+    /// than the darkest: legibility decides the lightness, and the hue plus the
+    /// pip count carry the rank.
+    static let tierWood = rgb(0xA4948A)
     /// oklch(66% 0.095 55)
     static let tierBronze = rgb(0xA57453)
     /// oklch(82% 0.010 240)
     static let tierSilver = rgb(0xC9CBD0)
     /// oklch(80% 0.130 85)
     static let tierGold = rgb(0xD9A43C)
-    /// oklch(90% 0.025 220)
-    static let tierPlatinum = rgb(0xDFE8EF)
+    /// oklch(76% 0.020 220) — pulled down from 90%. At near-white it was the
+    /// brightest thing on the board, and the top rung of an ambient counter
+    /// out-shouting a `blocked` card is exactly backwards.
+    static let tierPlatinum = rgb(0xB4BEC7)
 
     /// The meter's colour at `percent` of its limit.
     static func limitColor(_ percent: Double) -> Color {

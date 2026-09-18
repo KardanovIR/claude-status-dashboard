@@ -736,6 +736,21 @@ final class SessionStore {
         }
     }
 
+    /// The same capture, across two whole lists.
+    ///
+    /// The SSE path sees one session at a time and can compare in place, but
+    /// demo mode replaces the array wholesale — so without this the beat was
+    /// structurally unreachable there, and the one environment where the design
+    /// can actually be looked at was the one that could never show it.
+    private func noteBeats(was old: [Session], is new: [Session]) {
+        guard !old.isEmpty else { return }
+        let previous = Dictionary(old.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for session in new {
+            guard let was = previous[session.id] else { continue }
+            noteBeat(was: was, is: session)
+        }
+    }
+
     /// Records how long a session waited, at the moment it stops waiting.
     ///
     /// Any existing beat is dropped first, unconditionally: a beat lives until
@@ -814,8 +829,14 @@ final class SessionStore {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(4))
                 guard let self, !Task.isCancelled, self.connection == .demo else { return }
-                self.sessions = Self.stableOrder(current: self.sessions,
-                                                 incoming: DemoData.tick(self.sessions))
+                let incoming = Self.stableOrder(current: self.sessions,
+                                                incoming: DemoData.tick(self.sessions))
+                // Demo replaces the whole array, so the in-place comparison the
+                // SSE path relies on never happens here. Without this the beat
+                // could not appear in demo mode at all — which is the only
+                // place the design can actually be looked at.
+                self.noteBeats(was: self.sessions, is: incoming)
+                self.sessions = incoming
                 self.lastActivityAt = Date()
             }
         }

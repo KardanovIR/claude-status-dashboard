@@ -40,13 +40,22 @@ enum DemoData {
                     host: Host(machine: onlineMachine,
                                app: Host.App(slug: "agterm", name: "agterm", kind: "terminal")),
                     tokens: 486_200),
+            // Finished eight minutes ago and nobody has looked: the card that
+            // shows the closing beat when it finally moves.
+            //
+            // It deliberately reports no host. The beat sits in the same line
+            // as the offline note and yields to it — a machine you cannot reach
+            // is more actionable than how long something waited — so a card
+            // with an offline machine can never display one. `data-pipeline`
+            // has exactly that shape, which is why the beat needs a second card
+            // to be visible at all here.
             Session(id: "demo-webapp",
                     name: "webapp",
-                    status: .testing,
-                    message: "npm test — 42 passing, 1 pending",
+                    status: .done,
+                    message: "Finished — 12 files changed",
                     project: "acme-web",
                     createdAt: now - 95 * 60_000,
-                    updatedAt: now - 70_000,
+                    updatedAt: now - 8 * 60_000,
                     tokens: 1_438_000),
             // Eighteen minutes old and nothing reported for it yet: the card
             // that must show no number.
@@ -150,7 +159,30 @@ enum DemoData {
                                                       rng: &rng))
             }
         }
-        return UsageHistory(days: grid.count, history: series, projects: projects)
+        // Quiet days, applied to the UNION rather than per project.
+        //
+        // `tokenRows` already skips about one day in five, but it rolls
+        // independently for every project — and a day counts as active if ANY
+        // project spent. With several projects the gaps almost never line up,
+        // so the union covered nearly every day and the demo streak read
+        // "Platinum, 90 days active" on launch: the ladder maxed, no tier below
+        // the top reachable, and the forgiveness rule never exercised in the
+        // one place it can actually be looked at.
+        //
+        // These offsets are counted back from today and chosen rather than
+        // rolled, so the demo board is the same every launch and shows a
+        // specific, reviewable shape: three consecutive quiet days nineteen
+        // back end the run, and two isolated ones inside it are forgiven. That
+        // lands on nineteen days — Silver, partway to Gold — which is a state
+        // with something to draw, unlike the top rung.
+        let quietOffsets: Set<Int> = [3, 11, 19, 20, 21]
+        let quietDays = Set(quietOffsets.compactMap { offset -> String? in
+            let index = grid.count - 1 - offset
+            return grid.indices.contains(index) ? grid[index] : nil
+        })
+        let spent = projects.filter { !quietDays.contains($0.day) }
+
+        return UsageHistory(days: grid.count, history: series, projects: spent)
     }
 
     /// What each demo agent has been spending, and on what.
@@ -421,6 +453,22 @@ enum DemoData {
     private static func advance(_ session: Session, at now: Int64) -> Session {
         var next = session
         let status = transitions[session.status]?.randomElement() ?? session.status
+
+        // A stopped agent emits nothing at all.
+        //
+        // `blocked` means it halted to ask a human, and `done` means it handed
+        // the turn back — in both the process is waiting, so no hook fires and
+        // the board hears nothing until something actually changes. The demo
+        // used to re-stamp `updatedAt` and swap the message on these anyway,
+        // every few seconds, which was two lies at once: the board never
+        // receives such an update, and re-stamping resets the very interval the
+        // closing beat measures, so a card that had genuinely been waiting
+        // three minutes silently became one that had waited four seconds.
+        //
+        // Now a waiting card holds completely still until it moves, and the
+        // wait it reports on the way out is real.
+        guard status != session.status || session.status.isActive else { return session }
+
         next.status = status
         if status != session.status || Bool.random() {
             next.message = messages[status]?.randomElement() ?? session.message

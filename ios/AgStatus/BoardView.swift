@@ -503,21 +503,33 @@ private struct StreakBar: View {
     var body: some View {
         HStack(spacing: Theme.Space.sm) {
             Image(systemName: streak.tier == nil ? "circle.dotted" : "star.fill")
-                .font(.system(size: 15))
+                .font(.system(size: 13))
                 .foregroundStyle(metal)
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
+            VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+                HStack(alignment: .firstTextBaseline, spacing: Theme.Space.xs) {
                     if let tier = streak.tier {
                         Text(tier.name)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(metal)
-                        HStack(spacing: 3) {
-                            ForEach(0..<5, id: \.self) { index in
-                                Capsule()
-                                    .fill(index < pips ? metal : Theme.cardBorder)
-                                    .frame(width: 10, height: 3)
+                        // Countable, not decorative. As 10x3 capsules these
+                        // read as a dashed rule — a shape that looks like data
+                        // and carries none. Dots at 5pt with real gaps can
+                        // actually be counted at a glance, which is the whole
+                        // job: the rank must survive without hue, because
+                        // roughly one man in twelve cannot separate the metals.
+                        HStack(spacing: Theme.Space.xxs) {
+                            ForEach(0..<StreakTier.allCases.count, id: \.self) { index in
+                                Circle()
+                                    .fill(index < pips ? metal : Color.clear)
+                                    .overlay(
+                                        Circle().strokeBorder(
+                                            index < pips ? Color.clear : Theme.cardBorder,
+                                            lineWidth: 1
+                                        )
+                                    )
+                                    .frame(width: 5, height: 5)
                             }
                         }
                         .accessibilityHidden(true)
@@ -529,26 +541,41 @@ private struct StreakBar: View {
 
                     Spacer(minLength: Theme.Space.xs)
 
+                    // Drops out whole rather than truncating. At large Dynamic
+                    // Type "16d to Platinum" beside a tier name and a day count
+                    // overruns 390pt, and a clipped "16d to Plat…" is worse
+                    // than no forecast at all.
                     if let next = streak.next, let togo = streak.daysToNext, togo > 0 {
-                        Text("\(togo)d to \(next.name)")
-                            .font(.caption)
-                            .monospacedDigit()
-                            .foregroundStyle(Theme.textTertiary)
-                            .fixedSize()
+                        ViewThatFits(in: .horizontal) {
+                            Text("\(togo)d to \(next.name)")
+                                .font(.caption)
+                                .monospacedDigit()
+                                .foregroundStyle(Theme.textTertiary)
+                                .fixedSize()
+                            EmptyView()
+                        }
                     }
                 }
 
-                // A track, not a meter. There is no target here and nothing to
-                // fail — it shows where the next rung sits, and that is all.
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(Theme.raised)
-                        Capsule()
-                            .fill(metal)
-                            .frame(width: max(2, geo.size.width * progress))
+                // A track, and only while there is somewhere to go. At the top
+                // rung `progress` is 1, and a full-width bar under a dark board
+                // is the brightest thing on screen — an ambient counter
+                // out-shouting a card that needs a human, which is backwards.
+                // Nothing left to reach means nothing to draw.
+                //
+                // The fill is neutral rather than the metal for the same
+                // reason: this is a position, not an achievement to celebrate.
+                if streak.next != nil {
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(Theme.raised)
+                            Capsule()
+                                .fill(Theme.textTertiary)
+                                .frame(width: max(2, geo.size.width * progress))
+                        }
                     }
+                    .frame(height: 2)
                 }
-                .frame(height: 3)
             }
         }
         .padding(.horizontal, Theme.Space.md)

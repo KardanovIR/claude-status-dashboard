@@ -22,6 +22,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 enum Theme {
 
@@ -266,4 +267,47 @@ enum Theme {
               green: Double((hex >> 8) & 0xFF) / 255,
               blue: Double(hex & 0xFF) / 255)
     }
+}
+
+// MARK: - Motion
+
+// The third design principle is that motion means something changed. Its
+// corollary is that someone who has asked the system for less motion gets none
+// — which is the board's own rule, not a courtesy. public/board.css:507 honours
+// prefers-reduced-motion on the web; until these existed the iOS app honoured
+// it nowhere, in any view, while the principle claimed otherwise.
+//
+// Transitions need no separate treatment. A SwiftUI transition only plays
+// inside an animated state change, so removing the animation removes the
+// transition with it — which is why there is no `.motionTransition`.
+
+/// `.animation(_:value:)` that yields to Reduce Motion.
+private struct ReducibleAnimation<V: Equatable>: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let animation: Animation
+    let value: V
+
+    func body(content: Content) -> some View {
+        content.animation(reduceMotion ? nil : animation, value: value)
+    }
+}
+
+extension View {
+    /// Animate `value` changes, unless the reader has asked for less motion.
+    func motion<V: Equatable>(_ animation: Animation, value: V) -> some View {
+        modifier(ReducibleAnimation(animation: animation, value: value))
+    }
+}
+
+/// `withAnimation` that yields to Reduce Motion.
+///
+/// Reads `UIAccessibility` rather than `@Environment` because every call site is
+/// inside a closure — a button action, a task, a timer callback — where there is
+/// no view environment to read. The two report the same system setting.
+@MainActor
+func withMotion<Result>(
+    _ animation: Animation = .default,
+    _ body: () throws -> Result
+) rethrows -> Result {
+    try withAnimation(UIAccessibility.isReduceMotionEnabled ? nil : animation, body)
 }

@@ -24,7 +24,7 @@ struct RootView: View {
                     .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.25), value: showsBoard)
+        .motion(.easeInOut(duration: 0.25), value: showsBoard)
         .onAppear { applyKeepAwake() }
         .onChange(of: keepAwake) { applyKeepAwake() }
         .onChange(of: keepAwakeIdleMinutes) { applyKeepAwake() }

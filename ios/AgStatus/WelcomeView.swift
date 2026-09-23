@@ -113,7 +113,7 @@ struct WelcomeView: View {
     private var selfHosting: some View {
         VStack(spacing: 10) {
             Button {
-                withAnimation(.snappy) { showServerField.toggle() }
+                withMotion(.snappy) { showServerField.toggle() }
             } label: {
                 HStack(spacing: 5) {
                     Text("Self-hosting? Point any action at your own server")

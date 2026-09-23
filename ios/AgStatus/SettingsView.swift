@@ -289,10 +289,10 @@ struct SettingsView: View {
     private func copyWebhook(_ url: URL) {
         UIPasteboard.general.string = url.absoluteString
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-        withAnimation { copiedWebhook = true }
+        withMotion { copiedWebhook = true }
         Task {
             try? await Task.sleep(for: .seconds(1.5))
-            withAnimation { copiedWebhook = false }
+            withMotion { copiedWebhook = false }
         }
     }
 

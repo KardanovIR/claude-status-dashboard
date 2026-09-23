@@ -190,7 +190,7 @@ struct ScannerView: View {
         guard let url = URL(string: trimmed),
               let board = AgStatusAPI.parseBoardURL(url)
         else {
-            withAnimation { hint = "That's not an AgStatus board QR" }
+            withMotion { hint = "That's not an AgStatus board QR" }
             return
         }
         adopt(board)
@@ -208,7 +208,7 @@ struct ScannerView: View {
               let url = URL(string: candidate),
               let board = AgStatusAPI.parseBoardURL(url)
         else {
-            withAnimation { hint = "That doesn't look like a board URL." }
+            withMotion { hint = "That doesn't look like a board URL." }
             return
         }
         adopt(board)
@@ -223,7 +223,7 @@ struct ScannerView: View {
                 store.adopt(board)
                 dismiss()
             } catch {
-                withAnimation { hint = error.localizedDescription }
+                withMotion { hint = error.localizedDescription }
                 isValidating = false
             }
         }

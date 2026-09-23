@@ -198,10 +198,10 @@ struct PairSheet: View {
     private func copyCommand(_ command: String) {
         UIPasteboard.general.string = command
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-        withAnimation { copied = true }
+        withMotion { copied = true }
         Task {
             try? await Task.sleep(for: .seconds(1.6))
-            withAnimation { copied = false }
+            withMotion { copied = false }
         }
     }
 

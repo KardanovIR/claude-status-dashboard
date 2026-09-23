@@ -447,8 +447,8 @@ private struct FocusStatusLine: View {
         }
         .font(.caption)
         .padding(.top, Theme.Space.xxs)
-        .animation(.snappy, value: state)
-        .animation(.snappy, value: beat)
+        .motion(.snappy, value: state)
+        .motion(.snappy, value: beat)
         .accessibilityElement(children: .combine)
     }
 
@@ -615,7 +615,7 @@ struct SessionHistoryView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .animation(.snappy, value: events)
+        .motion(.snappy, value: events)
     }
 
     private func headerRow(_ session: Session) -> some View {

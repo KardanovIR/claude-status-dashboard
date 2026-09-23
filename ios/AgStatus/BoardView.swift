@@ -52,8 +52,8 @@ struct BoardView: View {
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
-            .animation(.snappy, value: visibleUsage)
-            .animation(.snappy, value: store.streak)
+            .motion(.snappy, value: visibleUsage)
+            .motion(.snappy, value: store.streak)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.background.ignoresSafeArea())
             // A second destination, on its own value type so it can't collide
@@ -194,7 +194,7 @@ struct BoardView: View {
         // each other for the length of the transition — it read as a rendering
         // bug, which is what it was. Motion on this board should mean a card
         // arrived, left or moved; a message changing in place is not news.
-        .animation(.snappy, value: store.sessions.map(\.id))
+        .motion(.snappy, value: store.sessions.map(\.id))
         .safeAreaInset(edge: .bottom) {
             if showsPushTip {
                 pushTip
@@ -228,7 +228,7 @@ struct BoardView: View {
                 .lineLimit(2)
             Spacer(minLength: 4)
             Button("Enable") {
-                withAnimation { pushTipShown = true }
+                withMotion { pushTipShown = true }
                 if let board = store.board {
                     Task { await notifications.enable(for: board) }
                 }
@@ -237,7 +237,7 @@ struct BoardView: View {
             .buttonStyle(.borderless)
             .foregroundStyle(Theme.accent)
             Button {
-                withAnimation { pushTipShown = true }
+                withMotion { pushTipShown = true }
             } label: {
                 Image(systemName: "xmark")
                     .font(.caption2.weight(.bold))
@@ -314,10 +314,10 @@ struct BoardView: View {
         Button {
             UIPasteboard.general.string = url.absoluteString
             UINotificationFeedbackGenerator().notificationOccurred(.success)
-            withAnimation { copiedWebhook = true }
+            withMotion { copiedWebhook = true }
             Task {
                 try? await Task.sleep(for: .seconds(1.5))
-                withAnimation { copiedWebhook = false }
+                withMotion { copiedWebhook = false }
             }
         } label: {
             HStack(spacing: 8) {
@@ -773,7 +773,7 @@ private struct UsageBarRow: View {
                         .fill(barColor)
                         // A hairline of progress stays visible even at ~0%.
                         .frame(width: fraction > 0 ? max(geo.size.width * fraction, 4) : 0)
-                        .animation(.snappy, value: fraction)
+                        .motion(.snappy, value: fraction)
                 }
             }
             .frame(height: 6)

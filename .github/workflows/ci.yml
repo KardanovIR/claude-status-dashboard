@@ -54,7 +54,12 @@ jobs:
         working-directory: cli
       - run: npx tsc --noEmit
         working-directory: cli
-      - run: npx vitest run
+      # Every failure this job has produced was a spawned process that did not
+      # become ready inside the default 10s hook timeout — never a wrong answer.
+      # The same suite that fails under contention passes in seconds when the
+      # startup cost is not paid by twelve workers at once, so give startup room
+      # instead of chasing the flake.
+      - run: npx vitest run --testTimeout 30000 --hookTimeout 30000
         working-directory: cli
 
   hooks:
@@ -165,13 +170,22 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: cli/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            cli/package-lock.json
+      # Same reason as the Linux cli job above: the e2e suite imports the server
+      # sources and spawns dist/server.js, so the root install and build have to
+      # happen here too. Without them the suite dies on `Failed to load url
+      # express` before running a single test — which is how this job stayed red
+      # for a week while reporting a test failure rather than a setup one.
+      - run: npm ci
+      - run: npm run build
       - name: Install and test
         working-directory: cli
         run: |
           npm ci
           npx tsc --noEmit
-          npx vitest run
+          npx vitest run --testTimeout 30000 --hookTimeout 30000
 
   ios:
     name: iOS app (build)

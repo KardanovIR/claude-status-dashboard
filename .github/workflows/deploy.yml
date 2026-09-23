@@ -30,6 +30,21 @@ jobs:
       - name: Deploy
         run: |
           set -euo pipefail
+          # The runner's ~/.docker/config.json names a credsStore of
+          # "desktop.exe" — a Docker Desktop credential helper that does not
+          # exist on this machine — so every build died before pulling anything:
+          #   load metadata for docker.io/library/node:20-alpine
+          #   ERROR: error getting credentials — exec:
+          #   "docker-credential-desktop.exe": executable file not found in $PATH
+          # Nothing this stack pulls is private (node, postgres, caddy and
+          # cloudflared are all public Docker Hub images; the app image is built
+          # right here), so the deploy does not need credentials at all. Build
+          # with a throwaway config that declares no helper, rather than
+          # depending on the machine's config being repaired — this way a
+          # reimaged runner cannot reintroduce the same failure.
+          export DOCKER_CONFIG="$RUNNER_TEMP/docker-config"
+          mkdir -p "$DOCKER_CONFIG"
+          printf '{}' > "$DOCKER_CONFIG/config.json"
           cd "$DEPLOY_PATH"
           git fetch origin master
           git reset --hard origin/master

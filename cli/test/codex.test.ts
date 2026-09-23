@@ -252,8 +252,11 @@ describe('init/uninstall with a detected Codex install', () => {
   let base: string;
   let claudeDir: string;
   let codexDir: string;
+  let homeDir: string;
   let prevClaude: string | undefined;
   let prevCodex: string | undefined;
+  let prevHome: string | undefined;
+  let prevStatusUrl: string | undefined;
   const log = (): void => {};
 
   beforeAll(async () => {
@@ -267,13 +270,27 @@ describe('init/uninstall with a detected Codex install', () => {
     created.shutdown();
   });
 
+  // resolveBoardUrl() reads four sources in priority order: $CLAUDE_STATUS_URL,
+  // then Claude's settings.json, then the Codex sidecar, then ~/.agstatus.json.
+  // This block used to isolate only the middle two, so the top and bottom ones
+  // leaked the real environment — and on a machine where AgStatus is actually
+  // installed, both point at the live board. That board fails `existingBoard`'s
+  // `<base>/w/` origin check, so init minted a fresh board on every call and
+  // these tests took the opposite branch from the one CI takes. Same code,
+  // opposite outcome, decided by whether the developer uses the product. All
+  // four are pinned here so the reuse path is what runs everywhere.
   beforeEach(() => {
     claudeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-claude-'));
     codexDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-codex-'));
+    homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-codexhome-'));
     prevClaude = process.env.CLAUDE_CONFIG_DIR;
     prevCodex = process.env.CODEX_HOME;
+    prevHome = process.env.HOME;
+    prevStatusUrl = process.env.CLAUDE_STATUS_URL;
     process.env.CLAUDE_CONFIG_DIR = claudeDir;
     process.env.CODEX_HOME = codexDir;
+    process.env.HOME = homeDir;
+    delete process.env.CLAUDE_STATUS_URL;
   });
 
   afterEach(() => {
@@ -281,8 +298,13 @@ describe('init/uninstall with a detected Codex install', () => {
     else process.env.CLAUDE_CONFIG_DIR = prevClaude;
     if (prevCodex === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = prevCodex;
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    if (prevStatusUrl === undefined) delete process.env.CLAUDE_STATUS_URL;
+    else process.env.CLAUDE_STATUS_URL = prevStatusUrl;
     fs.rmSync(claudeDir, { recursive: true, force: true });
     fs.rmSync(codexDir, { recursive: true, force: true });
+    fs.rmSync(homeDir, { recursive: true, force: true });
   });
 
   it('auto-configures Codex, and the hook maps Codex events to statuses', async () => {
@@ -449,7 +471,13 @@ describe('init/uninstall with a detected Codex install', () => {
     const first = readCodexHookConfig(codexConfigPath());
     await runInit({ url: base, noQr: true, minimal: true, log });
     const second = readCodexHookConfig(codexConfigPath());
-    expect(second?.url).not.toBe(first?.url); // a fresh board each time
+    // Reused, not fresh. init is the upgrade command as well as the setup one —
+    // the installer re-runs it — so a second board would strand the sessions,
+    // the history and the phone pairing on the first. `--new-board` opts out.
+    // This assertion said `not.toBe` until now: it was written the day before
+    // the reuse landed, and CI could not report it because the suite timed out
+    // before ever reaching this line.
+    expect(second?.url).toBe(first?.url);
     expect(second?.detail).toBe('off'); // --minimal now in effect
     const hooks = readCodexHooks(codexHooksPath()) as {
       hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;

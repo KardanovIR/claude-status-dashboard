@@ -1582,6 +1582,51 @@ describe('runPlanCommand', () => {
     expect(lines[0]).toContain('session id');
   });
 
+  // `agstatus focus <n>` reaches a window on this machine through this branch
+  // rather than the board, so it is the one path a key press actually runs.
+  it('execute runs the plan instead of printing it', async () => {
+    writeRecord(fx, SESSION);
+    const lines: string[] = [];
+    const { execFile, launches } = recorder();
+    const code = await runPlanCommand(SESSION, (l) => lines.push(l), {
+      execFile, platform: 'darwin', execute: true, frontmost: async () => AGTERM,
+    });
+    const text = lines.join('\n');
+    expect(code).toBe(0);
+    expect(text).not.toContain('Plan:');
+    expect(text).toContain('step 1/');
+    expect(text).toContain('focused');
+    expect(launches.map((l) => l.file)).toContain('/usr/bin/open');
+    // The dry run redacts paths; running must not start printing them.
+    expect(text).not.toContain(NEVER);
+  });
+
+  it('execute degrades to selected when the app never comes to the front', async () => {
+    writeRecord(fx, SESSION);
+    const lines: string[] = [];
+    const code = await runPlanCommand(SESSION, (l) => lines.push(l), {
+      execFile: recorder().execFile, platform: 'darwin', execute: true,
+      frontmost: async () => 'com.apple.loginwindow',
+    });
+    // A degraded focus is not a failure: the steps ran and the pane was picked.
+    expect(code).toBe(0);
+    expect(lines.join('\n')).toContain('selected');
+  });
+
+  it('execute reports a failed step as a non-zero exit', async () => {
+    writeRecord(fx, SESSION);
+    const lines: string[] = [];
+    const failing: ExecFile = async (file, args) => {
+      if (file === '/bin/ps' && args[0] === '-o') return { code: 0, stdout: '/Users/demo/.local/bin/claude\n' };
+      return { code: 3, stdout: '' };
+    };
+    const code = await runPlanCommand(SESSION, (l) => lines.push(l), {
+      execFile: failing, platform: 'darwin', execute: true, frontmost: async () => null,
+    });
+    expect(code).toBe(1);
+    expect(lines.join('\n')).toContain('exit 3');
+  });
+
 /**
    * These three assert behaviour that depends on the HOST's real directory
    * layout: `install()` refuses any platform but darwin, so they must simulate a

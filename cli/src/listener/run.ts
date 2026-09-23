@@ -1153,9 +1153,22 @@ export async function runListener(cfg: ListenerConfig, deps: ListenerDeps = {}):
 
 export interface PlanCommandDeps {
   execFile?: ExecFile;
+  /** Only read when `execute` is set: how the runner checks what came to the front. */
+  frontmost?: () => Promise<string | null>;
+  /** `--url`: the board the caller resolved against, so both halves of `agstatus focus` agree on which machine is "this" one. */
+  url?: string;
   platform?: NodeJS.Platform;
   /** `--resume`: plan the Resume tap (a respawn when the agent is gone) instead of the focus. */
   resume?: boolean;
+  /**
+   * Run the plan instead of printing it — what `agstatus focus` uses for a
+   * session hosted on this machine. Identical resolution, identical steps,
+   * identical argv[0] table; only the last line of this function differs.
+   * The board never hears about it, which is the point: a key press must not
+   * spend the workspace's 10-commands-a-minute budget, and must still work
+   * with the board unreachable.
+   */
+  execute?: boolean;
 }
 
 /**
@@ -1170,7 +1183,7 @@ export async function runPlanCommand(sessionId: string, log: Log, deps: PlanComm
     log('✖ The session id may contain only letters, digits, ".", "_", ":" and "-".');
     return 1;
   }
-  const cfg = resolveListenerConfig();
+  const cfg = resolveListenerConfig(deps.url !== undefined ? { url: deps.url } : {});
   if ('error' in cfg) {
     log(`✖ ${cfg.error}`);
     return 1;
@@ -1214,7 +1227,28 @@ export async function runPlanCommand(sessionId: string, log: Log, deps: PlanComm
     log(`  No plan: ${planned.reason}`);
     return 1;
   }
-  log(`  Plan${planned.plan.experimental ? ' (experimental)' : ''}:`);
-  for (const line of describePlan(planned.plan).split('\n')) log(`    ${line}`);
-  return 0;
+  if (deps.execute !== true) {
+    log(`  Plan${planned.plan.experimental ? ' (experimental)' : ''}:`);
+    for (const line of describePlan(planned.plan).split('\n')) log(`    ${line}`);
+    return 0;
+  }
+  // Focus only. A respawn needs the guards that live in the listener — the
+  // 60 s per-session cooldown on disk, the respawn-confirmation wait, the
+  // longer step timeouts — and running one from here would skip all three.
+  // Nothing asks for this today; the check is here so nothing starts to.
+  if (planned.plan.respawns === true) {
+    log('  Refusing to respawn from here — use Resume on the board.');
+    return 1;
+  }
+  const outcome = await runPlan(planned.plan, {
+    execFile: exec,
+    frontmost: deps.frontmost ?? defaultFrontmost,
+    log: (line) => log(`  ${line}`),
+    allowed: allowedArgv0(cfg),
+  });
+  log(`  ${outcome.result}${outcome.reason ? `: ${outcome.reason}` : ''}`);
+  // `selected` means the steps ran but the app did not come to the front in
+  // time — a degraded focus, not a failure. Only `failed` is worth a non-zero
+  // exit, and a hotkey wrapper discards it anyway.
+  return outcome.result === 'failed' ? 1 : 0;
 }

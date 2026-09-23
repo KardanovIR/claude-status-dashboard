@@ -165,6 +165,14 @@
           <li><a href="#focus-support-things-this-page-does-not-claim">Things this page does not claim</a></li>
           <li><a href="#focus-support-when-focus-declines-what-you-see">When Focus declines, what you see</a></li>
         </ul></li>
+      <li class="toc-doc"><a href="#focus-keys">Focus keys</a>
+        <ul>
+          <li><a href="#focus-keys-slots">Slots</a></li>
+          <li><a href="#focus-keys-how-a-press-reaches-the-window">How a press reaches the window</a></li>
+          <li><a href="#focus-keys-binding-keys">Binding keys</a></li>
+          <li><a href="#focus-keys-using-a-macro-keypad">Using a macro keypad</a></li>
+          <li><a href="#focus-keys-when-a-press-does-nothing">When a press does nothing</a></li>
+        </ul></li>
       <li class="toc-doc"><a href="#self-hosting">Self-hosting</a>
         <ul>
           <li><a href="#self-hosting-quick-start">Quick start</a></li>
@@ -1270,6 +1278,245 @@ currently emits any of them.</p>
 <p>A focus that runs but cannot confirm the app reached the front is reported as
 <code>selected</code> rather than <code>focused</code> — macOS keeps the current app in front while
 you are typing, and the listener does not pretend otherwise.</p>
+
+</section>
+<hr class="doc-split" />
+<section class="doc" aria-labelledby="focus-keys">
+<h2 id="focus-keys">Focus keys — one key press per agent</h2>
+<p><code>agstatus focus &lt;n&gt;</code> brings the n-th session&#39;s window to the front. Bind it to
+six keys and the board becomes something you <em>drive</em>: glance at the iPad, press
+the key for the agent that needs you, and its terminal is in front of you.</p>
+<p>This is the same action as the board&#39;s <strong>Focus</strong> button — it needs the
+<a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/docs/design/focus-protocol.md">Focus listener</a> installed (<code>agstatus listener install</code>), and nothing else.</p>
+<h3 id="focus-keys-slots"><a class="anchor" href="#focus-keys-slots">Slots</a></h3>
+<pre><code>$ agstatus focus --list
+Slot  Session
+   1  blocked   claude-status            MacBook/agterm
+   2  coding    infra-terraform          MacBook/Ghostty
+   3  done      website                  mini/iTerm2  (another machine)
+</code></pre>
+<p><code>agstatus focus 2</code> brings session 2&#39;s window forward.</p>
+<p><strong>A slot is an assignment this machine holds, not a position in the board&#39;s
+list.</strong> Once a session is given a number it keeps that number until it leaves
+the board; the number it frees is reused by the next session that needs one.
+New sessions take the lowest free slot, oldest first.</p>
+<p>That indirection is the whole point, and it is worth a paragraph.</p>
+<p>The apps freeze a card&#39;s position once it is on screen: <code>stableOrder</code> in
+<code>ios/AgStatus/SessionStore.swift</code> keeps every session already visible where it
+is and slots only <em>unseen</em> ones in, at the top. So the order on your iPad is a
+function of what that iPad has seen since it launched — two devices watching
+one board can show the same sessions in different orders, and neither order
+exists anywhere on the wire. <code>GET /api/sessions</code> is <code>updatedAt</code> descending, a
+third order again, and one that re-ranks whenever an agent posts anything.</p>
+<p>Ordering by <code>createdAt</code> looks like it would fix that — the field never mutates
+— but a <em>position</em> in that list still moves. The server removes sessions by
+<code>updatedAt</code> (<code>sweepExpiredSessions</code>) and evicts at a cap, so the session
+holding slot 1 can go quiet and vanish while newer ones stay, sliding every
+later slot down by one. Your fingers would have learned the wrong number, and
+nothing would have told you.</p>
+<p>So the mapping is stored, in <code>focus-slots.json</code> beside the listener&#39;s other
+state, per board. Delete that file to renumber from scratch.</p>
+<p>Three consequences to know about:</p>
+<ul>
+<li><strong>The numbers are not on screen.</strong> Keep <code>--list</code> handy until the mapping is
+in your fingers, or run it in a spare pane.</li>
+<li><strong>Slots are not compact.</strong> If the sessions holding 1 and 2 leave the board,
+the next new agent gets slot 1 and the one after it gets 2 — but until then
+your live agents may sit on 3 and 4. <code>--list</code> always shows the truth.</li>
+<li><strong>A slot only frees when its session leaves the board.</strong> On the hosted
+(multi-tenant) board that happens on its own: sessions are swept 24 h after
+their last update, and capped at 50 per board. A self-hosted single-tenant
+board — the default for <code>docker run</code> — does neither unless you set
+<code>SESSION_TTL_MS</code> (see <a href="#self-hosting">self-hosting</a>), so finished sessions
+sit on their numbers until you delete them from the board.</li>
+</ul>
+<h3 id="focus-keys-how-a-press-reaches-the-window"><a class="anchor" href="#focus-keys-how-a-press-reaches-the-window">How a press reaches the window</a></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>where the session runs</th>
+<th>what happens</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>this machine</td>
+<td>The plan is built and run in this process — no command goes to the board, so no board rate limit applies.</td>
+</tr>
+<tr>
+<td>another machine</td>
+<td>A <code>focus</code> command is posted to the board and that machine&#39;s listener acts on it — exactly what tapping Focus does.</td>
+</tr>
+</tbody></table></div>
+<p>The local path matters for a keypad. The board accepts <strong>ten commands a
+minute per board</strong>; cycling six buttons twice would exhaust that and start
+returning <code>429</code>. Sessions on the machine you are sitting at never spend it.</p>
+<p>Every press still reads <code>GET /api/sessions</code> first, to learn which session holds
+the slot — so the board has to be reachable either way. Only the focus itself
+skips the round trip.</p>
+<p>Nothing in this path is TCC-gated: focusing uses <code>/usr/bin/open</code> (LaunchServices)
+and, for terminals that have one, their own CLI. There is no AppleScript, so
+macOS never prompts for Automation or Accessibility. <strong>The hotkey tool is a
+different matter</strong> — see below.</p>
+<h3 id="focus-keys-binding-keys"><a class="anchor" href="#focus-keys-binding-keys">Binding keys</a></h3>
+<p>AgStatus does not capture the key itself. A global hotkey needs an event tap or
+a HID-level grab — a TCC-gated capability and a background process to hold it —
+and the focus path deliberately touches nothing TCC-gated. So a hotkey tool you
+already trust listens for the chord and runs <code>agstatus focus &lt;n&gt;</code>.</p>
+<p><code>agstatus keys</code> shows the mapping and prints the config for that tool:</p>
+<pre><code>$ agstatus keys
+Shortcuts (defaults — none configured):
+
+  ctrl+alt+1         → agstatus focus 1
+  ctrl+alt+2         → agstatus focus 2
+  ...
+</code></pre>
+<p>The defaults are <code>ctrl+alt+1</code> … <code>ctrl+alt+6</code>. To change them, run
+<code>agstatus keys --write</code> and edit <code>&quot;keys&quot;</code> in <code>~/.agstatus.json</code>:</p>
+<pre><code class="language-json">{
+  &quot;keys&quot;: {
+    &quot;1&quot;: &quot;ctrl+opt+j&quot;,
+    &quot;2&quot;: &quot;f14&quot;,
+    &quot;3&quot;: &quot;ctrl+shift+cmd+3&quot;
+  }
+}
+</code></pre>
+<p>Modifiers are <code>ctrl</code>, <code>alt</code> (or <code>opt</code>/<code>option</code>), <code>shift</code> and <code>cmd</code> — spell them
+however you like, they are normalised. A bare key is refused unless it is
+<code>f1</code>–<code>f24</code>, because binding a bare letter or digit takes it from every app on
+the machine. A shortcut used twice, or a typo like <code>crtl</code>, is reported and
+skipped; the rest still work. <code>--slots &lt;n&gt;</code> changes how many slots the defaults
+cover, for a pad with fewer or more than six buttons.</p>
+<h4 id="focus-keys-skhd-recommended"><a class="anchor" href="#focus-keys-skhd-recommended">skhd (recommended)</a></h4>
+<p>No GUI, so it never steals focus — which matters, because the runner waits up
+to 500 ms for the target app to come to the front, and a hotkey tool that
+activates itself in that window degrades the focus.</p>
+<pre><code class="language-bash">brew tap koekeishiya/formulae &amp;&amp; brew install skhd &amp;&amp; skhd --start-service
+</code></pre>
+<pre><code class="language-bash">agstatus keys --skhd &gt;&gt; ~/.config/skhd/skhdrc &amp;&amp; skhd --restart-service
+</code></pre>
+<p>That writes one line per slot, each running the focus detached so the key press
+never waits on the network:</p>
+<pre><code>ctrl + alt - 1 : /usr/bin/nohup &#39;/Users/you/.agstatus/bin/agstatus&#39; focus 1 &gt;/dev/null 2&gt;&amp;1 &amp;
+</code></pre>
+<p>The path is absolute and quoted on purpose: <code>~</code> does not expand inside quotes,
+and a hotkey tool&#39;s environment is not your shell&#39;s.</p>
+<p>skhd needs <strong>Input Monitoring</strong> (System Settings → Privacy &amp; Security). That is
+a grant the hotkey tool needs, not one AgStatus needs.</p>
+<h4 id="focus-keys-karabiner-elements"><a class="anchor" href="#focus-keys-karabiner-elements">Karabiner-Elements</a></h4>
+<pre><code class="language-bash">agstatus keys --karabiner &gt; ~/.config/karabiner/assets/complex_modifications/agstatus.json
+</code></pre>
+<p>Then enable it under Complex Modifications. Karabiner is the only option that
+can match a <em>specific device</em> by vendor and product id, so a macro pad&#39;s keys
+can act differently from the same keys on your main keyboard — see below.</p>
+<h4 id="focus-keys-other-tools"><a class="anchor" href="#focus-keys-other-tools">Other tools</a></h4>
+<p><code>agstatus keys</code> does not generate config for these, but the command it prints
+is the same one:</p>
+<ul>
+<li><strong>Hammerspoon</strong> — <code>hs.hotkey.bind({&quot;ctrl&quot;,&quot;alt&quot;}, &quot;1&quot;, function() hs.execute(os.getenv(&quot;HOME&quot;)..&quot;/.agstatus/bin/agstatus focus 1&quot;) end)</code>.
+Needs Accessibility. Does not activate on <code>hs.execute</code>, so it is focus-safe.</li>
+<li><strong>Raycast</strong> — already installed for many people. Its hotkeys are assigned in
+its own UI, so there is nothing to generate: put a Script Command per slot in
+a folder, add that folder under Extensions → Script Commands, and give each
+one a shortcut. Use <code>@raycast.mode silent</code>. Raycast is an activating app, so
+it is the one option that may interfere with the 500 ms frontmost check.</li>
+<li><strong>Shortcuts.app</strong> — works, but a hotkey-fired Shortcut is slow (often
+seconds) and flashes UI. Worst fit.</li>
+</ul>
+<h3 id="focus-keys-using-a-macro-keypad"><a class="anchor" href="#focus-keys-using-a-macro-keypad">Using a macro keypad</a></h3>
+<p>A macro pad is just a keyboard: it sends keystrokes, and a hotkey tool turns
+those into commands. Two ways to wire one up:</p>
+<ol>
+<li><p><strong>Program the pad to send the combos you bound</strong> (<code>ctrl+alt+1</code>…<code>6</code> by
+default), using whatever configurator it shipped with. Nothing else to do —
+this is the cleanest option when the pad supports it, because the Mac needs
+no per-device setup at all.</p>
+</li>
+<li><p><strong>Leave the pad alone and remap on the Mac.</strong> <code>hidutil</code> translates usages
+<em>per device</em>, so the pad&#39;s keys become F13–F18 while the identical keys on
+your other keyboards stay exactly as they were.</p>
+<p>This is the better option whenever the pad sends keys that mean something
+already. A pad that emits <strong>keypad 1–6</strong> is the common case, and binding
+those bare would cost you the ability to type those digits anywhere:</p>
+<pre><code class="language-bash">hidutil property --matching &#39;{&quot;VendorID&quot;:2070,&quot;ProductID&quot;:9327}&#39; --set &#39;{&quot;UserKeyMapping&quot;:[
+ {&quot;HIDKeyboardModifierMappingSrc&quot;:0x700000059,&quot;HIDKeyboardModifierMappingDst&quot;:0x700000068},
+ {&quot;HIDKeyboardModifierMappingSrc&quot;:0x70000005A,&quot;HIDKeyboardModifierMappingDst&quot;:0x700000069},
+ {&quot;HIDKeyboardModifierMappingSrc&quot;:0x70000005B,&quot;HIDKeyboardModifierMappingDst&quot;:0x70000006A},
+ {&quot;HIDKeyboardModifierMappingSrc&quot;:0x70000005C,&quot;HIDKeyboardModifierMappingDst&quot;:0x70000006B},
+ {&quot;HIDKeyboardModifierMappingSrc&quot;:0x70000005D,&quot;HIDKeyboardModifierMappingDst&quot;:0x70000006C},
+ {&quot;HIDKeyboardModifierMappingSrc&quot;:0x70000005E,&quot;HIDKeyboardModifierMappingDst&quot;:0x70000006D}]}&#39;
+</code></pre>
+<p>Swap the <code>VendorID</code>/<code>ProductID</code> for your own (<code>hidutil list</code>). Src and Dst
+are <code>0x700000000 | usage</code>: keypad 1–6 are <code>0x59</code>–<code>0x5E</code>, F1–F6 are
+<code>0x3A</code>–<code>0x3F</code>, F13–F18 are <code>0x68</code>–<code>0x6D</code>. Read it back with <code>--get &quot;UserKeyMapping&quot;</code>; undo with <code>--set &#39;{&quot;UserKeyMapping&quot;:[]}&#39;</code>.</p>
+<p>The destination is <strong>not</strong> limited by what the pad can send — the
+translation happens in macOS&#39;s HID layer — so a pad whose firmware cannot
+emit F13 can still arrive as F13.</p>
+<p><strong>The mapping is volatile</strong> — it is lost on reboot <em>and</em> every time the pad
+re-enumerates, which includes the hub it is plugged into powering down. A
+pad hanging off a monitor&#39;s USB hub therefore loses it whenever the monitor
+sleeps. Re-apply it from a LaunchAgent with <code>RunAtLoad</code> and a
+<code>StartInterval</code> of 30 (<code>hidutil --set</code> is idempotent and costs nothing), or
+use Karabiner, which reapplies on hotplug natively.</p>
+</li>
+</ol>
+<p>To find out what a pad&#39;s keys currently send, open System Settings → Keyboard →
+Keyboard Shortcuts → App Shortcuts → <strong>+</strong>, click the shortcut field and press
+a pad key: the recorder shows exactly what it received. Escape out without
+saving. If a key changes the volume or shows a play/pause HUD it is a consumer
+(media) key — those cannot be bound by most tools, so reprogram the pad or
+remap it with Karabiner.</p>
+<p>Not every pad can send every key. Some cap their keyboard report at usage
+<code>0x65</code>, which means <strong>F13–F24 are impossible in firmware</strong> no matter what the
+configurator offers; <code>ctrl+alt</code>+digit works on all of them. You can read the
+ceiling out of the pad&#39;s report descriptor:</p>
+<pre><code class="language-bash">ioreg -c IOHIDDevice -r -d 1 | grep -A2 &#39;&quot;Product&quot; = &quot;YOUR-PAD&quot;&#39;
+</code></pre>
+<h3 id="focus-keys-when-a-press-does-nothing"><a class="anchor" href="#focus-keys-when-a-press-does-nothing">When a press does nothing</a></h3>
+<p><code>agstatus focus &lt;n&gt;</code> prints the reason on every failure — run it in a terminal
+once to see it, since a hotkey discards the output.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>message</th>
+<th>meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Slot N is empty</code></td>
+<td>Fewer sessions on the board than the slot number.</td>
+</tr>
+<tr>
+<td><code>No local record</code></td>
+<td>The hook writes one only while Focus is on — <code>agstatus listener install</code>.</td>
+</tr>
+<tr>
+<td><code>never reported a host</code></td>
+<td>Session predates Focus, or the host opted out.</td>
+</tr>
+<tr>
+<td><code>not running</code></td>
+<td>The agent exited; focus does not respawn. Use Resume on the board.</td>
+</tr>
+<tr>
+<td><code>rate-limiting commands</code></td>
+<td>Ten-a-minute board budget, for sessions on <em>other</em> machines only.</td>
+</tr>
+<tr>
+<td><code>no listener connected</code></td>
+<td>The other machine&#39;s listener is not online; the board took the command but nothing will act on it.</td>
+</tr>
+<tr>
+<td><code>Could not reach the board</code></td>
+<td>Every press reads the session list first, so the board must be reachable.</td>
+</tr>
+</tbody></table></div>
+<p><code>agstatus listener plan &lt;session_id&gt;</code> prints what a focus would run without
+running it.</p>
+<p>Note where to look: a focus for a session on <strong>another</strong> machine is handled by
+that machine&#39;s listener and lands in its
+<code>~/Library/Application Support/AgStatus/listener.log</code>. A focus on <strong>this</strong>
+machine runs in the <code>agstatus focus</code> process itself and writes nothing to that
+log — run the command in a terminal to see its steps.</p>
 
 </section>
 <hr class="doc-split" />

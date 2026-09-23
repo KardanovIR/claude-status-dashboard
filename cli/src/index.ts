@@ -27,6 +27,8 @@ import {
   type ListenerCommandOptions,
 } from './listener/install';
 import { runResumeExec } from './listener/resume';
+import { runFocus } from './focus';
+import { runKeys } from './keys';
 import type { ListenerConfig } from './listener/types';
 import {
   codexConfigPath,
@@ -363,7 +365,7 @@ interface ListenerRuntime {
   runPlanCommand(
     sessionId: string,
     log: (line: string) => void,
-    deps?: { resume?: boolean }
+    deps?: { resume?: boolean; execute?: boolean; url?: string }
   ): Promise<number | void>;
   /** Resolves only once `signal` aborts; throws before subscribing when another listener holds the lock. */
   runListener(cfg: ListenerConfig, deps?: { signal?: AbortSignal }): Promise<void>;
@@ -441,6 +443,8 @@ Usage:
   agstatus init [options]   Set up hooks + a status board
   agstatus status           Show current setup and server reachability
   agstatus uninstall        Remove hooks and env entries (and the Focus listener, if installed)
+  agstatus focus <n>        Bring the n-th session's window to the front (bind it to a key)
+  agstatus keys             Show the shortcut for each slot, and config for your hotkey tool
   agstatus listener <cmd>   Focus listener (bring a session's terminal to the front from the board)
   agstatus help             This help
 
@@ -453,6 +457,24 @@ init options:
   --codex           Also set up OpenAI Codex even if ~/.codex isn't detected
   --no-codex        Skip Codex setup (default: auto-configure when detected)
   --no-qr           Skip the QR code
+
+keys options (see docs/focus-keys.md):
+  --skhd            Print skhd config for the shortcuts
+  --karabiner       Print a Karabiner-Elements complex modification
+  --write           Save the current shortcuts to ~/.agstatus.json so you can edit them
+  --slots <n>       How many slots the defaults cover (default 6)
+
+  AgStatus does not capture keys itself — a hotkey tool runs agstatus focus <n>.
+  Defaults are ctrl+alt+1 .. ctrl+alt+6; edit "keys" in ~/.agstatus.json to change them.
+
+focus options (see docs/focus-keys.md):
+  --list            Print the slot -> session mapping and exit
+  --url <board>     Use this board instead of the configured one
+
+  A slot is an assignment this machine holds: a session keeps its number until
+  it leaves the board, and the number it frees is reused by the next one. New
+  sessions take the lowest free slot, oldest first. The apps do not show these
+  numbers — a card's position is frozen per device — so use --list to see them.
 
 listener commands (macOS; see docs/hooks.md "Focus"):
   install [--name <label>] [--url <board>] [--no-resume]
@@ -467,8 +489,8 @@ listener commands (macOS; see docs/hooks.md "Focus"):
   resume-exec <session-id>                   Resume that session here — what the resume launcher execs
 `;
 
-const VALUE_FLAGS = new Set(['url', 'code', 'secret', 'name']);
-const BOOL_FLAGS = new Set(['minimal', 'no-qr', 'help', 'codex', 'no-codex', 'purge', 'no-resume', 'resume', 'new-board']);
+const VALUE_FLAGS = new Set(['url', 'code', 'secret', 'name', 'slots']);
+const BOOL_FLAGS = new Set(['minimal', 'no-qr', 'help', 'codex', 'no-codex', 'purge', 'no-resume', 'resume', 'new-board', 'list', 'skhd', 'karabiner', 'write']);
 
 export async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
@@ -477,7 +499,9 @@ export async function main(argv: string[]): Promise<number> {
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (!a.startsWith('--')) {
-      if (cmd === 'listener' && positional.length < 2) {
+      // `listener <sub> [session_id]` takes two; `focus <n>` takes one.
+      const limit = cmd === 'listener' ? 2 : cmd === 'focus' ? 1 : 0;
+      if (positional.length < limit) {
         positional.push(a);
         continue;
       }
@@ -536,6 +560,41 @@ export async function main(argv: string[]): Promise<number> {
       case 'status':
         await runStatus();
         return 0;
+      case 'focus':
+        return await runFocus(
+          positional[0],
+          {
+            list: flags.get('list') === true,
+            ...(typeof flags.get('url') === 'string' ? { url: flags.get('url') as string } : {}),
+          },
+          console.log,
+          {
+            // A session on this machine is focused here, in this process, by
+            // the same planner the listener uses — no board round trip, so a
+            // key press neither spends the workspace's ten-a-minute command
+            // budget nor waits on the network. The runtime stays a lazy
+            // import: `agstatus init` must not depend on it loading.
+            focusLocally: async (sessionId, log) => {
+              const runtime = (await import(LISTENER_RUNTIME)) as ListenerRuntime;
+              const url = flags.get('url');
+              const code = await runtime.runPlanCommand(sessionId, log, {
+                execute: true,
+                ...(typeof url === 'string' ? { url } : {}),
+              });
+              return typeof code === 'number' ? code : 0;
+            },
+          }
+        );
+      case 'keys':
+        return await runKeys(
+          {
+            skhd: flags.get('skhd') === true,
+            karabiner: flags.get('karabiner') === true,
+            write: flags.get('write') === true,
+            ...(typeof flags.get('slots') === 'string' ? { slots: flags.get('slots') as string } : {}),
+          },
+          console.log
+        );
       case 'listener':
         return await runListenerCommand(positional[0], positional[1], flags);
       case undefined:

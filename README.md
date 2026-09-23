@@ -81,6 +81,10 @@ Details in [docs/hooks.md](docs/hooks.md).
 - **Focus (opt-in)** — tap a session on the board to bring its terminal to
   the front on the machine running it; see
   [docs/design/focus-protocol.md](docs/design/focus-protocol.md).
+- **Focus keys** — `agstatus focus <n>` brings the n-th session's window
+  forward, so a hotkey (or a macro pad's n-th button) does it without reaching
+  for the phone. `agstatus keys` prints the config for skhd or Karabiner; see
+  [docs/focus-keys.md](docs/focus-keys.md).
 - **Self-hostable** — one Node process, optional PostgreSQL persistence, Docker image,
   bundled TLS proxy. Single-user and multi-tenant modes.
 - **MIT licensed** — server, dashboard, CLI, and apps.
@@ -120,6 +124,7 @@ claude-status/
 - [Self-hosting guide](docs/self-hosting.md) — quick start, env vars, TLS, push setup
 - [HTTP API reference](docs/api.md) — webhook, workspaces, pairing, devices, SSE
 - [Claude Code integration](docs/hooks.md) — the installer, event mapping, manual setup
+- [Focus keys](docs/focus-keys.md) — bind a key per agent, and wire up a macro keypad
 - [Privacy policy](docs/privacy.md) — what the hosted instance stores and for how long
 - [Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md)
 

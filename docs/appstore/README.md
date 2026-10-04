@@ -15,7 +15,8 @@ lists the sizes that slot will take:
 | --- | --- | --- | --- |
 | `6.5/` | **1284 × 2778** | iPhone 14 Plus | 6.5" iPhone. Also accepts 1242 × 2688 and either landscape. |
 | `6.9/` | **1320 × 2868** | iPhone 17 Pro Max | 6.9" iPhone. |
-| `ipad/` | **2064 × 2752** | iPad Pro 13" (M5) | 13" iPad. Required — the app is universal. |
+| `ipad/` | **2064 × 2752** | iPad Pro 13" (M5) | 13" iPad, portrait. Required — the app is universal. |
+| `ipad-landscape/` | **2752 × 2064** | iPad Pro 13" (M5), rotated | 13" iPad, landscape. Same slot — upload one orientation or the other, never a mix. |
 
 Two traps live here:
 
@@ -35,6 +36,29 @@ Upload in this order — the first one is what people see in search results:
 | 2 | `04-usage.png` | Usage detail: tokens per day, the plan limit charted over it, and spend per project |
 | 3 | `03-history.png` | A session timeline, every status change timestamped |
 | 4 | `01-welcome.png` | Setup options and "Try the demo" — no account required |
+
+## Landscape
+
+`simctl` has no orientation command, so rotate the Simulator through its own
+menu, **before launching** the app so it lays out in landscape from the first
+frame:
+
+```bash
+open -a Simulator
+osascript -e 'tell application "Simulator" to activate' -e 'delay 2' \
+  -e 'tell application "System Events" to tell process "Simulator" to click menu item "Rotate Left" of menu "Device" of menu bar item "Device" of menu bar 1'
+```
+
+Then the catch: the device rotates and the app lays out correctly, but
+`simctl io screenshot` still writes the frame at the device's **portrait**
+dimensions, with the landscape content turned 90° inside it. `sips -r 270
+<file>` straightens it into a true 2752 × 2064. Skip that and the image is both
+sideways and the wrong size for the slot.
+
+Two things that cost time here: a plain `key code 124 using command down` does
+nothing — the menu item has to be clicked — and the click fails silently
+without Accessibility permission for whatever runs `osascript`, so verify the
+output dimensions rather than trusting the exit code.
 
 ## Regenerating
 
@@ -81,6 +105,12 @@ Two timing details, both learned the hard way:
 - **Capture the board ~2.5s after launch.** Demo mode ticks the sessions
   through plausible transitions, so waiting longer collapses the
   coding / testing / blocked / done spread into whatever it drifted to.
+- **Idle a freshly created device ~70s before the first capture.** iOS fires a
+  one-time "Ready for Apple Intelligence" banner shortly after first boot, and
+  it lands across the top of the screen, hiding the nav bar. It fires once per
+  device, so waiting it out is enough. Check afterwards rather than hoping: the
+  banner band of an affected shot averages ~147 luminance against 13-23 for a
+  clean one.
 - **`simctl` cannot overwrite an existing screenshot** — it fails with
   "You don't have permission to save the file" because of the extended
   attributes on the committed PNGs. `rm` the target first, or the capture

@@ -474,6 +474,7 @@
   </div>
 </nav>
 
+<main>
 <header class="hero">
   <p class="eyebrow">Claude Code &amp; Codex</p>
   <h1>Every agent you are running, on <span class="accent">one screen</span>.</h1>
@@ -530,8 +531,9 @@
         rest it brings the app to the front, which is as far as those let anything reach. If the
         session has already ended, the board offers to resume it instead.</p>
       <p>Cards say which machine they are on, so the same project running on two computers is no
-        longer two identical cards. Focus is opt-in, set up by the installer, and
-        <strong>macOS only</strong> — a machine without it simply shows no Focus control.
+        longer two identical cards. Focus is <strong>macOS only</strong>, and the installer
+        above sets it up by default there — pass <code>--no-focus</code> to skip it. A machine
+        without it simply shows no Focus control.
         <a href="/docs#focus-support">Which terminals it reaches</a> ·
         <a href="/docs#focus-keys">one key press per agent</a>.</p>
     </article>
@@ -554,9 +556,10 @@
     <article class="feature" style="--status: var(--st-planning)">
       <div class="feature-tag" data-mark="planning">Tokens</div>
       <h3>See where they actually went</h3>
-      <p>Tap a limit block for thirty days of spend: tokens per day as bars, the plan limit drawn
-        over them as a line, and a breakdown by project and by session — so two agents in one repo
-        are two rows, not one.</p>
+      <p>Tap a limit block for thirty days of spend: tokens per day as bars, the plan limit
+        drawn over them as a line, and a ranked breakdown of which projects spent it. Each card
+        also carries its own session's running total, so two agents in one repo are two numbers
+        rather than one shared row.</p>
       <p>The bars and the line track each other and are <strong>not the same measure</strong>. The
         screen says so, because a percentage of an unknown quota and a token count do not convert.</p>
     </article>
@@ -571,8 +574,9 @@
     <article class="feature" style="--status: var(--st-idle)">
       <div class="feature-tag" data-mark="idle">Yours</div>
       <h3>Open source, self-hostable</h3>
-      <p>MIT licensed, one Node process and a Postgres database. Use the hosted board or run the
-        whole thing on your own machine — <a href="/docs#self-hosting">the guide is one page</a>.</p>
+      <p>MIT licensed, and one Node process — with Postgres if you want it to survive a
+        restart, and nothing at all if you do not. Use the hosted board or run the whole thing
+        yourself; <a href="/docs#self-hosting">the guide is one page</a>.</p>
     </article>
 
   </div>
@@ -685,6 +689,8 @@
     <a class="btn btn-ghost" href="/docs">Read the docs</a>
   </div>
 </section>
+
+</main>
 
 <footer class="site-foot">
   <div class="foot-inner">
@@ -890,7 +896,7 @@
           <span class="source">${chip || ''}${esc(s.source.toUpperCase())}</span>
           ${sep}<span class="host">${esc(s.host)}</span>
           ${sep}<span class="ts">${s.age === 0 ? 'just now' : `${s.age}m ago`}</span>
-          ${sep}<span class="tok">${fmtTokens(s.tokens)}</span>
+          ${sep}<span class="tok">${fmtTokens(s.tokens)} tokens</span>
         </div>
       </article>`;
     }).join('');

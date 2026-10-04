@@ -87,8 +87,10 @@ project folder name is the same one already shown on the board's cards.
 ## Focus (optional)
 
 Focus — tapping a session on the board to bring its terminal to the front on the
-machine running it — is off by default. If Focus is turned on for a machine
-(`agstatus listener install`, or `"focus": true` in `~/.agstatus.json`), status
+machine running it — is **installed by default on macOS** by the install command
+above; `--no-focus` skips it, and it is never installed on Linux or Windows. If
+Focus is on for a machine (the installer, `agstatus listener install`, or
+`"focus": true` in `~/.agstatus.json`), status
 updates from coding agents on that machine additionally include: a short label
 you chose for the machine (default "Mac"), a random identifier specific to this
 board and this machine, and the name and kind of the app the session is running
@@ -96,10 +98,15 @@ in (for example "agterm, terminal"). The listener keeps a connection open to you
 board so it can receive taps; it sends nothing but the acknowledgement of a tap.
 
 **Nothing about your files, folders, terminal, or environment leaves the
-machine** — those details stay in a local file only the listener reads, and are
-removed when Focus is turned off and the listener is uninstalled. Turning Focus
-off stops any further labels being sent; labels already on your board stay there.
-Machines with Focus off send exactly what the table above lists.
+machine** — those details stay in a local file only the listener reads. Turning
+Focus off stops any further labels being sent; labels already on your board stay
+there. Machines with Focus off send exactly what the table above lists.
+
+Those local records are **not** deleted by turning Focus off or by uninstalling
+the listener — a plain uninstall leaves them in place and says so on screen.
+`agstatus listener uninstall --purge` removes them along with the listener's log,
+and keeps only the machine's own id so a reinstall is the same machine to your
+board.
 
 ## What we do not collect
 
@@ -136,7 +143,9 @@ refusing to launch. The data stays inside the app's private storage either way.
 
 - Sessions stop being shown or served automatically **24 hours** after their last
   update.
-- Usage history and token totals are kept for **90 days**.
+- Plan-usage history and the per-project token totals are kept for **90 days**.
+  The per-session totals behind the number on a card are kept for **7 days** after
+  their last report — a card cannot outlive that anyway.
 - Boards untouched for **60 days** are removed from the service along with all
   their data — flagged as deleted rather than erased, as below.
 - You can delete a board and everything in it at any time, from the app

@@ -124,6 +124,7 @@ main {
 }
 
 .usage-block {
+  position: relative;   /* the overlay below is anchored to this */
   /* A basis of one third: three blocks sit across, fewer grow to fill. */
   flex: 1 1 calc(33.333% - var(--space-xs));
   min-width: 240px;
@@ -141,6 +142,32 @@ main {
 .usage-block:hover {
   background: var(--ink-850);
   border-color: var(--ink-700);
+}
+
+/* The whole block is the target, but only this is the control. The overlay is
+ * on the button rather than role="button" on the section, so the percentages
+ * underneath stay in the accessibility tree instead of being replaced by one
+ * label. */
+.usage-open {
+  all: unset;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  width: 100%;
+  cursor: pointer;
+}
+
+.usage-open::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.usage-open:focus-visible {
+  outline: 2px solid var(--st-done);
+  outline-offset: 3px;
 }
 
 .usage-src {
@@ -168,7 +195,7 @@ main {
 }
 
 .usage-block:hover .usage-more,
-.usage-block:focus-visible .usage-more {
+.usage-open:focus-visible .usage-more {
   color: var(--text-1);
   transform: translateX(2px);
 }

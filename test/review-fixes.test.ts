@@ -151,6 +151,8 @@ async function loadBoard() {
   // Not dom.window: the board assigns location.hash, which jsdom treats as a
   // navigation it then refuses to perform. Only these four members are read.
   vi.stubGlobal('window', { addEventListener() {} });   // marks.js writes AGSTATUS_MARKS onto this
+  // A browser global the board uses and the plain stub above does not carry.
+  vi.stubGlobal('requestAnimationFrame', (fn: () => void) => setTimeout(fn, 0));
   vi.stubGlobal('location', { pathname: '/', hash: '', origin: 'http://board.test', href: '' });
   vi.stubGlobal('navigator', { clipboard: { writeText: async () => {} } });
   vi.stubGlobal('EventSource', class extends FakeStream {

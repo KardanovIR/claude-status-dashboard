@@ -395,6 +395,25 @@ pre code {
   color: var(--text-3);
 }
 
+/* ---- Touch --------------------------------------------------------------
+ * WCAG 2.5.8 exempts a target "in a sentence or block of text", which is why
+ * the inline links in the docs prose are left alone — padding them would wreck
+ * the leading of every paragraph they sit in. A navigation list is not a
+ * sentence, and these were 24px: the nav, the footer and (worst, because on a
+ * phone it stops being a sidebar and becomes the page's primary navigation)
+ * the docs table of contents. */
+@media (hover: none) {
+  .nav-links a,
+  .foot-inner a,
+  .toc a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  .toc a { min-height: 40px; }
+}
+
 /* ---- Motion -------------------------------------------------------------
  * The site honoured this already; the board did not, and now both do. */
 @media (prefers-reduced-motion: reduce) {

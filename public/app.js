@@ -193,10 +193,19 @@
       if (bars.length === 0) continue;
       // One block per agent; the block header carries the source name, so the
       // rows inside it don't repeat it.
+      // A REAL button inside the block, not role="button" on the block.
+      // `button` is a children-presentational role in ARIA: putting it on the
+      // section removed every descendant from the accessibility tree and
+      // replaced the lot with the aria-label — so a screen reader got
+      // "Claude usage detail, button" and not one of the percentages that are
+      // the entire point of the block. The button stretches over the block
+      // with an ::after overlay, so the whole card is still one big target and
+      // the numbers stay readable as content.
+      const label = escape(SOURCE_NAMES[u.source] || u.source);
       blocks.push(`
-        <section class="usage-block" data-source="${escape(u.source)}" role="button" tabindex="0"
-                 aria-label="${escape(SOURCE_NAMES[u.source] || u.source)} usage detail">
-          <h2 class="usage-src">${escape(SOURCE_NAMES[u.source] || u.source)}<span class="usage-more">›</span></h2>
+        <section class="usage-block" data-source="${escape(u.source)}">
+          <h2 class="usage-src"><button class="usage-open" type="button" data-source="${escape(u.source)}"
+            >${label}<span class="usage-more" aria-hidden="true">›</span></button></h2>
           ${bars.join('')}
         </section>`);
     }
@@ -1023,7 +1032,14 @@
         Lines are the account-wide plan limit, recorded from when this board first saw it.
         They track each other but are not the same measure.</p>`);
 
-    document.getElementById('dv-back').addEventListener('click', () => { location.hash = ''; });
+    const back = document.getElementById('dv-back');
+    back.addEventListener('click', () => { location.hash = ''; });
+    // Opening the detail hides `.usage`, including the control that was just
+    // pressed, so a keyboard user is dropped back to <body> and has to tab in
+    // from the top of the document. This view takes over the whole page, so
+    // its Back button is where they should be; applyRoute puts them back on
+    // the block they came from when it closes.
+    back.focus();
   }
 
   async function openDetail(source) {
@@ -1039,22 +1055,37 @@
   }
 
   /** The detail view is a hash route, so Back returns to the board. */
+  // Remembered so closing the detail can return focus to the block that
+  // opened it, which is no longer on screen by the time the route changes.
+  let lastSource = '';
+
   function applyRoute() {
     const m = /^#usage\/([a-z][a-z0-9_-]*)$/.exec(location.hash);
+    if (m) lastSource = m[1];
     const showing = Boolean(m);
     document.body.classList.toggle('detail-open', showing);
     if (showing) openDetail(m[1]);
     else { detailEl.hidden = true; paint(detailEl, ''); }
+    // Opening the detail hides `.usage` — including the button that was just
+    // pressed — so without this the keyboard user is dropped back to <body>
+    // and has to tab in from the top of the document. Closing it puts them
+    // back on the block they came from.
+    // Closing: put them back on the block they opened. (Opening is handled in
+    // renderDetail, which is where the Back button comes into existence —
+    // openDetail is async and there is nothing to focus until it resolves.)
+    // No CSS.escape needed: the regex above already constrains lastSource to
+    // [a-z][a-z0-9_-]*, which is selector-safe by construction.
+    if (!showing && lastSource) {
+      const land = usageEl.querySelector(`[data-source="${lastSource}"] .usage-open`);
+      if (land) land.focus();
+    }
   }
 
+  // One handler: a real button answers Enter and Space itself, so the keydown
+  // shim that used to be needed for role="button" is gone with it.
   usageEl.addEventListener('click', (e) => {
-    const block = e.target.closest('.usage-block');
-    if (block) location.hash = `usage/${block.dataset.source}`;
-  });
-  usageEl.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter' && e.key !== ' ') return;
-    const block = e.target.closest('.usage-block');
-    if (block) { e.preventDefault(); location.hash = `usage/${block.dataset.source}`; }
+    const open = e.target.closest('.usage-open');
+    if (open) location.hash = `usage/${open.dataset.source}`;
   });
   window.addEventListener('hashchange', applyRoute);
   applyRoute();

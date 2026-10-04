@@ -39,7 +39,7 @@ main {
  * "technical". These are literal payloads the reader will copy. */
 .empty code,
 .footer code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: var(--t-xs);
   color: var(--text-2);
   background: var(--ink-950);

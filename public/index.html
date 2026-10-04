@@ -6,9 +6,11 @@
   <!-- --ink-950, converted once. A meta cannot read a custom property. -->
   <meta name="theme-color" content="#0c0f0d" />
   <title>AgStatus</title>
-  <!-- Order is load-bearing: tokens, then the components that read them, then
-       the shell around the grid. -->
+  <!-- Order is load-bearing: tokens, then the card (shared with the landing
+       page, so the two can never drift), then the board around it, then the
+       shell around the grid. -->
   <link rel="stylesheet" href="/tokens.css" />
+  <link rel="stylesheet" href="/card.css" />
   <link rel="stylesheet" href="/board.css" />
   <link rel="stylesheet" href="/shell.css" />
 </head>
@@ -37,6 +39,9 @@
     <span class="auth" id="auth-note"></span>
   </footer>
 
+  <!-- The marks first: app.js reads them at definition time, and the landing
+       page loads the same file so the two can never draw different icons. -->
+  <script src="/marks.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

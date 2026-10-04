@@ -125,7 +125,7 @@ claude-status/
 - [HTTP API reference](docs/api.md) — webhook, workspaces, pairing, devices, SSE
 - [Claude Code integration](docs/hooks.md) — the installer, event mapping, manual setup
 - [Focus keys](docs/focus-keys.md) — bind a key per agent, and wire up a macro keypad
-- [Privacy policy](docs/privacy.md) — what the hosted instance stores and for how long
+- [Privacy policy](https://agstatus.online/privacy) — what the hosted instance stores and for how long ([mirror](docs/privacy.md))
 - [Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md)
 
 ### Other ways in

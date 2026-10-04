@@ -107,6 +107,8 @@ describe('/api/config legacy fields', () => {
  */
 
 const BOARD_SRC = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'app.js'), 'utf8');
+// index.html loads this before app.js, and app.js reads it at definition time.
+const MARKS_SRC = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'marks.js'), 'utf8');
 const INDEX_HTML = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'index.html'), 'utf8');
 
 /** The stream the board subscribed to, with a way to push one frame into it. */
@@ -148,7 +150,7 @@ async function loadBoard() {
   vi.stubGlobal('document', doc);
   // Not dom.window: the board assigns location.hash, which jsdom treats as a
   // navigation it then refuses to perform. Only these four members are read.
-  vi.stubGlobal('window', { addEventListener() {} });
+  vi.stubGlobal('window', { addEventListener() {} });   // marks.js writes AGSTATUS_MARKS onto this
   vi.stubGlobal('location', { pathname: '/', hash: '', origin: 'http://board.test', href: '' });
   vi.stubGlobal('navigator', { clipboard: { writeText: async () => {} } });
   vi.stubGlobal('EventSource', class extends FakeStream {
@@ -161,6 +163,7 @@ async function loadBoard() {
     return reply({});
   });
 
+  new Function(MARKS_SRC)();
   new Function(BOARD_SRC)();
   await vi.advanceTimersByTimeAsync(1);   // let init()'s /api/config settle and the stream open
   if (!stream) throw new Error('the board never opened its event stream');

@@ -1,0 +1,410 @@
+/*
+ * AgStatus site — the chrome around the three public pages.
+ *
+ * Reads tokens.css and invents nothing, exactly as board.css does. The board
+ * and the site are now one palette and one type system; they were two, and
+ * then three, because landing.html, privacy.html and the template inside
+ * scripts/build-docs.js each carried their own hand-typed copy of the same
+ * fourteen hex values. A visitor went from the marketing page to the board and
+ * the ground, the type and the accent all changed underneath them.
+ *
+ * WHAT CHANGED, AND WHY, because these are the decisions that will otherwise
+ * get quietly reverted:
+ *
+ * NO MONOSPACE HEADINGS. Every heading on all three pages was set in
+ * ui-monospace — h1, h2, the eyebrows, the brand, the section tags, the table
+ * headers. Mono as shorthand for "this is a developer tool" is a costume, and
+ * it was the loudest thing about the site's voice. Mono is now reserved for
+ * text that is literally code: an install command, a JSON payload, a webhook
+ * URL — things a reader will select and paste. Barlow carries the headings
+ * instead, which is the face the board already uses for the one value it wants
+ * legible across a room.
+ *
+ * NO GRADIENTS, NO GLOWS, NO BLUR. The brand mark was a purple-to-blue
+ * gradient square with a purple glow; the primary button was the same gradient
+ * over a surface, with a 28px purple halo on hover; the nav was a translucent
+ * bar behind a saturate+blur backdrop. Those four things together are the
+ * "generic AI dashboard" the project brief names as its first anti-reference,
+ * and the board spent 1.5 removing them.
+ *
+ * NO SIDE STRIPES. All three pages carried one: a 3px left border on the
+ * docs blockquote, on the privacy callout, and on every card in the landing
+ * page's simulated board. board.css says what the card tint is for in so many
+ * words — "What this is NOT: a coloured stripe down the card's edge" — so the
+ * landing page was advertising a design the product had already rejected.
+ */
+
+:root {
+  /* Measures. The wide shell for the landing page and the docs layout; the
+   * narrow one for anything that is a column of prose, capped by character
+   * count rather than pixels so it tracks the type rather than the screen. */
+  --page: min(1080px, 100% - 48px);
+  --page-text: min(68ch, 100% - 48px);
+  --nav-h: 60px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--ink-950);
+  color: var(--text-1);
+  font-family: var(--font-ui);
+  font-size: 16px;
+  line-height: var(--lh-body);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+a { color: inherit; }
+
+/* Any rule that sets `display` outranks the UA's [hidden] { display: none },
+ * which is how the landing page's install tabs ended up needing their own
+ * scoped `!important` copy of this. One rule, for every page. */
+[hidden] { display: none !important; }
+
+/* One ring, everywhere, keyboard-only — the same rule board.css uses, pointed
+ * at the same accent, so a tab through the site and a tab through the board
+ * do not look like two products. */
+:focus-visible {
+  outline: 2px solid var(--st-done);
+  outline-offset: 3px;
+  border-radius: var(--r-sm);
+}
+
+/* ---- Headings -----------------------------------------------------------
+ * Barlow, and a real scale. The site had h1 at clamp(28px, 5.6vw, 60px) and
+ * h2 at clamp(22px, 3vw, 30px) — close enough at small widths that the
+ * hierarchy collapsed on a phone. Fluid type is right on a marketing page, so
+ * it stays fluid; the ratio between the steps is what widens. */
+h1, h2, h3, h4, h5 {
+  font-family: var(--font-read);
+  font-weight: 700;
+  line-height: var(--lh-tight);
+  letter-spacing: -0.015em;
+  color: var(--text-1);
+  text-wrap: balance;
+}
+
+h1 { font-size: clamp(32px, 6vw, 64px); letter-spacing: -0.03em; }
+h2 { font-size: clamp(24px, 3.4vw, 36px); letter-spacing: -0.022em; }
+h3 { font-size: clamp(17px, 1.6vw, 20px); font-weight: 600; }
+h4 { font-size: 16px; font-weight: 600; }
+
+/* ---- Code ---------------------------------------------------------------
+ * The one legitimate monospace. These are payloads a reader copies. */
+code,
+kbd,
+pre {
+  font-family: var(--font-mono);
+}
+
+code {
+  font-size: 0.9em;
+  background: var(--ink-850);
+  border: 1px solid var(--ink-800);
+  border-radius: var(--r-sm);
+  padding: 1px 5px;
+  color: var(--text-1);
+}
+
+pre {
+  background: var(--ink-900);
+  border: 1px solid var(--ink-800);
+  border-radius: var(--r-md);
+  padding: var(--space-sm) var(--space-md);
+  margin: 0 0 var(--space-md);
+  overflow-x: auto;
+  line-height: 1.55;
+}
+
+pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 13px;
+  color: var(--text-1);
+}
+
+/* ---- Nav ----------------------------------------------------------------
+ * Opaque, not frosted. A blurred translucent bar is the glassmorphism tell,
+ * and on a board read in a dark room it also means the thing you are reading
+ * shows through the thing you are reading it under. */
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: var(--ink-950);
+  border-bottom: 1px solid var(--ink-800);
+}
+
+.nav-inner {
+  width: var(--page);
+  margin: 0 auto;
+  height: var(--nav-h);
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+}
+
+/* The same wordmark the board puts in its top bar, to the letter: Barlow 700,
+ * uppercase, 0.02em. It used to be mono and lowercase here and Barlow and
+ * uppercase there. */
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-family: var(--font-read);
+  font-size: var(--t-md);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  text-decoration: none;
+  color: var(--text-1);
+}
+
+/* A dot, not a logotype. It is the board's own connection dot — the one piece
+ * of visual vocabulary this product already had — rather than the gradient
+ * square with a purple halo that was standing in for one. */
+.mark {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--r-pill);
+  background: var(--st-done);
+  flex: none;
+}
+
+.nav-links {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+  font-size: var(--t-sm);
+  color: var(--text-3);
+}
+
+.nav-links a {
+  text-decoration: none;
+  transition: color var(--d-fast) var(--ease);
+}
+
+.nav-links a:hover { color: var(--text-1); }
+
+@media (max-width: 620px) {
+  .nav-links .hide-sm { display: none; }
+}
+
+/* ---- The state legend ---------------------------------------------------
+ * Six hard stops, because the states are discrete and this is a legend rather
+ * than an ornament — it introduces the vocabulary the rest of the page uses.
+ *
+ * The order is the palette's own ranking, not the lifecycle: the two states
+ * that need a human sit at the ends where the eye lands, and the three that
+ * mean "the agent is working" sit quiet in the middle. A flat spectrum gave
+ * `coding` — far and away the most common state — the same weight as
+ * `blocked`, which is the misreading the whole palette was rebuilt to stop. */
+.spectrum {
+  height: 2px;
+  border: 0;
+  background: linear-gradient(90deg,
+    var(--st-blocked) 0 16.66%, var(--st-planning) 16.66% 33.33%,
+    var(--st-coding) 33.33% 50%, var(--st-testing) 50% 66.66%,
+    var(--st-idle) 66.66% 83.33%, var(--st-done) 83.33% 100%);
+}
+
+/* ---- Buttons ------------------------------------------------------------
+ * One primary on the page, and it takes the accent. 10% of the visual weight
+ * is what makes an accent an accent, so there is exactly one filled button
+ * here and everything else is quiet. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-height: 44px;
+  padding: var(--space-sm) var(--space-lg);
+  border-radius: var(--r-md);
+  border: 1px solid transparent;
+  background: var(--st-done);
+  color: var(--ink-950);
+  font: inherit;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background var(--d-fast) var(--ease), color var(--d-fast) var(--ease),
+    border-color var(--d-fast) var(--ease);
+}
+
+.btn:hover { background: oklch(from var(--st-done) calc(l + 0.06) c h); }
+.btn:disabled { opacity: 0.6; cursor: default; }
+
+.btn-ghost {
+  background: transparent;
+  border-color: var(--ink-800);
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+.btn-ghost:hover {
+  background: var(--ink-850);
+  border-color: var(--ink-700);
+  color: var(--text-1);
+}
+
+/* ---- Prose --------------------------------------------------------------
+ * Shared by the privacy policy and the generated docs, which were maintaining
+ * two near-identical copies of these rules in two different files. */
+.prose {
+  color: var(--text-2);
+}
+
+.prose p,
+.prose ul,
+.prose ol {
+  margin: 0 0 var(--space-sm);
+}
+
+.prose ul,
+.prose ol { padding-left: var(--space-lg); }
+.prose li { margin: var(--space-2xs) 0; }
+.prose strong { color: var(--text-1); font-weight: 600; }
+
+/* Not blue. Colour means state on this product, and a link is not a state —
+ * so a link is marked by its underline and carries the text colour. */
+.prose a {
+  color: var(--text-1);
+  text-decoration: underline;
+  text-decoration-color: var(--ink-700);
+  text-underline-offset: 3px;
+}
+
+.prose a:hover { text-decoration-color: var(--text-1); }
+
+/* A hairline all the way round and a lifted surface, rather than a 3px bar
+ * down one edge. */
+.prose blockquote,
+.callout {
+  background: var(--ink-900);
+  border: 1px solid var(--ink-800);
+  border-radius: var(--r-md);
+  padding: var(--space-sm) var(--space-md);
+  margin: 0 0 var(--space-md);
+}
+
+.prose blockquote p:last-child,
+.callout p:last-child { margin-bottom: 0; }
+
+.prose hr {
+  border: 0;
+  border-top: 1px solid var(--ink-800);
+  margin: var(--space-lg) 0;
+}
+
+/* ---- Tables -------------------------------------------------------------
+ * Hairlines and air, not a grey grid. The header row is the one place a label
+ * face earns its keep. */
+.table-wrap {
+  overflow-x: auto;
+  margin: 0 0 var(--space-md);
+  border: 1px solid var(--ink-800);
+  border-radius: var(--r-md);
+}
+
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--t-sm);
+}
+
+.prose th,
+.prose td {
+  text-align: left;
+  padding: var(--space-xs) var(--space-sm);
+  border-bottom: 1px solid var(--ink-800);
+  vertical-align: top;
+}
+
+.prose th {
+  font-family: var(--font-label);
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.prose td { color: var(--text-2); }
+.prose tr:last-child td { border-bottom: 0; }
+.prose td code,
+.prose th code { white-space: nowrap; }
+
+/* ---- Footer ------------------------------------------------------------- */
+
+.site-foot {
+  border-top: 1px solid var(--ink-800);
+}
+
+.foot-inner {
+  width: var(--page);
+  margin: 0 auto;
+  padding: var(--space-lg) 0 var(--space-xl);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm) var(--space-lg);
+  font-size: var(--t-xs);
+  color: var(--text-3);
+}
+
+.foot-inner a {
+  color: var(--text-2);
+  text-decoration: none;
+}
+
+.foot-inner a:hover { color: var(--text-1); }
+
+.foot-links {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+}
+
+/* ---- Labels -------------------------------------------------------------
+ * Eyebrows, section tags, captions, step numbers. These were mono; they are
+ * the condensed label face now, which is what it is for. */
+.eyebrow,
+.label {
+  font-family: var(--font-label);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* ---- Motion -------------------------------------------------------------
+ * The site honoured this already; the board did not, and now both do. */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

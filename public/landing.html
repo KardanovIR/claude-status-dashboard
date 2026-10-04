@@ -4,528 +4,459 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
 <title>AgStatus — live status for your coding agents</title>
-<meta name="description" content="See what Claude Code and Codex are doing right now, from your phone. Live status board, plan-limit bars, and session history. Open source, self-hostable." />
-<meta name="theme-color" content="#0b0d12" />
+<meta name="description" content="See what Claude Code and Codex are doing right now, from your phone — then tap the one that needs you and its terminal comes to the front. Open source, self-hostable." />
+<!-- --ink-950 and --st-done, converted once. A meta cannot read a custom property. -->
+<meta name="theme-color" content="#0c0f0d" />
 <meta property="og:title" content="AgStatus — live status for your coding agents" />
-<meta property="og:description" content="See what Claude Code and Codex are doing right now, from your phone." />
+<meta property="og:description" content="See what Claude Code and Codex are doing right now, and tap the one that needs you to bring its terminal to the front." />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://agstatus.online" />
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23a855f7'/></svg>" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23141815'/><circle cx='16' cy='16' r='6' fill='%2369c88e'/></svg>" />
+<link rel="stylesheet" href="/tokens.css" />
+<!-- The real card, the same file the board loads. The simulation below is not
+     a mock-up of the board; it is the board's own component with made-up data
+     in it, which is the only way a marketing page stays honest about a product
+     that keeps changing. -->
+<link rel="stylesheet" href="/card.css" />
+<link rel="stylesheet" href="/site.css" />
 <style>
-  :root {
-    --bg: #0b0d12;
-    --surface: #151923;
-    --surface-2: #1a1f2c;
-    --line: #232836;
-    --text: #e6e8ee;
-    --muted: #8a91a4;
-    --muted-2: #5b6278;
+  /* Landing-only. The palette, reset, focus ring, nav, buttons, footer, prose
+     and tables all come from tokens.css and site.css now; this file used to
+     carry its own copy of every one of them. */
 
-    --idle: #6b7280;
-    --planning: #3b82f6;
-    --coding: #a855f7;
-    --testing: #f59e0b;
-    --blocked: #ef4444;
-    --done: #10b981;
-
-    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
-
-    --page: min(1080px, 100% - 48px);
-  }
-
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-
-  html { scroll-behavior: smooth; }
-
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--sans);
-    line-height: 1.6;
-    -webkit-font-smoothing: antialiased;
-    overflow-x: hidden;
-  }
-
-  a { color: inherit; }
-
-  :focus-visible {
-    outline: 2px solid var(--coding);
-    outline-offset: 3px;
-    border-radius: 4px;
-  }
-
-  /* ── the status spectrum: hard stops, because statuses are discrete ── */
-  .spectrum {
-    height: 2px;
-    border: 0;
-    background: linear-gradient(90deg,
-      var(--idle) 0 16.66%, var(--planning) 16.66% 33.33%, var(--coding) 33.33% 50%,
-      var(--testing) 50% 66.66%, var(--blocked) 66.66% 83.33%, var(--done) 83.33% 100%);
-    opacity: 0.85;
-  }
-
-  /* ── nav ── */
-  .nav {
-    position: sticky;
-    top: 0;
-    z-index: 50;
-    background: rgba(11, 13, 18, 0.78);
-    backdrop-filter: saturate(160%) blur(12px);
-    -webkit-backdrop-filter: saturate(160%) blur(12px);
-    border-bottom: 1px solid var(--line);
-  }
-  .nav-inner {
-    width: var(--page);
-    margin: 0 auto;
-    height: 60px;
-    display: flex;
-    align-items: center;
-    gap: 20px;
-  }
-  .brand {
-    display: inline-flex;
-    align-items: center;
-    gap: 10px;
-    font-family: var(--mono);
-    font-weight: 600;
-    letter-spacing: -0.02em;
-    text-decoration: none;
-    font-size: 15px;
-  }
-  .mark {
-    width: 16px; height: 16px; border-radius: 5px;
-    background: linear-gradient(135deg, var(--coding), var(--planning));
-    box-shadow: 0 0 16px rgba(168, 85, 247, 0.5);
-    flex-shrink: 0;
-  }
-  .nav-links {
-    margin-left: auto;
-    display: flex;
-    align-items: center;
-    gap: 22px;
-    font-size: 14px;
-    color: var(--muted);
-  }
-  .nav-links a { text-decoration: none; transition: color .15s; }
-  .nav-links a:hover { color: var(--text); }
-  @media (max-width: 620px) { .nav-links .hide-sm { display: none; } }
-
-  /* ── hero ── */
   .hero {
     width: var(--page);
     margin: 0 auto;
     padding: clamp(48px, 9vw, 104px) 0 clamp(32px, 5vw, 56px);
   }
-  .eyebrow {
-    font-family: var(--mono);
-    font-size: 12.5px;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--muted-2);
-    margin-bottom: 22px;
-  }
-  h1 {
-    font-family: var(--mono);
-    font-size: clamp(28px, 5.6vw, 60px);
-    line-height: 1.06;
-    letter-spacing: -0.035em;
-    font-weight: 600;
-    /* Balanced wrapping keeps the accent phrase from stranding a single word,
-       without a nowrap that could overflow narrow phones. */
-    max-width: 19ch;
-    text-wrap: balance;
-  }
-  h1 .accent { color: var(--coding); }
+
+  .hero .eyebrow { margin-bottom: var(--space-lg); }
+
+  .hero h1 { max-width: 19ch; }
+
+  /* One word in the accent, and it is the word the product is about. */
+  .hero h1 .accent { color: var(--st-done); }
+
   .lede {
-    margin-top: 22px;
+    margin-top: var(--space-lg);
+    max-width: 58ch;
     font-size: clamp(16px, 1.9vw, 19px);
-    color: var(--muted);
-    max-width: 56ch;
+    color: var(--text-2);
   }
-  .lede strong { color: var(--text); font-weight: 600; }
+
+  .lede strong { color: var(--text-1); font-weight: 600; }
 
   .actions {
-    margin-top: 34px;
+    margin-top: var(--space-xl);
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 12px;
+    gap: var(--space-sm);
   }
+
+  /* ---- The install one-liner ------------------------------------------- */
+
   .cmd {
     display: inline-flex;
     align-items: center;
-    gap: 12px;
+    gap: var(--space-sm);
     max-width: 100%;
-    padding: 13px 16px;
-    background: #05070b;
-    border: 1px solid var(--line);
-    border-radius: 11px;
-    font-family: var(--mono);
-    /* The one-liners are ~49 characters, three times the old `npx` command,
-       so the hero type has to give way on a phone rather than overflow. */
-    font-size: clamp(12px, 3vw, 14.5px);
+    min-height: 44px;
+    padding: var(--space-sm) var(--space-md);
+    background: var(--ink-900);
+    border: 1px solid var(--ink-800);
+    border-radius: var(--r-md);
+    font-family: var(--font-mono);
+    /* The one-liners are ~49 characters, so the hero type gives way on a phone
+       rather than overflowing. */
+    font-size: clamp(12px, 3vw, 14px);
     text-align: left;
-    color: var(--text);
+    color: var(--text-1);
     cursor: pointer;
-    transition: border-color .15s;
+    transition: border-color var(--d-fast) var(--ease);
     -webkit-tap-highlight-color: transparent;
   }
-  .cmd:hover { border-color: var(--coding); }
-  .cmd .prompt { color: var(--done); user-select: none; flex-shrink: 0; }
-  /* Even shrunk, the command needs a second line on a narrow screen: wrap it
-     inside the button, and let it break mid-URL rather than push the layout. */
-  .cmd .cmd-text { min-width: 0; overflow-wrap: anywhere; }
-  .cmd .copy { color: var(--muted-2); font-size: 12px; margin-left: 2px; flex-shrink: 0; }
-  .cmd.copied .copy { color: var(--done); }
 
-  /* Platform switch for the install one-liner. Two buttons rather than a
-     select: which command you are looking at stays visible without opening
-     anything, and aria-pressed says it out loud. */
+  .cmd:hover { border-color: var(--ink-700); }
+  .cmd .prompt { color: var(--st-done); user-select: none; flex: none; }
+  /* Even shrunk it needs a second line on a narrow screen: wrap inside the
+     button, breaking mid-URL rather than pushing the layout. */
+  .cmd .cmd-text { min-width: 0; overflow-wrap: break-word; overflow-wrap: anywhere; }
+  .cmd .copy { flex: none; margin-left: 2px; font-size: var(--t-xs); color: var(--text-3); }
+  .cmd.copied .copy { color: var(--st-done); }
+
+  /* Two buttons rather than a select: which command you are looking at stays
+     visible without opening anything, and aria-pressed says it out loud. */
   .os-switch {
-    margin-top: 12px;
+    margin-top: var(--space-sm);
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
-    font-family: var(--mono);
-    font-size: 12px;
+    gap: var(--space-2xs);
+    font-family: var(--font-label);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
   }
-  .os-switch .os-btn {
+
+  .os-btn,
+  .install-tabs .tab {
     font: inherit;
-    color: var(--muted);
+    /* flex: none as well as nowrap — a flex item shrinks before its container
+       wraps, so without this the three labels squeeze into 55px columns and
+       break "macOS / Linux" across three lines instead of moving to a second
+       row. */
+    flex: none;
+    white-space: nowrap;
+    padding: 5px 10px;
+    color: var(--text-3);
     background: none;
     border: 1px solid transparent;
-    border-radius: 6px;
-    padding: 5px 10px;
+    border-radius: var(--r-sm);
     cursor: pointer;
-    transition: color .15s;
+    transition: color var(--d-fast) var(--ease), background var(--d-fast) var(--ease);
     -webkit-tap-highlight-color: transparent;
   }
-  .os-switch .os-btn:hover { color: var(--text); }
-  .os-switch .os-btn[aria-pressed="true"] {
-    background: var(--surface-2);
-    border-color: var(--line);
-    color: var(--text);
+
+  .os-btn:hover,
+  .install-tabs .tab:hover { color: var(--text-1); }
+
+  .os-btn[aria-pressed="true"],
+  .install-tabs .tab[aria-selected="true"] {
+    background: var(--ink-850);
+    border-color: var(--ink-800);
+    color: var(--text-1);
   }
 
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 13px 22px;
-    min-height: 48px;
-    border-radius: 11px;
-    border: 1px solid var(--line);
-    background: linear-gradient(135deg, rgba(168,85,247,0.28), rgba(59,130,246,0.28)), var(--surface);
-    color: var(--text);
-    font: inherit;
-    font-size: 15px;
-    font-weight: 600;
-    text-decoration: none;
-    cursor: pointer;
-    transition: border-color .15s, box-shadow .15s, transform .12s;
-  }
-  .btn:hover { border-color: var(--coding); box-shadow: 0 0 28px rgba(168,85,247,0.22); }
-  .btn:active { transform: scale(0.985); }
-  .btn:disabled { opacity: 0.6; cursor: default; }
-  .btn-ghost {
-    background: transparent;
-    color: var(--muted);
-    font-weight: 500;
-  }
-  .btn-ghost:hover { color: var(--text); }
-  .err { color: var(--blocked); font-size: 14px; min-height: 1.2em; margin-top: 10px; }
+  .err { margin-top: var(--space-xs); min-height: 1.2em; font-size: var(--t-sm); color: var(--st-blocked); }
 
-  /* ── signature: the live board ── */
+  /* ---- The live board ---------------------------------------------------
+   * Deliberately the page ground rather than a lifted panel: the cards inside
+   * are the product's own, and their tint and their contrast were solved
+   * against --ink-950. Float them on a lighter surface and every ratio the
+   * palette was built around shifts. */
   .board-frame {
     width: var(--page);
     margin: 0 auto clamp(56px, 8vw, 96px);
-    background: linear-gradient(180deg, #12161f 0%, #0d1017 100%);
-    border: 1px solid var(--line);
-    border-radius: 18px;
-    padding: clamp(14px, 2.2vw, 22px);
-    box-shadow: 0 30px 80px rgba(0,0,0,0.55);
+    padding: clamp(14px, 2.2vw, 20px);
+    background: var(--ink-950);
+    border: 1px solid var(--ink-800);
+    border-radius: var(--r-lg);
   }
+
   .board-bar {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding-bottom: 14px;
-    margin-bottom: 16px;
-    border-bottom: 1px solid var(--line);
-  }
-  .live-dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: var(--done);
-    box-shadow: 0 0 10px rgba(16,185,129,0.7);
-    animation: blink 2.4s ease-in-out infinite;
-  }
-  .board-bar span {
-    font-family: var(--mono);
-    font-size: 11.5px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--muted-2);
+    gap: var(--space-xs);
+    padding-bottom: var(--space-sm);
+    margin-bottom: var(--space-md);
+    border-bottom: 1px solid var(--ink-800);
   }
 
-  .usage-row { margin-bottom: 11px; }
-  .usage-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 10px;
-    margin-bottom: 5px;
+  /* Not a pulsing dot. The board's own connection dot does not blink either —
+     ambient animation that reports nothing is the thing 1.5 removed. */
+  .board-bar .live-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: var(--r-pill);
+    background: var(--st-done);
+    flex: none;
   }
-  .usage-label {
-    font-family: var(--mono);
-    font-size: 10.5px;
+
+  .board-bar span:not(.live-dot) {
+    font-family: var(--font-label);
+    font-size: var(--t-2xs);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-3);
+  }
+
+  /* Per-agent blocks, up to three across, exactly as the board arranges them. */
+  .demo-usage {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-md);
+  }
+
+  .demo-block {
+    flex: 1 1 calc(50% - var(--space-xs));
+    min-width: 230px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    background: var(--ink-900);
+    border: 1px solid var(--ink-800);
+    border-radius: var(--r-md);
+  }
+
+  .demo-src {
+    font-family: var(--font-label);
+    font-size: var(--t-xs);
+    font-weight: 700;
     letter-spacing: 0.09em;
     text-transform: uppercase;
-    color: var(--muted);
-    white-space: nowrap;
+    color: var(--text-2);
+  }
+
+  .meter-label {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .usage-val { font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .usage-track { height: 6px; border-radius: 999px; background: #0a0d13; border: 1px solid var(--line); overflow: hidden; }
-  .usage-fill { height: 100%; border-radius: inherit; transition: width .8s ease; }
 
   .cards {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-    gap: 12px;
-    margin-top: 18px;
-  }
-  .card {
-    position: relative;
-    background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
-    border: 1px solid var(--line);
-    border-radius: 13px;
-    padding: 15px 16px 15px 18px;
-    overflow: hidden;
-    transition: border-color .5s;
-  }
-  .card::before {
-    content: '';
-    position: absolute;
-    left: 0; top: 0; bottom: 0;
-    width: 3px;
-    background: var(--status);
-    transition: background .5s;
-  }
-  .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-  .card-name { font-weight: 650; font-size: 15.5px; letter-spacing: -0.01em; }
-  .badge {
-    font-family: var(--mono);
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    font-weight: 700;
-    padding: 4px 8px;
-    border-radius: 7px;
-    color: var(--status);
-    background: color-mix(in srgb, var(--status) 16%, transparent);
-    border: 1px solid color-mix(in srgb, var(--status) 34%, transparent);
-    white-space: nowrap;
-    transition: color .5s, background .5s, border-color .5s;
-  }
-  .card-msg {
-    margin-top: 9px;
-    font-size: 13.5px;
-    color: var(--muted);
-    font-family: var(--mono);
-    line-height: 1.45;
-    min-height: 2.9em;
-    word-break: break-word;
-  }
-  .card-meta {
-    margin-top: 10px;
-    display: flex;
-    justify-content: space-between;
-    font-size: 11.5px;
-    color: var(--muted-2);
-    font-family: var(--mono);
-  }
-  .card[data-status="blocked"] {
-    border-color: rgba(239, 68, 68, 0.5);
-    box-shadow: 0 0 26px rgba(239, 68, 68, 0.16);
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+    gap: var(--space-sm);
   }
 
-  /* ── sections ── */
-  section { width: var(--page); margin: 0 auto; padding: clamp(56px, 8vw, 92px) 0; }
+  /* ---- Sections --------------------------------------------------------- */
+
+  section {
+    width: var(--page);
+    margin: 0 auto;
+    padding: clamp(56px, 8vw, 92px) 0;
+    /* The nav is sticky, so a jump to #features or #setup would otherwise put
+       the section heading underneath it. */
+    scroll-margin-top: var(--nav-h);
+  }
+
   .sec-head { max-width: 60ch; margin-bottom: clamp(28px, 4vw, 44px); }
-  h2 {
-    font-family: var(--mono);
-    font-size: clamp(22px, 3vw, 30px);
-    letter-spacing: -0.025em;
-    font-weight: 600;
-    line-height: 1.2;
-  }
-  .sec-head p { margin-top: 12px; color: var(--muted); font-size: 16.5px; }
+  .sec-head p { margin-top: var(--space-sm); color: var(--text-2); font-size: var(--t-md); }
 
-  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(255px, 1fr)); gap: 16px; }
-  .feature {
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: 14px;
-    padding: 22px;
-    transition: border-color .2s, transform .2s;
+  /* ---- Features ---------------------------------------------------------
+   * Not a row of identical boxes. Focus takes a double-width cell because it
+   * is the one thing the product does that no previous version could, and a
+   * grid where everything is the same size says everything matters equally. */
+  .features {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+    gap: var(--space-md);
   }
-  .feature:hover { border-color: color-mix(in srgb, var(--status) 45%, var(--line)); transform: translateY(-2px); }
+
+  .feature {
+    display: flex;
+    flex-direction: column;
+    padding: var(--space-lg);
+    background: var(--ink-900);
+    border: 1px solid var(--ink-800);
+    border-radius: var(--r-lg);
+    transition: border-color var(--d-mid) var(--ease);
+  }
+
+  .feature:hover { border-color: color-mix(in oklab, var(--ink-800) 50%, var(--status)); }
+
+  @media (min-width: 760px) {
+    .feature.wide { grid-column: span 2; }
+  }
+
   .feature-tag {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
-    font-family: var(--mono);
-    font-size: 11px;
+    gap: var(--space-2xs);
+    margin-bottom: var(--space-sm);
+    font-family: var(--font-label);
+    font-size: var(--t-xs);
+    font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--status);
-    margin-bottom: 13px;
   }
-  .feature-tag i { width: 8px; height: 8px; border-radius: 50%; background: var(--status); font-style: normal; }
-  .feature h3 { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; margin-bottom: 7px; }
-  .feature p { color: var(--muted); font-size: 14.5px; }
 
-  /* ── phone shots ── */
+  .feature-tag svg { width: 14px; height: 14px; flex: none; }
+
+  /* 4px let the heading and the first line of body run together at the sizes
+     these actually render at. A heading needs the air to read as one. */
+  .feature h3 { margin-bottom: var(--space-xs); }
+  .feature p { color: var(--text-2); font-size: var(--t-sm); }
+  .feature p + p { margin-top: var(--space-xs); }
+
+  .feature a {
+    color: var(--text-2);
+    text-decoration: underline;
+    text-decoration-color: var(--ink-700);
+    text-underline-offset: 3px;
+  }
+
+  .feature a:hover { color: var(--text-1); text-decoration-color: var(--text-1); }
+
+  /* ---- Screenshots ------------------------------------------------------ */
+
   .phones {
     display: flex;
     flex-wrap: wrap;
-    gap: clamp(20px, 4vw, 44px);
+    gap: clamp(20px, 4vw, 40px);
     align-items: flex-start;
     justify-content: center;
   }
-  .phone { width: min(285px, 76vw); }
+
+  .phone { width: min(260px, 76vw); }
+
+  /* A bezel, because the thing inside it is a phone screen and the reader has
+     to know that at a glance. The one drop shadow on the page, and it is doing
+     the job a shadow is for: saying this object sits in front of the page. */
   .phone-frame {
-    background: #000;
-    border: 1px solid var(--line);
-    border-radius: 34px;
-    padding: 7px;
-    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+    padding: 6px;
+    background: var(--ink-850);
+    border: 1px solid var(--ink-800);
+    border-radius: 32px;
+    box-shadow: 0 18px 40px oklch(0% 0 0 / 0.45);
   }
+
   .phone-frame img {
     display: block;
     width: 100%;
     height: auto;
-    border-radius: 27px;
+    border-radius: 26px;
   }
+
   .phone figcaption {
-    margin-top: 14px;
+    margin-top: var(--space-sm);
     text-align: center;
-    font-family: var(--mono);
-    font-size: 11.5px;
+    font-family: var(--font-label);
+    font-size: var(--t-xs);
     letter-spacing: 0.09em;
     text-transform: uppercase;
-    color: var(--muted-2);
+    color: var(--text-3);
   }
 
-  /* ── setup: a real sequence, so it is numbered ── */
-  .steps { display: grid; gap: 2px; background: var(--line); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
-  .step { background: var(--bg); padding: 24px clamp(18px, 3vw, 30px); display: grid; grid-template-columns: auto 1fr; gap: 20px; align-items: start; }
-  .step-n {
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--muted-2);
-    padding-top: 3px;
-    font-variant-numeric: tabular-nums;
-  }
-  .step h3 { font-size: 16.5px; font-weight: 650; margin-bottom: 6px; }
-  .step p { color: var(--muted); font-size: 14.5px; }
-  .step code {
-    display: inline-block;
-    margin-top: 10px;
-    padding: 9px 13px;
-    background: #05070b;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    font-family: var(--mono);
-    font-size: 13.5px;
-    color: var(--text);
-    user-select: all;
-    max-width: 100%;
-    overflow-x: auto;
-  }
-
-  .install-tabs {
-    display: inline-flex;
-    gap: 2px;
-    margin-top: 12px;
-    background: var(--surface-2);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 3px;
-  }
-  .install-tabs .tab {
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--muted);
-    background: none;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    padding: 5px 10px;
-    cursor: pointer;
-    transition: color .15s;
-  }
-  .install-tabs .tab:hover { color: var(--text); }
-  .install-tabs .tab[aria-selected="true"] {
-    background: var(--bg);
-    color: var(--text);
-    border-color: var(--line);
-  }
-  .step code.multi { line-height: 1.8; }
-  /* the display rules above would otherwise beat the hidden attribute */
-  .step [hidden] { display: none !important; }
-  .install-note { font-size: 13px; color: var(--muted-2); margin-top: 8px; }
-  /* A flag named mid-sentence is not a command block — undo .step code. */
-  .install-note code {
-    display: inline; margin: 0; padding: 1px 5px; font-size: 0.92em;
-    background: var(--surface-2); user-select: auto; overflow: visible;
-  }
-
-  /* ── self-host strip ── */
-  .strip {
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: 16px;
-    padding: clamp(26px, 4vw, 40px);
+  /* ---- Setup ------------------------------------------------------------
+   * A real sequence, so it is numbered. */
+  .steps {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-    gap: 26px;
+    gap: 1px;
+    background: var(--ink-800);
+    border: 1px solid var(--ink-800);
+    border-radius: var(--r-lg);
+    overflow: hidden;
   }
-  .strip h3 { font-family: var(--mono); font-size: 14px; font-weight: 600; margin-bottom: 8px; letter-spacing: -0.01em; }
-  .strip p { color: var(--muted); font-size: 14px; }
-  .strip a { color: var(--planning); text-decoration: none; }
-  .strip a:hover { text-decoration: underline; text-underline-offset: 3px; }
 
-  /* ── closing ── */
-  .close { text-align: center; padding-top: clamp(20px, 3vw, 32px); padding-bottom: clamp(64px, 9vw, 104px); }
-  .close h2 { max-width: 22ch; margin: 0 auto 26px; }
-  .close .actions { justify-content: center; }
+  .step {
+    display: grid;
+    /* minmax(0, 1fr), not 1fr: a bare 1fr track refuses to shrink below its
+       min-content, and the longest install one-liner is a single unbreakable
+       token. With body's overflow-x: hidden that does not scroll, it clips —
+       the command would lose its right-hand end on a phone. */
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: var(--space-lg);
+    align-items: start;
+    padding: var(--space-lg) clamp(18px, 3vw, 30px);
+    background: var(--ink-950);
+  }
 
-  footer { border-top: 1px solid var(--line); }
-  .foot-inner {
-    width: var(--page);
-    margin: 0 auto;
-    padding: 30px 0 40px;
+  .step-n {
+    padding-top: 3px;
+    font-family: var(--font-read);
+    font-size: var(--t-sm);
+    font-variant-numeric: tabular-nums;
+    color: var(--text-3);
+  }
+
+  .step h3 { margin-bottom: var(--space-xs); }
+  .step p { color: var(--text-2); font-size: var(--t-sm); }
+
+  /* Wraps rather than scrolls. A command the reader is meant to copy, with its
+     middle hidden behind a horizontal scrollbar, is a command they cannot check
+     before running — and this one is piped into a shell. The break is soft, so
+     `user-select: all` still yields a single line on the clipboard. */
+  .step code {
+    display: block;
+    max-width: 100%;
+    margin-top: var(--space-sm);
+    padding: var(--space-xs) var(--space-sm);
+    background: var(--ink-900);
+    border: 1px solid var(--ink-800);
+    border-radius: var(--r-sm);
+    font-size: var(--t-sm);
+    line-height: 1.6;
+    color: var(--text-1);
+    user-select: all;
+    /* Two declarations on purpose: `anywhere` is the one that also shrinks the
+       box's min-content width, but it is newer, and an engine that does not
+       know the value drops the whole declaration and leaves the URL
+       unbreakable. `break-word` is the floor every engine has. */
+    overflow-wrap: break-word;
+    overflow-wrap: anywhere;
+  }
+
+  .step code.multi { line-height: 1.8; }
+
+  /* Wraps onto a second row rather than squeezing three labels into columns
+     narrow enough to break "macOS / Linux" across three lines. */
+  .install-tabs {
     display: flex;
     flex-wrap: wrap;
-    gap: 16px 26px;
-    align-items: center;
-    font-size: 13.5px;
-    color: var(--muted-2);
+    gap: 2px;
+    margin-top: var(--space-sm);
+    padding: 3px;
+    background: var(--ink-900);
+    border: 1px solid var(--ink-800);
+    border-radius: var(--r-md);
+    font-family: var(--font-label);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
   }
-  .foot-inner a { color: var(--muted); text-decoration: none; }
-  .foot-inner a:hover { color: var(--text); }
-  .foot-links { margin-left: auto; display: flex; flex-wrap: wrap; gap: 20px; }
 
-  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
-  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.62; } }
-  .badge.active { animation: pulse 1.9s ease-in-out infinite; }
+  .install-note { margin-top: var(--space-xs); font-size: var(--t-xs); color: var(--text-3); }
 
-  @media (prefers-reduced-motion: reduce) {
-    html { scroll-behavior: auto; }
-    *, *::before, *::after { animation: none !important; transition: none !important; }
+  /* A flag named mid-sentence is not a command block — undo .step code. */
+  .install-note code,
+  .strip code {
+    display: inline;
+    margin: 0;
+    padding: 1px 5px;
+    font-size: 0.92em;
+    user-select: auto;
+    overflow: visible;
+  }
+
+  /* ---- Privacy strip ----------------------------------------------------- */
+
+  .strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+    gap: var(--space-lg);
+    padding: clamp(26px, 4vw, 36px);
+    background: var(--ink-900);
+    border: 1px solid var(--ink-800);
+    border-radius: var(--r-lg);
+  }
+
+  .strip h3 { margin-bottom: var(--space-xs); font-size: var(--t-md); }
+  .strip p { color: var(--text-2); font-size: var(--t-sm); }
+
+  .strip a {
+    color: var(--text-1);
+    text-decoration: underline;
+    text-decoration-color: var(--ink-700);
+    text-underline-offset: 3px;
+  }
+
+  .strip a:hover { text-decoration-color: var(--text-1); }
+
+  /* ---- Closing ----------------------------------------------------------- */
+
+  .close {
+    text-align: center;
+    padding-top: clamp(20px, 3vw, 32px);
+    padding-bottom: clamp(64px, 9vw, 104px);
+  }
+
+  .close h2 { max-width: 22ch; margin: 0 auto var(--space-lg); }
+  .close .actions { justify-content: center; }
+
+  /* ---- Touch ------------------------------------------------------------
+   * The two segmented controls are 31px tall, which a cursor can hit and a
+   * thumb cannot. Same rule the board and the shared chrome use: where there
+   * is no hover there is no aiming either. */
+  @media (hover: none) {
+    .os-btn,
+    .install-tabs .tab {
+      min-height: 44px;
+      padding-inline: var(--space-sm);
+    }
   }
 </style>
 </head>
@@ -545,10 +476,11 @@
 
 <header class="hero">
   <p class="eyebrow">Claude Code &amp; Codex</p>
-  <h1>A dashboard for <span class="accent">many agent statuses</span> at once.</h1>
+  <h1>Every agent you are running, on <span class="accent">one screen</span>.</h1>
   <p class="lede">
     Agents run for a long time and then quietly wait for you. AgStatus shows what each one is
-    doing right now — and <strong>tells you the moment one needs your approval</strong>.
+    doing right now, <strong>tells you the moment one needs your approval</strong> — and brings
+    that session's terminal to the front when you tap it.
   </p>
   <div class="actions">
     <button class="cmd" id="copy-cmd" type="button" aria-label="Copy the macOS and Linux install command">
@@ -567,13 +499,16 @@
   <p class="err" id="err" role="alert"></p>
 </header>
 
-<!-- Signature: a real board, driving itself. Not a screenshot. -->
+<!-- Signature: the board's own cards, driving themselves. Not a screenshot,
+     and not a mock-up either — card.css is the file the real board loads. -->
 <div class="board-frame">
   <div class="board-bar">
     <span class="live-dot" aria-hidden="true"></span>
     <span>Live board</span>
   </div>
-  <div id="usage"></div>
+  <!-- Illustration, not document structure: these carry no heading tags, or
+       "Claude" and "Codex" would outrank every real section on the page. -->
+  <div class="demo-usage" id="usage"></div>
   <div class="cards" id="cards"></div>
 </div>
 
@@ -585,46 +520,89 @@
     <p>Every session reports as it works. The board is ordered by what changed last, so the thing that needs you rises to the top.</p>
   </div>
   <div class="features">
-    <article class="feature" style="--status: var(--blocked)">
-      <div class="feature-tag"><i></i>Blocked</div>
+
+    <article class="feature wide" style="--status: var(--st-done)">
+      <div class="feature-tag" data-mark="focus">Focus</div>
+      <h3>Tap the one that needs you, and its terminal comes to the front</h3>
+      <p>The board used to be read-only: it told you an agent was waiting and left you to find
+        the window yourself. Now a tap reaches back. In iTerm2, WezTerm, tmux and Warp it raises
+        the exact pane or tab the session is in; in Terminal, Ghostty, Alacritty, VS Code and the
+        rest it brings the app to the front, which is as far as those let anything reach. If the
+        session has already ended, the board offers to resume it instead.</p>
+      <p>Cards say which machine they are on, so the same project running on two computers is no
+        longer two identical cards. Focus is opt-in, set up by the installer, and
+        <strong>macOS only</strong> — a machine without it simply shows no Focus control.
+        <a href="/docs#focus-support">Which terminals it reaches</a> ·
+        <a href="/docs#focus-keys">one key press per agent</a>.</p>
+    </article>
+
+    <article class="feature" style="--status: var(--st-blocked)">
+      <div class="feature-tag" data-mark="blocked">Blocked</div>
       <h3>Know when you're the bottleneck</h3>
-      <p>An agent that hits a permission prompt turns red and sends a push notification, so a five-second approval doesn't cost you an hour.</p>
+      <p>An agent that hits a permission prompt carries the alarm colour and can send a push
+        notification, so a five-second approval doesn't cost you an hour.</p>
     </article>
-    <article class="feature" style="--status: var(--testing)">
-      <div class="feature-tag"><i></i>Limits</div>
+
+    <article class="feature" style="--status: var(--st-limit-warn)">
+      <div class="feature-tag" data-mark="testing">Limits</div>
       <h3>Watch your plan, not the clock</h3>
-      <p>Full-width bars for the current session window and weekly caps — per model, including Opus, Sonnet and Fable — with the time until each resets.</p>
+      <p>One block per agent, up to three across: session and weekly windows for Claude, and the
+        same for Codex including its per-model caps, each with the time until it resets. Green,
+        amber, red as a window fills.</p>
     </article>
-    <article class="feature" style="--status: var(--coding)">
-      <div class="feature-tag"><i></i>History</div>
+
+    <article class="feature" style="--status: var(--st-planning)">
+      <div class="feature-tag" data-mark="planning">Tokens</div>
+      <h3>See where they actually went</h3>
+      <p>Tap a limit block for thirty days of spend: tokens per day as bars, the plan limit drawn
+        over them as a line, and a breakdown by project and by session — so two agents in one repo
+        are two rows, not one.</p>
+      <p>The bars and the line track each other and are <strong>not the same measure</strong>. The
+        screen says so, because a percentage of an unknown quota and a token count do not convert.</p>
+    </article>
+
+    <article class="feature" style="--status: var(--st-coding)">
+      <div class="feature-tag" data-mark="coding">History</div>
       <h3>Replay what happened</h3>
-      <p>Tap any session for its timeline: every status change and command, timestamped, so you can see where a long run actually went.</p>
+      <p>Tap any session for its timeline: every status change and command, timestamped, so you
+        can see where a long run actually went.</p>
     </article>
-    <article class="feature" style="--status: var(--done)">
-      <div class="feature-tag"><i></i>Yours</div>
+
+    <article class="feature" style="--status: var(--st-idle)">
+      <div class="feature-tag" data-mark="idle">Yours</div>
       <h3>Open source, self-hostable</h3>
-      <p>MIT licensed, one Node process and a Postgres database. Use the hosted board or run the whole thing on your own machine.</p>
+      <p>MIT licensed, one Node process and a Postgres database. Use the hosted board or run the
+        whole thing on your own machine — <a href="/docs#self-hosting">the guide is one page</a>.</p>
     </article>
+
   </div>
 </section>
 
 <section id="app">
   <div class="sec-head">
-    <h2>It lives in your pocket.</h2>
-    <p>The iPhone app shows the same board, and keeps a timeline of everything each agent did. Try it without pairing anything — the app ships with a demo board.</p>
+    <h2>And on the phone in your pocket.</h2>
+    <p>The iOS app shows the same board, on iPhone and iPad, with the usage charts and a timeline
+      of everything each agent did. Try it without pairing anything — it ships with a demo board.</p>
   </div>
   <div class="phones">
     <figure class="phone">
       <div class="phone-frame">
-        <img src="/img/app-board.png" width="285" height="620" loading="lazy"
-             alt="The AgStatus board on iPhone: plan-limit bars for the current session and weekly caps, above cards for four agent sessions — one coding, one testing, one blocked, one done." />
+        <img src="/img/board.webp" width="570" height="1240" loading="lazy" decoding="async"
+             alt="The AgStatus board on iPhone: plan-limit blocks for Claude and Codex side by side, above four session cards — one coding with a Focus button, one blocked and tinted red, two done — each showing its agent, machine, age and token count." />
       </div>
       <figcaption>The board</figcaption>
     </figure>
     <figure class="phone">
       <div class="phone-frame">
-        <img src="/img/app-history.png" width="285" height="620" loading="lazy"
-             alt="Session history on iPhone: a timeline of one agent's status changes, each with a colored dot, the activity, and a timestamp." />
+        <img src="/img/usage.webp" width="570" height="1240" loading="lazy" decoding="async"
+             alt="The usage screen on iPhone: a bar chart of tokens spent per day for the last thirty days with the plan limit drawn over it as a line, and below it a ranked breakdown of spend per project." />
+      </div>
+      <figcaption>Where the tokens went</figcaption>
+    </figure>
+    <figure class="phone">
+      <div class="phone-frame">
+        <img src="/img/history.webp" width="570" height="1240" loading="lazy" decoding="async"
+             alt="Session history on iPhone: a timeline of one agent's status changes, each with its state icon, the activity line, and a timestamp." />
       </div>
       <figcaption>Session history</figcaption>
     </figure>
@@ -641,7 +619,8 @@
       <div class="step-n">01</div>
       <div>
         <h3>Install the hook</h3>
-        <p>Sets up Claude Code, and OpenAI Codex too when it finds it. Your existing settings are preserved.</p>
+        <p>Sets up Claude Code, and OpenAI Codex too when it finds it. Your existing settings are
+          preserved, and the same command upgrades a machine later without touching your board.</p>
         <div class="install-tabs" role="tablist" aria-label="Install method">
           <button class="tab" role="tab" aria-selected="true" data-tab="posix" type="button">macOS / Linux</button>
           <button class="tab" role="tab" aria-selected="false" data-tab="windows" type="button">Windows</button>
@@ -651,7 +630,7 @@
           <code data-pane="posix">curl -fsSL https://agstatus.online/install.sh | sh</code>
           <code data-pane="windows" hidden>irm https://agstatus.online/install.ps1 | iex</code>
           <code data-pane="plugin" class="multi" hidden>/plugin marketplace add KardanovIR/claude-status-dashboard<br />/plugin install agstatus@agstatus<br />/agstatus:setup</code>
-          <p class="install-note" data-pane="posix-note">On macOS the installer also sets up Focus, so a tap on the board brings that session's terminal to the front. It prints what that sends; <code>--no-focus</code> skips it.</p>
+          <p class="install-note" data-pane="posix-note">On macOS the installer also sets up Focus, so a tap on the board brings that session's terminal to the front. It prints what that sends; <code>--no-focus</code> skips it, and <code>--minimal</code> sends tool names instead of command text.</p>
           <p class="install-note" data-pane="windows-note" hidden>Windows PowerShell 5.1 and up. Claude Code and Codex hooks, same as everywhere else; Focus is macOS-only.</p>
           <p class="install-note" data-pane="plugin-note" hidden>Runs inside Claude Code — no terminal needed. Claude Code only; for Codex use the installer.</p>
         </div>
@@ -661,14 +640,17 @@
       <div class="step-n">02</div>
       <div>
         <h3>Open the board</h3>
-        <p>The CLI prints your private board URL and a QR code — scan it to carry the board on your phone.</p>
+        <p>The installer prints your private board URL and a QR code — scan it to carry the
+          board on your phone. Made the board in the app first? Pair this machine to it with the
+          short code the app gives you: <code>--code XXXX-XXXX</code>.</p>
       </div>
     </div>
     <div class="step">
       <div class="step-n">03</div>
       <div>
         <h3>Get back to work</h3>
-        <p>Sessions appear the moment your agents report in, and update live. Nothing else to configure.</p>
+        <p>Sessions appear the moment your agents report in, and update live. Nothing else to
+          configure.</p>
       </div>
     </div>
   </div>
@@ -678,15 +660,20 @@
   <div class="strip">
     <div>
       <h3>What it sends</h3>
-      <p>A session id, project folder name, status word, and a short activity line. Run <code>init --minimal</code> to send tool names only. Opt into Focus on a machine and it also sends a label for that machine and the name of the app your agent runs in — never a path.</p>
+      <p>A session id, project folder name, status word, and a short activity line. Install with
+        <code>--minimal</code> to send tool names only. Opt into Focus on a machine and it also
+        sends a label for that machine and the name of the app your agent runs in — never a path.</p>
     </div>
     <div>
       <h3>Plan usage stays local</h3>
-      <p>Your Claude credentials are read on your machine. Only percentages and reset times reach the board — never a token.</p>
+      <p>Your Claude and Codex credentials are read on your machine, and token counts come from
+        the logs those tools already keep there. Only percentages, reset times and totals reach
+        the board — never a prompt, a file, or a line of code.</p>
     </div>
     <div>
       <h3>Your data, deletable</h3>
-      <p>Sessions expire after 24 hours; a board can be deleted at any time. <a href="/privacy">Privacy policy</a>.</p>
+      <p>Sessions stop being served 24 hours after their last update, and you can delete a board
+        and everything in it at any time. <a href="/privacy">Privacy policy</a>.</p>
     </div>
   </div>
 </section>
@@ -699,7 +686,7 @@
   </div>
 </section>
 
-<footer>
+<footer class="site-foot">
   <div class="foot-inner">
     <span>MIT licensed · Built by Inal Kardanov</span>
     <div class="foot-links">
@@ -711,18 +698,30 @@
   </div>
 </footer>
 
+<!-- The same marks the board draws. See marks.js. -->
+<script src="/marks.js"></script>
 <script>
 (() => {
   'use strict';
 
-  // ── install method tabs ────────────────────────────────────────────────
+  const MARKS = window.AGSTATUS_MARKS || { STATE_MARK: {}, ICON: {} };
+
+  // ── feature tags carry the state's own mark, not a generic dot ──────────
+  for (const tag of document.querySelectorAll('.feature-tag[data-mark]')) {
+    const key = tag.dataset.mark;
+    const svg = key === 'focus' ? MARKS.ICON.focus : MARKS.STATE_MARK[key];
+    if (svg) tag.insertAdjacentHTML('afterbegin', svg);
+  }
+
+  // ── install tabs ────────────────────────────────────────────────────────
   const tabs = document.querySelector('.install-tabs');
   function selectTab(btn) {
     for (const t of tabs.querySelectorAll('.tab')) {
       t.setAttribute('aria-selected', String(t === btn));
     }
     for (const pane of tabs.parentElement.querySelectorAll('[data-pane]')) {
-      pane.hidden = !pane.dataset.pane.startsWith(btn.dataset.tab);
+      const name = pane.dataset.pane;
+      pane.hidden = name !== btn.dataset.tab && name !== `${btn.dataset.tab}-note`;
     }
   }
   tabs.addEventListener('click', (e) => {
@@ -730,20 +729,17 @@
     if (btn) selectTab(btn);
   });
 
-  // ── the install one-liner: one per platform ───────────────────────────
-  // Both commands are in the markup; this only decides which one greets you.
-  // Sniffing is a guess (a Mac driving a Windows VM, a spoofed UA, a bot), so
-  // the other platform stays one click away rather than behind the guess.
+  // ── the install one-liner, per platform ─────────────────────────────────
   const INSTALL = {
     posix: {
       prompt: '$',
       cmd: 'curl -fsSL https://agstatus.online/install.sh | sh',
-      label: 'macOS and Linux',
+      label: 'Copy the macOS and Linux install command',
     },
     windows: {
       prompt: '>',
       cmd: 'irm https://agstatus.online/install.ps1 | iex',
-      label: 'Windows PowerShell',
+      label: 'Copy the Windows install command',
     },
   };
 
@@ -751,21 +747,19 @@
   const cmdText = document.getElementById('cmd-text');
   const cmdPrompt = cmdBtn.querySelector('.prompt');
   const osSwitch = document.getElementById('os-switch');
-  let currentOS = 'posix';
+  let os = 'posix';
 
-  function showOS(os) {
-    const spec = INSTALL[os];
+  function showOS(next) {
+    const spec = INSTALL[next];
     if (!spec) return;
-    currentOS = os;
+    os = next;
     cmdText.textContent = spec.cmd;
     cmdPrompt.textContent = spec.prompt;
-    cmdBtn.setAttribute('aria-label', `Copy the ${spec.label} install command`);
+    cmdBtn.setAttribute('aria-label', spec.label);
     for (const b of osSwitch.querySelectorAll('.os-btn')) {
-      b.setAttribute('aria-pressed', String(b.dataset.os === os));
+      b.setAttribute('aria-pressed', String(b.dataset.os === next));
     }
-    // Keep Setup step 01 on the same platform, so the page never shows two
-    // different answers to "what do I run?".
-    const tab = tabs.querySelector(`.tab[data-tab="${os}"]`);
+    const tab = tabs.querySelector(`.tab[data-tab="${next}"]`);
     if (tab) selectTab(tab);
   }
 
@@ -774,26 +768,24 @@
     if (btn) showOS(btn.dataset.os);
   });
 
-  // userAgentData.platform where it exists ("Windows", "macOS", "Linux"),
-  // then the deprecated-but-universal navigator.platform ("Win32"), then the
-  // UA string ("Windows NT 10.0"). Anything unrecognised stays on POSIX.
+  // A guess, never a dead end — the other command is one click away.
   const uaData = navigator.userAgentData;
   const probe = String((uaData && uaData.platform) || navigator.platform || navigator.userAgent || '');
-  if (/^win|windows/i.test(probe)) showOS('windows');
+  if (/win/i.test(probe)) showOS('windows');
 
   cmdBtn.addEventListener('click', async () => {
     try {
-      await navigator.clipboard.writeText(INSTALL[currentOS].cmd);
+      await navigator.clipboard.writeText(INSTALL[os].cmd);
       cmdBtn.classList.add('copied');
       cmdBtn.querySelector('.copy').textContent = 'copied';
       setTimeout(() => {
         cmdBtn.classList.remove('copied');
         cmdBtn.querySelector('.copy').textContent = 'copy';
-      }, 1600);
-    } catch { /* clipboard unavailable — the text is selectable anyway */ }
+      }, 1400);
+    } catch { /* clipboard denied: the text is selectable anyway */ }
   });
 
-  // ── create a board (same call the dashboard makes) ────────────────────
+  // ── create a board ──────────────────────────────────────────────────────
   const errEl = document.getElementById('err');
   async function createBoard(btn) {
     btn.disabled = true;
@@ -801,14 +793,14 @@
     try {
       const res = await fetch('/api/workspaces', { method: 'POST' });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.token) {
+      if (!res.ok || !(data.token || data.dashboardUrl)) {
         errEl.textContent = res.status === 429
-          ? 'Too many boards created from this address. Try again in an hour.'
+          ? 'Too many boards created from this address. Try again later.'
           : 'Could not create a board. Please try again.';
         btn.disabled = false;
         return;
       }
-      location.href = '/w/' + encodeURIComponent(data.token);
+      location.href = data.token ? `/w/${encodeURIComponent(data.token)}` : data.dashboardUrl;
     } catch {
       errEl.textContent = 'Could not create a board. Please try again.';
       btn.disabled = false;
@@ -819,17 +811,22 @@
     if (btn) btn.addEventListener('click', () => createBoard(btn));
   }
 
-  // ── the live board ────────────────────────────────────────────────────
-  const ACTIVE = new Set(['planning', 'coding', 'testing']);
+  // ── the live board ──────────────────────────────────────────────────────
+  //
+  // Emits the board's own card markup against card.css, so this cannot drift
+  // from the product the way the old hand-drawn simulation did — that one was
+  // still painting a 3px coloured edge stripe the board had removed, and had
+  // never heard of the state icons, the agent chip, the machine or the tokens.
+
   const MESSAGES = {
     idle: ['Session started'],
-    done: ['Turn finished'],
     planning: ['Reading the codebase…', 'Drafting an implementation plan', 'Exploring src/ for entry points'],
     coding: ['Editing src/auth/token.ts', 'Refactoring api/routes.ts', 'Implementing retry with backoff'],
     testing: ['npm test — 42 passing', 'pytest -q — 87 passed', 'vitest run — 3 suites'],
     blocked: ['Needs permission approval', 'Waiting for your input'],
-    done: ['All tasks complete', 'PR ready for review'],
+    done: ['Turn finished — 12 files changed', 'All tasks complete', 'PR ready for review'],
   };
+
   const NEXT = {
     idle: ['planning', 'planning', 'idle'],
     planning: ['coding', 'coding', 'planning'],
@@ -840,47 +837,63 @@
   };
 
   const sessions = [
-    { name: 'api-server', project: 'acme-api', status: 'coding', msg: 'Editing src/auth/token.ts', age: 0 },
-    { name: 'webapp', project: 'acme-web', status: 'testing', msg: 'npm test — 42 passing', age: 1 },
-    { name: 'data-pipeline', project: 'etl-jobs', status: 'blocked', msg: 'Needs permission approval', age: 3 },
+    { name: 'api-server', host: 'Studio', source: 'claude', status: 'coding', msg: 'Editing src/auth/token.ts', age: 0, tokens: 486200 },
+    { name: 'webapp', host: 'MacBook', source: 'claude', status: 'testing', msg: 'npm test — 42 passing', age: 1, tokens: 1437000 },
+    { name: 'data-pipeline', host: 'Studio', source: 'codex', status: 'blocked', msg: 'Needs permission approval', age: 3, tokens: 2910000 },
+    { name: 'docs-site', host: 'mini', source: 'codex', status: 'done', msg: 'All tasks complete', age: 8, tokens: 412000 },
   ];
+
   const usage = [
-    { label: 'Claude · current session', pct: 34 },
-    { label: 'Claude · weekly (all models)', pct: 61 },
+    { source: 'Claude', windows: [{ label: '5-hour limit', pct: 34 }, { label: 'Weekly limit', pct: 62 }] },
+    { source: 'Codex', windows: [{ label: '5-hour limit', pct: 18 }, { label: 'Weekly (GPT-6-Astra)', pct: 73 }] },
   ];
 
   const cardsEl = document.getElementById('cards');
   const usageEl = document.getElementById('usage');
   const pick = (a) => a[Math.floor(Math.random() * a.length)];
-  const level = (p) => (p >= 85 ? 'blocked' : p >= 60 ? 'testing' : 'done');
-  const escape = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const level = (p) => (p >= 85 ? 'high' : p >= 60 ? 'mid' : 'low');
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const fmtTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e3)}K`);
 
   function renderUsage() {
     usageEl.innerHTML = usage.map((u) => `
-      <div class="usage-row">
-        <div class="usage-head">
-          <span class="usage-label">${escape(u.label)}</span>
-          <span class="usage-val">${u.pct}%</span>
-        </div>
-        <div class="usage-track">
-          <div class="usage-fill" style="width:${u.pct}%;background:var(--${level(u.pct)})"></div>
-        </div>
+      <div class="demo-block">
+        <div class="demo-src">${esc(u.source)}</div>
+        ${u.windows.map((w) => `
+          <div class="meter">
+            <div class="meter-head">
+              <span class="meter-label">${esc(w.label)}</span>
+              <span class="meter-value">${w.pct}%</span>
+            </div>
+            <div class="meter-track">
+              <div class="meter-fill ${level(w.pct)}" style="transform:scaleX(${(w.pct / 100).toFixed(3)})"></div>
+            </div>
+          </div>`).join('')}
       </div>`).join('');
   }
 
   function renderCards() {
-    cardsEl.innerHTML = sessions.map((s) => `
-      <article class="card" data-status="${s.status}" style="--status: var(--${s.status})">
+    cardsEl.innerHTML = sessions.map((s) => {
+      const mark = MARKS.STATE_MARK[s.status] || '';
+      const chip = s.source === 'codex' ? MARKS.ICON.codex : MARKS.ICON.claude;
+      const sep = '<span class="meta-sep">·</span>';
+      return `
+      <article class="card status-${esc(s.status)}">
         <div class="card-head">
-          <span class="card-name">${escape(s.name)}</span>
-          <span class="badge ${ACTIVE.has(s.status) ? 'active' : ''}">${s.status}</span>
+          <div class="card-title-row">
+            <div class="name">${esc(s.name)}</div>
+          </div>
+          <div class="card-state-row">${mark}<span class="badge">${esc(s.status)}</span></div>
         </div>
-        <p class="card-msg">${escape(s.msg)}</p>
-        <div class="card-meta">
-          <span>${escape(s.project)}</span>
-          <span>${s.age === 0 ? 'just now' : s.age + 'm ago'}</span>
+        <p class="message">${esc(s.msg)}</p>
+        <div class="meta">
+          <span class="source">${chip || ''}${esc(s.source.toUpperCase())}</span>
+          ${sep}<span class="host">${esc(s.host)}</span>
+          ${sep}<span class="ts">${s.age === 0 ? 'just now' : `${s.age}m ago`}</span>
+          ${sep}<span class="tok">${fmtTokens(s.tokens)}</span>
         </div>
-      </article>`).join('');
+      </article>`;
+    }).join('');
   }
 
   renderUsage();
@@ -902,13 +915,14 @@
       s.status = next;
       s.msg = pick(MESSAGES[next]);
       s.age = 0;
+      s.tokens += Math.floor(Math.random() * 40000);
       for (const other of sessions) if (other !== s) other.age += 1;
       renderCards();
     }, 2600);
 
     setInterval(() => {
       if (document.hidden) return;
-      usage[0].pct = Math.min(99, usage[0].pct + 1);
+      usage[0].windows[0].pct = Math.min(99, usage[0].windows[0].pct + 1);
       renderUsage();
     }, 7000);
   }

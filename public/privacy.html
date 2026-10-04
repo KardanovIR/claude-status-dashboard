@@ -3,111 +3,53 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-<title>Privacy Policy — AgStatus</title>
-<meta name="description" content="What the AgStatus app and hosted server store, and what they never collect." />
-<meta name="theme-color" content="#0b0d12" />
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23a855f7'/></svg>" />
+<title>AgStatus — Privacy Policy</title>
+<meta name="description" content="What AgStatus stores, what it never collects, and how to delete it. No accounts, no tracking, no analytics." />
+<!-- --ink-950 and --st-done, converted once. A meta cannot read a custom property. -->
+<meta name="theme-color" content="#0c0f0d" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23141815'/><circle cx='16' cy='16' r='6' fill='%2369c88e'/></svg>" />
+<link rel="stylesheet" href="/tokens.css" />
+<link rel="stylesheet" href="/site.css" />
 <style>
-  :root {
-    --bg: #0b0d12;
-    --surface: #151923;
-    --line: #232836;
-    --text: #e6e8ee;
-    --muted: #8a91a4;
-    --muted-2: #5b6278;
-    --planning: #3b82f6;
-    --coding: #a855f7;
-    --done: #10b981;
-    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+  /* Everything this page needs beyond the shared chrome. It used to carry its
+     own copy of the palette, the reset, the focus ring, the nav, the brand
+     mark and the footer — the same ~10 rule blocks that landing.html and the
+     generator in scripts/build-docs.js each also carried. */
+
+  .nav-inner,
+  main,
+  .foot-inner { width: var(--page-text); }
+
+  /* No sticky nav here. A policy is read top to bottom, and a bar that follows
+     you down a legal document is taking space from the thing you came for. */
+  .nav { position: static; }
+
+  main { padding: var(--space-2xl) 0 var(--space-2xl); }
+
+  .updated {
+    margin-top: var(--space-sm);
+    font-family: var(--font-label);
+    font-size: var(--t-sm);
+    letter-spacing: 0.04em;
+    color: var(--text-3);
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--sans);
-    line-height: 1.65;
-    -webkit-font-smoothing: antialiased;
+
+  .lede {
+    margin-top: var(--space-lg);
+    font-size: var(--t-md);
+    color: var(--text-2);
   }
-  :focus-visible { outline: 2px solid var(--coding); outline-offset: 3px; border-radius: 4px; }
-  .nav { border-bottom: 1px solid var(--line); }
-  .nav-inner {
-    width: min(760px, 100% - 48px);
-    margin: 0 auto;
-    height: 60px;
-    display: flex;
-    align-items: center;
+
+  /* A rule above each section, because this document is scanned for the one
+     heading you came to read. */
+  .prose h2 {
+    margin: var(--space-2xl) 0 var(--space-sm);
+    padding-top: var(--space-lg);
+    border-top: 1px solid var(--ink-800);
+    font-size: var(--t-lg);
   }
-  .brand {
-    display: inline-flex; align-items: center; gap: 10px;
-    font-family: var(--mono); font-weight: 600; font-size: 15px;
-    letter-spacing: -0.02em; text-decoration: none;
-  }
-  .mark {
-    width: 16px; height: 16px; border-radius: 5px;
-    background: linear-gradient(135deg, var(--coding), var(--planning));
-    box-shadow: 0 0 16px rgba(168, 85, 247, 0.5);
-  }
-  main { width: min(760px, 100% - 48px); margin: 0 auto; padding: 56px 0 96px; }
-  h1 {
-    font-family: var(--mono);
-    font-size: clamp(26px, 4.4vw, 38px);
-    letter-spacing: -0.03em;
-    font-weight: 600;
-    line-height: 1.12;
-  }
-  .updated { color: var(--muted-2); font-size: 14px; margin-top: 12px; font-family: var(--mono); }
-  h2 {
-    font-family: var(--mono);
-    font-size: 18px;
-    letter-spacing: -0.02em;
-    font-weight: 600;
-    margin: 44px 0 14px;
-    padding-top: 20px;
-    border-top: 1px solid var(--line);
-  }
-  p { color: var(--muted); margin-bottom: 14px; }
-  strong { color: var(--text); font-weight: 650; }
-  ul { color: var(--muted); margin: 0 0 14px 20px; }
-  li { margin-bottom: 9px; }
-  a { color: var(--planning); text-decoration: none; }
-  a:hover { text-decoration: underline; text-underline-offset: 3px; }
-  code {
-    font-family: var(--mono);
-    font-size: 0.9em;
-    background: #05070b;
-    border: 1px solid var(--line);
-    padding: 2px 7px;
-    border-radius: 6px;
-    color: var(--text);
-  }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 18px; font-size: 14.5px; }
-  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { color: var(--muted-2); font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; }
-  td { color: var(--muted); }
-  td:first-child { color: var(--text); white-space: nowrap; }
-  .lede { font-size: 17px; color: var(--muted); margin-top: 22px; }
-  .callout {
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-left: 3px solid var(--done);
-    border-radius: 10px;
-    padding: 18px 20px;
-    margin-bottom: 18px;
-  }
-  .callout p:last-child { margin-bottom: 0; }
-  footer { border-top: 1px solid var(--line); }
-  .foot {
-    width: min(760px, 100% - 48px);
-    margin: 0 auto;
-    padding: 26px 0 40px;
-    font-size: 13.5px;
-    color: var(--muted-2);
-    display: flex;
-    flex-wrap: wrap;
-    gap: 20px;
-  }
-  .foot a { color: var(--muted); }
+
+  .prose td:first-child { color: var(--text-1); white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -118,14 +60,15 @@
   </div>
 </nav>
 
-<main>
+<main class="prose">
   <h1>Privacy Policy</h1>
-  <p class="updated">Last updated: September 13, 2026</p>
+  <p class="updated">Last updated: October 5, 2026</p>
 
   <p class="lede">
     AgStatus is an open-source status board for coding agents such as Claude Code and OpenAI Codex.
     This policy covers the AgStatus iOS app and the hosted server at agstatus.online, operated by
-    the project maintainer.
+    the project maintainer. The repository also contains an Android client, which is not published
+    to any store; where its behaviour differs from the iOS app, this policy says so.
   </p>
 
   <div class="callout">
@@ -136,26 +79,41 @@
   </div>
 
   <h2>What the server stores</h2>
-  <p>When you set up the hooks (<code>npx agstatus init</code>), your machine sends the server a
-    small update each time an agent changes what it is doing:</p>
-  <table>
-    <thead>
-      <tr><th>Field</th><th>Example</th><th>Notes</th></tr>
-    </thead>
-    <tbody>
-      <tr><td>Session id</td><td>9f3c…</td><td>Generated by your coding tool</td></tr>
-      <tr><td>Project</td><td>my-repo</td><td>The folder name of the project</td></tr>
-      <tr><td>Status</td><td>coding</td><td>One of six fixed words</td></tr>
-      <tr><td>Message</td><td>npm test</td><td>A short activity line, truncated</td></tr>
-      <tr><td>Timestamps</td><td>—</td><td>When each change happened, for the session timeline</td></tr>
-    </tbody>
-  </table>
+  <p>When you set up the hooks (<code>curl -fsSL https://agstatus.online/install.sh | sh</code>, or
+    <code>irm https://agstatus.online/install.ps1 | iex</code> on Windows), your machine sends the
+    server a small update each time an agent changes what it is doing:</p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Field</th><th>Example</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Session id</td><td>9f3c…</td><td>Generated by your coding tool</td></tr>
+        <tr><td>Name</td><td>my-repo</td><td>Pinned at the session's first event</td></tr>
+        <tr><td>Project</td><td>my-repo</td><td>The folder name the session is working in</td></tr>
+        <tr><td>Status</td><td>coding</td><td>One of six fixed words</td></tr>
+        <tr><td>Message</td><td>npm test</td><td>A short activity line, truncated</td></tr>
+        <tr><td>Agent</td><td>claude</td><td>Which coding tool the session belongs to</td></tr>
+        <tr><td>Timestamps</td><td>—</td><td>When each change happened, for the session timeline</td></tr>
+      </tbody>
+    </table>
+  </div>
   <p>By default the message can include a <strong>truncated command line</strong> (up to 120
     characters) so the board is useful at a glance. If you would rather not send command text, run
-    <code>npx agstatus init --minimal</code> — messages then contain only tool names, such as
-    "Bash".</p>
+    the installer with <code>--minimal</code> — messages then contain only tool names, such as
+    "Bash". It is the same switch as <code>AGSTATUS_DETAIL=off</code>, and re-running the installer
+    without the flag removes it.</p>
   <p>A board is identified only by an unguessable random token in its URL. Anyone who has that URL
     can view the board, so treat it like a password.</p>
+
+  <h2>Pairing an app to a board</h2>
+  <p>Connecting a phone to a board can be done by scanning a QR code, which carries the board URL
+    straight from one screen to the other and involves the server only as the thing being
+    connected to. The alternative is a short <strong>pairing code</strong>, for when the two
+    screens are not side by side. A pairing code is minted by the server and held there, mapped to
+    your board's token, for <strong>15 minutes</strong>; it can be claimed once, and claiming it
+    deletes it. Codes that are never claimed are swept away when they expire. Nothing else about
+    the pairing is recorded — not which device claimed a code, and not when.</p>
 
   <h2>Plan usage</h2>
   <p>The hook can also report how much of your plan's rate limits you have used, so the board can
@@ -163,11 +121,11 @@
     machine</strong> and never sent to the server — only the resulting percentages and reset times
     are. Set <code>AGSTATUS_USAGE=off</code> to turn this off entirely.</p>
   <p>To chart how usage moves over time, the server keeps each reported percentage rather than only
-    the newest one, and the hook additionally reports a <strong>daily token total per project</strong>
-    — a project folder name, a date, and a number of tokens, read from your coding tool's own local
-    logs. No prompts, code, file contents or conversation ever leave your machine; the project folder
-    name is the same one already shown on the board's cards. <code>AGSTATUS_USAGE=off</code> disables
-    this too.</p>
+    the newest one, and the hook additionally reports <strong>token totals per project per day</strong>
+    and <strong>per session</strong> — a project folder name or a session id, a date, and a number
+    of tokens, read from your coding tool's own local logs. No prompts, code, file contents or
+    conversation ever leave your machine; the project folder name is the same one already shown on
+    the board's cards. <code>AGSTATUS_USAGE=off</code> disables this too.</p>
 
   <h2>Focus (optional)</h2>
   <p>Focus — tapping a session on the board to bring its terminal to the front on the machine
@@ -180,9 +138,9 @@
     to your board so it can receive taps; it sends nothing but the acknowledgement of a tap.
     <strong>Nothing about your files, folders, terminal, or environment leaves the
     machine</strong> — those details stay in a local file only the listener reads, and are
-    removed when Focus is turned off and the listener is uninstalled (the listener ships in a
-    later release). Turning Focus off stops any further labels being sent; labels already on
-    your board stay there. Machines with Focus off send exactly what the table above lists.</p>
+    removed when Focus is turned off and the listener is uninstalled. Turning Focus off stops any
+    further labels being sent; labels already on your board stay there. Machines with Focus off
+    send exactly what the table above lists.</p>
 
   <h2>What we do not collect</h2>
   <ul>
@@ -190,26 +148,34 @@
     <li>No analytics, advertising identifiers, or third-party SDKs.</li>
     <li>No source code, file contents, or agent conversations.</li>
     <li>No credentials or API keys of any kind.</li>
+    <li>No web fonts, scripts or images loaded from anyone else's server — every page here serves
+      its own, so viewing a board tells no third party that you did.</li>
   </ul>
 
   <h2>Push notifications</h2>
-  <p>If you turn on notifications in the iOS app, they are delivered through Apple's push service
-    (APNs). A notification contains only the session name and its short status message — the same
-    text your hook already sent to your board. Your device's push token is stored with your board
-    and is removed when you turn notifications off, when the token expires, or when the board is
-    deleted.</p>
+  <p>Push is <strong>iOS only</strong>; the Android app has no push and contacts no notification
+    service. If you turn on notifications in the iOS app, they are delivered through Apple's push
+    service (APNs). A notification contains only the session name and its short status message —
+    the same text your hook already sent to your board. Your device's push token is stored with
+    your board and is removed when you turn notifications off, when the token expires, or when the
+    board is deleted.</p>
 
   <h2>What the app stores on your device</h2>
   <p>The iOS app keeps your board's URL and token in the iOS Keychain on your device. It makes
     network requests only to the board server you configure. Demo mode runs entirely on-device and
     sends nothing anywhere. The app requests camera access only when you choose to scan a setup QR
     code, and the camera is used for nothing else.</p>
+  <p>The Android client in the repository behaves the same way, with one difference worth stating:
+    it keeps the URL and token in an encrypted preferences file, and if that file cannot be opened
+    — a corrupted keyset, which can only be discarded — it retries once and then falls back to
+    ordinary app-private preferences rather than refusing to launch. The data stays inside the
+    app's private storage either way.</p>
 
   <h2>Retention and deletion</h2>
   <ul>
     <li>Sessions stop being shown or served automatically <strong>24 hours</strong> after their
       last update.</li>
-    <li>Usage history and per-project token totals are kept for <strong>90 days</strong>.</li>
+    <li>Usage history and token totals are kept for <strong>90 days</strong>.</li>
     <li>Boards untouched for <strong>60 days</strong> are removed from the service along with all
       their data — flagged as deleted rather than erased, as below.</li>
     <li>You can delete a board and everything in it at any time, from the app
@@ -218,7 +184,9 @@
   </ul>
   <p>Deleting removes data from the service immediately: it stops being served, shown, or returned
     by the API, on every device. It does not erase it. Records are flagged as deleted and the rows
-    stay in the database that backs the service.</p>
+    stay in the database that backs the service. The
+    <a href="/docs#self-hosting">self-hosting guide</a> documents this, and how an operator of
+    their own instance purges those rows for good.</p>
 
   <h2>Self-hosting</h2>
   <p>AgStatus is open source under the MIT license. You can run the entire server yourself, in
@@ -237,11 +205,14 @@
     <a href="https://github.com/KardanovIR/claude-status-dashboard/issues">github.com/KardanovIR/claude-status-dashboard</a>.</p>
 </main>
 
-<footer>
-  <div class="foot">
+<footer class="site-foot">
+  <div class="foot-inner">
     <span>MIT licensed · AgStatus</span>
-    <a href="/">Home</a>
-    <a href="https://github.com/KardanovIR/claude-status-dashboard">GitHub</a>
+    <div class="foot-links">
+      <a href="/">Home</a>
+      <a href="/docs">Docs</a>
+      <a href="https://github.com/KardanovIR/claude-status-dashboard">GitHub</a>
+    </div>
   </div>
 </footer>
 

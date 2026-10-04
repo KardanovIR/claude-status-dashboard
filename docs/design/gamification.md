@@ -1,8 +1,17 @@
 # Gamification: streaks, and the idea of minimising blocked time
 
-**Status: proposal, nothing built.** Written 2026-09-18 in response to: *"I want
-to have streaks, maybe also gamification/visualisation to minimize idle/blocked
-time."*
+**Status: the streak shipped in 1.5.0; the blocked-time scoring did not, and
+should not.** Written 2026-09-18 in response to: *"I want to have streaks, maybe
+also gamification/visualisation to minimize idle/blocked time."* Updated
+2026-10-05.
+
+The streak half of this proposal is live on iOS — `StreakTier` in
+`ios/AgStatus/Models.swift`, drawn by `BoardView.swift`, with the wood / bronze /
+silver / gold / platinum ladder at 3 / 7 / 14 / 30 / 60 days and the pip count
+this document argued for. It is **iOS only**: neither the web board nor the
+Android client shows it, and it has no user-facing documentation yet. The second
+half — scoring a user on how little time their agents spend blocked — remains
+rejected, for the reasons below.
 
 ## The short answer
 

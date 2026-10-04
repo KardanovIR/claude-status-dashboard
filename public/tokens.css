@@ -112,8 +112,12 @@
    * no rule is an unknown, and an unknown should sit quiet rather than claim
    * the accent — which is what pointing this at --st-done would do. */
   --state: var(--st-idle);
-  --state-dim: oklch(from var(--state) l c h / 0.16);
-  --state-line: oklch(from var(--state) l c h / 0.42);
+  /* NOTE: --state-dim and --state-line are NOT derived here. A custom
+   * property's computed value substitutes var() on the element the
+   * declaration applies to — so deriving them on :root would freeze them
+   * against :root's --state (idle) and inherit that one colour everywhere,
+   * no matter what a card sets --state to. They are derived on .card in
+   * board.css instead, where --state has already cascaded per status. */
 
   /* ---- Type ------------------------------------------------------------
    * Two families, self-hosted. Not a CDN link: docs/privacy.md promises no

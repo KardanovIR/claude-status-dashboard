@@ -122,6 +122,10 @@ body {
  * order of legibility at distance. */
 .card {
   --state: var(--st-idle);
+  /* Derived here, not on :root: these resolve against THIS element's --state,
+   * which .card.status-* has already set. See the note in tokens.css. */
+  --state-dim: oklch(from var(--state) l c h / 0.16);
+  --state-line: oklch(from var(--state) l c h / 0.42);
 
   position: relative;
   display: flex;
@@ -418,12 +422,18 @@ body {
  * primary is how a card ends up shouting louder than its own state. */
 .card-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2xs);
   margin-top: auto;
   padding-top: var(--space-2xs);
   border-top: 1px solid var(--ink-800);
 }
+
+/* Any rule that sets `display` outranks the UA's [hidden] { display: none },
+ * so without this the Resume button cannot be hidden by the `hidden`
+ * attribute — the obvious way to hide it, and the one app.js reaches for. */
+[hidden] { display: none !important; }
 
 .act {
   appearance: none;

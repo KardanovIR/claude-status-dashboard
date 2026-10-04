@@ -223,6 +223,11 @@ body {
 .name {
   flex: 1 1 auto;
   min-width: 0;
+  /* The one value on this card meant to be legible across a room, so it takes
+   * the face chosen for exactly that. It inherited --font-ui before, which
+   * left the card's largest word in the UI face while an 11px meter value sat
+   * in the signage one. */
+  font-family: var(--font-read);
   font-size: var(--t-lg);
   line-height: var(--lh-tight);
   font-weight: 600;
@@ -256,8 +261,21 @@ body {
 .dismiss:focus-visible { opacity: 1; }
 .dismiss:hover { color: var(--text-1); }
 
+/* Where there is no hover there is also no aiming. 22px is the mark; 44px is
+ * the target, grown with a pseudo-element so the glyph does not have to shout
+ * — on a 375px card, a button actually 44px wide takes the width off the name,
+ * which is the one thing on the card that must stay legible. */
 @media (hover: none) {
-  .dismiss { opacity: 1; }
+  .dismiss {
+    opacity: 1;
+    position: relative;
+  }
+
+  .dismiss::before {
+    content: '';
+    position: absolute;
+    inset: -11px;
+  }
 }
 
 /* The lifecycle rail that used to sit here is deliberately gone. It showed a
@@ -305,8 +323,30 @@ body {
   white-space: nowrap;
 }
 
-.meta-sep { color: var(--ink-700); }
+/* --ink-700 is the *hairline* token and this is a glyph, which measured
+ * 1.52:1 on a card — far enough under AA that the meta line read as one run of
+ * words with no separators at all. A dot the same colour as the facts it
+ * divides does not compete with them: it is two pixels of ink. */
+.meta-sep { color: var(--text-3); }
 .ts { flex: none; }
+
+/* Shown only when it differs from the card's title — which is exactly when the
+ * session changed directory, since `name` is pinned at its first event and
+ * `project` follows the live one. */
+.proj {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Tokens the agent's own logs attribute to this session. It carries its unit
+ * and no denominator: a plan limit is a percentage of an unknown quota and the
+ * two do not convert, so this is never rendered as a share of anything. */
+.tok {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
 
 /* The agent behind the session. It was in the data all along and the card never
  * showed it.
@@ -406,6 +446,11 @@ body {
 }
 
 .meter-fill {
+  /* Full width and scaled on the X axis, not animated on `width`: width is a
+   * layout property and animating it relayouts the row on every frame. The
+   * transform below is what this is here to drive, and it needs something to
+   * scale down from. */
+  width: 100%;
   height: 100%;
   border-radius: var(--r-sm);
   background: var(--text-2);
@@ -413,6 +458,11 @@ body {
   transition: transform var(--d-slow) var(--ease), background var(--d-mid) var(--ease);
 }
 
+/* Green, amber, red as the window fills, matching Theme.limitColor on iOS at
+ * the same 60/85 thresholds. The ladder is also legible without colour — the
+ * fill's own length says the same thing, which is the whole point of a meter. */
+.meter-fill.low { background: var(--st-done); }
+.meter-fill.mid { background: var(--st-limit-warn); }
 /* Close to the limit is the one reading allowed to take the alarm colour. */
 .meter-fill.high { background: var(--st-blocked); }
 
@@ -470,6 +520,17 @@ body {
 .act-resume { border-color: var(--ink-700); }
 
 .act-spacer { flex: 1 1 auto; }
+
+/* Why the Focus control cannot work right now. It had no rules of its own, so
+ * it inherited the body's 13px at --text-1 and became the brightest, largest
+ * block on the card — louder than the status, on three cards at once, saying
+ * the same sentence about the same machine. It is a footnote. */
+.focus-note {
+  min-width: 0;
+  font-size: var(--t-xs);
+  line-height: var(--lh-tight);
+  color: var(--text-3);
+}
 
 /* The ack line. Always present, toggled with `hidden`, so the live region
  * actually announces instead of being re-created on each change. */

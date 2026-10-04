@@ -107,6 +107,18 @@
   --st-coding:   oklch(74% 0.085 240);
   --st-testing:  oklch(74% 0.080 200);
 
+  /* Not a state — a LIMIT. The two are different things and this is the one
+   * place amber belongs: the board's accent was amber in an early pass and had
+   * to go, because `coding` is the most common state and every working card
+   * then implied a warning. A plan limit filling up genuinely IS a caution, so
+   * it keeps the convention.
+   *
+   * done and this share a lightness (76%/78%) so amber reads as WARMER rather
+   * than dimmer, and --st-blocked sits lower at 68% so red also feels heavier.
+   * Ported from Theme.limitWarn on iOS, where this ladder already shipped: the
+   * two clients must not disagree about what 70% of a quota looks like. */
+  --st-limit-warn: oklch(78% 0.150 80);
+
   /* Bound per-card by .card.status-*; components read these, never the six
    * above. The fallback stays `idle` on purpose: a card whose status matches
    * no rule is an unknown, and an unknown should sit quiet rather than claim

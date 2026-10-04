@@ -46,6 +46,142 @@
     return `${Math.floor(s / 86400)}d ago`;
   };
 
+  const fmtTokens = (n) => {
+    if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+    if (n >= 1e3) return `${Math.round(n / 1e3)}K`;
+    return String(Math.round(n));
+  };
+
+  /** Every [data-ts] on the page, or inside one element, retimed. */
+  function paintTimes(root) {
+    (root || document).querySelectorAll('[data-ts]').forEach((el) => {
+      el.textContent = relTime(Number(el.dataset.ts));
+    });
+  }
+
+  // ---- Icons ----------------------------------------------------------------
+  //
+  // Inline SVG on a 16-unit grid, sized by CSS and drawn in `currentColor`, so
+  // a status mark inherits --state from its own card and costs no request.
+  //
+  // Shape first, colour second: peripheral vision resolves form long before hue,
+  // and roughly one man in twelve cannot separate the red and green states by
+  // colour at all. The board's second design principle — state is never carried
+  // by hue alone — had no second channel on the web before these.
+  //
+  // These are the same six marks iOS draws with SF Symbols. Theme.symbol's
+  // comment has said they "mirror the web board's icons exactly" since 1.5,
+  // which was false the whole time: the web board had no icons to mirror.
+  //
+  // The agent marks are deliberately NOT the Anthropic or OpenAI logos. This
+  // board is self-hosted by other people, and redistributing someone's
+  // trademark inside it is a different thing from naming their tool.
+
+  const stroked = (cls, body) =>
+    `<svg class="${cls}" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor"`
+    + ` stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+
+  // A filled disc with the glyph punched out of it. evenodd counts crossings,
+  // so an inner subpath is a hole whichever way it winds.
+  const punched = (cls, body) =>
+    `<svg class="${cls}" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"`
+    + ` fill-rule="evenodd">${body}</svg>`;
+
+  const DISC = 'M8 1.25a6.75 6.75 0 1 0 0 13.5 6.75 6.75 0 0 0 0-13.5Z';
+
+  // Quiet outlines for the four states that need nothing from you; `blocked` is
+  // the only solid one, because it is the only state that means a human is
+  // required, and weight is a channel that survives being seen sideways.
+  const STATE_MARK = {
+    idle: stroked('state-mark', '<circle cx="8" cy="8" r="6"/><path d="M8 4.6V8l2.6 1.5"/>'),
+    planning: stroked('state-mark',
+      '<path d="M6.5 4.3h7M6.5 8h7M6.5 11.7h7"/>'
+      + '<circle cx="3" cy="4.3" r="1" fill="currentColor" stroke="none"/>'
+      + '<circle cx="3" cy="8" r="1" fill="currentColor" stroke="none"/>'
+      + '<circle cx="3" cy="11.7" r="1" fill="currentColor" stroke="none"/>'),
+    coding: stroked('state-mark', '<path d="M5.6 4.4 2.2 8l3.4 3.6M10.4 4.4 13.8 8l-3.4 3.6M9.4 3.4 6.6 12.6"/>'),
+    testing: stroked('state-mark', '<path d="M4.6 2.2h6.8M6.2 2.2v8.3a1.8 1.8 0 0 0 3.6 0V2.2M6.2 8.2h3.6"/>'),
+    blocked: punched('state-mark',
+      `<path d="${DISC}M8.9 4.35v4.8a.9.9 0 0 1-1.8 0V4.35a.9.9 0 0 1 1.8 0ZM8 12.3a1.05 1.05 0 1 1 0-2.1 1.05 1.05 0 0 1 0 2.1Z"/>`),
+    done: stroked('state-mark', '<circle cx="8" cy="8" r="6"/><path d="M5.3 8.2 7.2 10.1 10.8 5.9"/>'),
+  };
+
+  const ICON = {
+    claude: stroked('', '<path d="M8 2.4v11.2M3.15 5.2l9.7 5.6M3.15 10.8l9.7-5.6"/>'),
+    codex: stroked('', '<path d="M8 1.9 13.3 4.95v6.1L8 14.1 2.7 11.05v-6.1Z"/>'),
+    // Two overlapping windows. The one behind is drawn only where the front one
+    // does not cover it, so the two never cross at 15px.
+    focus: stroked('',
+      '<path d="M6 9.5H2.4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1H9a1 1 0 0 1 1 1v2.5"/>'
+      + '<path d="M6.9 6.5h6.7a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H6.9a1 1 0 0 1-1-1V7.5a1 1 0 0 1 1-1Z"/>'),
+    resume: punched('', `<path d="${DISC}M6.3 5.2 11 8l-4.7 2.8Z"/>`),
+  };
+
+  // Only a known status becomes a class or picks a mark. The server validates
+  // the enum, but this is a string off the network going into classList.add,
+  // which throws on anything containing a space — and a throw in the render
+  // loop would take every card after this one down with it. The old code
+  // interpolated it into a class attribute and could not throw; this can.
+  //
+  // An unrecognised status keeps its card, shows its own word in the badge and
+  // simply matches no rule, which is the fallback tokens.css already describes:
+  // an unknown should sit quiet rather than claim a state it is not in.
+  const statusClass = (v) => (STATUSES.includes(v) ? `status-${v}` : '');
+  const stateMark = (v) => STATE_MARK[STATUSES.includes(v) ? v : 'idle'];
+
+  const sourceChip = (source) => {
+    const key = String(source || 'claude').toLowerCase();
+    const mark = key.startsWith('codex') ? ICON.codex : ICON.claude;
+    return `<span class="source">${mark}${escape((SOURCE_NAMES[key] || key).toUpperCase())}</span>`;
+  };
+
+  // ---- Painting -------------------------------------------------------------
+  //
+  // Nothing on this page assigns innerHTML directly any more. The board
+  // repaints on every SSE frame and on a 15-second timer, and a repaint that
+  // reports no change is a cancelled transition, a restarted entrance animation
+  // and a dropped focus ring — paid for a frame about something else. The guard
+  // is the rendered markup itself rather than a hand-kept signature: a
+  // signature that forgets a field is a card that silently stops updating.
+
+  const painted = new WeakMap();
+
+  // Enough to find the same control again once its markup has been replaced.
+  // Values that are not plainly safe in a selector get no key, and focus is
+  // simply not restored — never an unescaped interpolation.
+  const SAFE = /^[A-Za-z][\w-]*$/;
+  function focusKey(node) {
+    const d = node.dataset || {};
+    if (SAFE.test(d.type || '')) return `[data-type="${d.type}"]`;
+    if (d.dismiss !== undefined) return '[data-dismiss]';
+    if (SAFE.test(d.source || '')) return `[data-source="${d.source}"]`;
+    if (SAFE.test(node.id || '')) return `#${node.id}`;
+    return null;
+  }
+
+  function paint(el, html) {
+    if (painted.get(el) === html) return false;
+    const key = el.contains(document.activeElement) ? focusKey(document.activeElement) : null;
+    el.innerHTML = html;
+    painted.set(el, html);
+    paintTimes(el);
+    if (key) {
+      const again = el.querySelector(key);
+      if (again) again.focus();
+    }
+    return true;
+  }
+
+  // Live cards, keyed by session id: { el, inner }.
+  const cards = new Map();
+
+  /** A message in place of the grid; clears the reconciler with it. */
+  function setGridMessage(html) {
+    cards.clear();
+    paint(gridEl, html);
+  }
+
   // ---- plan usage limit bars ------------------------------------------------
 
   const SOURCE_NAMES = { claude: 'Claude', codex: 'Codex' };
@@ -83,15 +219,22 @@
       const bars = (u.windows || []).map((w) => {
         const pct = Math.min(100, Math.max(0, Number(w.usedPct) || 0));
         const pctText = pct % 1 ? pct.toFixed(1) : String(pct);
+        const reset = w.resetsAt ? fmtReset(w.resetsAt) : '';
+        // board.css's .meter, which is what it was written for: "a percentage
+        // of an unknown quota — never a token count". scaleX rather than width,
+        // because width is a layout property and animating it relayouts the
+        // block on every frame of the transition.
         return `
-          <div class="usage-row">
-            <div class="usage-head">
-              <span class="usage-label">${escape(w.label || w.id)}</span>
-              <span class="usage-val">${pctText}%${
-                w.resetsAt && fmtReset(w.resetsAt) ? ` <span class="usage-reset">· ${escape(fmtReset(w.resetsAt))}</span>` : ''
+          <div class="meter">
+            <div class="meter-head">
+              <span class="meter-label">${escape(w.label || w.id)}</span>
+              <span class="meter-value">${pctText}%${
+                reset ? ` <span class="usage-reset">· ${escape(reset)}</span>` : ''
               }</span>
             </div>
-            <div class="usage-track"><div class="usage-fill ${usageLevel(pct)}" style="width:${pct}%"></div></div>
+            <div class="meter-track">
+              <div class="meter-fill ${usageLevel(pct)}" style="transform:scaleX(${(pct / 100).toFixed(4)})"></div>
+            </div>
           </div>`;
       });
       if (bars.length === 0) continue;
@@ -104,25 +247,114 @@
           ${bars.join('')}
         </section>`);
     }
-    usageEl.innerHTML = blocks.join('');
+    paint(usageEl, blocks.join(''));
     usageEl.hidden = blocks.length === 0;
   }
 
+  // All six always, even at zero. A legend that reflows every time a count
+  // changes is movement reporting nothing, and this board animates only when
+  // something actually happened — so the zeros recede instead of leaving.
+  //
+  // It also has to be unhidden. The markup carries `hidden` for the moment
+  // before the first frame, and the old stylesheet's `.stats { display: flex }`
+  // quietly outranked the UA's [hidden] rule, so it showed anyway. board.css
+  // makes [hidden] `!important`, which is correct and would have hidden this
+  // row for good.
   function renderStats(list) {
     const counts = Object.fromEntries(STATUSES.map((s) => [s, 0]));
     for (const s of list) counts[s.status] = (counts[s.status] || 0) + 1;
-    statsEl.innerHTML = STATUSES
-      .map((st) => `<span class="stat"><span class="dot status-${st}"></span><b>${counts[st]}</b> ${st}</span>`)
-      .join('');
+    paint(statsEl, STATUSES
+      .map((st) => `<span class="stat${counts[st] ? '' : ' zero'}">`
+        + `<span class="dot status-${st}"></span><b>${counts[st]}</b> ${st}</span>`)
+      .join(''));
+    statsEl.hidden = list.length === 0;
   }
 
   function renderEmpty() {
     const example = webhookUrl || '/webhook';
-    gridEl.innerHTML = `
+    setGridMessage(`
       <div class="empty">
-        No sessions yet. Send a POST to <code>${escape(example)}</code> with JSON:<br><br>
+        <strong>No sessions yet</strong>
+        Send a POST to <code>${escape(example)}</code> with JSON:<br><br>
         <code>{ "session_id": "abc", "name": "My task", "status": "coding", "message": "editing server.ts", "project": "dashboard" }</code>
-      </div>`;
+      </div>`);
+  }
+
+  // The facts under the title, in the order you would ask for them: which
+  // agent, which machine, how long ago, how much.
+  //
+  // `project` is shown only when it differs from the name. The hook builds one
+  // value and sends it under both keys, so the old meta line repeated the
+  // card's own title on every card, forever. They diverge exactly when a
+  // session changes directory — `name` is pinned at the session's first event
+  // and `project` follows the live one — which is the only time the difference
+  // is worth the width.
+  function cardMeta(s) {
+    const facts = [];
+    if (s.host && s.host.machine) {
+      const host = machineLabel(s.host);
+      facts.push(`<span class="host" title="${escape(host)}">${escape(host)}</span>`);
+    }
+    if (s.project && s.project !== s.name) {
+      facts.push(`<span class="proj" title="${escape(s.project)}">in ${escape(s.project)}</span>`);
+    }
+    // Left empty on purpose: paintTimes fills it, here and on the 15s tick, so
+    // the markup this card is compared against does not change every minute
+    // purely because a label aged.
+    facts.push(`<span class="ts" data-ts="${s.updatedAt}"></span>`);
+    // Absent, not zero, when nothing was reported — a card must never claim a
+    // session spent nothing. These are tokens the agent's own logs attribute to
+    // it, and they are NOT a share of a plan limit: the two measures do not
+    // convert, so this carries its unit and no denominator.
+    if (typeof s.tokens === 'number') {
+      facts.push(`<span class="tok">${escape(fmtTokens(s.tokens))} tokens</span>`);
+    }
+    return `<div class="meta">${sourceChip(s.source)}`
+      + facts.map((f) => `<span class="meta-sep">·</span>${f}`).join('')
+      + '</div>';
+  }
+
+  // The name is first and largest — it is how you know WHICH session this is,
+  // and the state only matters once you have found the right card. They were on
+  // one line before, competing for width, and the name was what truncated.
+  function cardInner(s) {
+    return `<div class="card-head">
+        <div class="card-title-row">
+          <div class="name" title="${escape(s.name)}">${escape(s.name)}</div>
+          <button class="dismiss" type="button" data-dismiss="${escape(s.id)}" aria-label="Dismiss session" title="Dismiss">×</button>
+        </div>
+        <div class="card-state-row">${stateMark(s.status)}<span class="badge">${escape(s.status)}</span></div>
+      </div>${
+        s.message ? `<p class="message">${escape(s.message)}</p>` : ''
+      }${cardMeta(s)}${renderFocus(s)}`;
+  }
+
+  function patchCard(rec, s) {
+    const { el } = rec;
+    const prev = el.dataset.status;
+    if (prev !== s.status) {
+      if (prev) {
+        const gone = statusClass(prev);
+        if (gone) el.classList.remove(gone);
+        // One brief lift of the card's own edge, and only on a real change —
+        // never on a card's first paint, where there is no news yet. The class
+        // is removed on `animationend`, which is what lets the next change
+        // re-trigger it without a forced reflow inside this loop.
+        el.classList.add('changed');
+      }
+      const now = statusClass(s.status);
+      if (now) el.classList.add(now);
+      el.dataset.status = s.status;
+    }
+    const active = ACTIVE_STATUSES.has(s.status);
+    if (active) el.dataset.activeSince = String(s.updatedAt);
+    else delete el.dataset.activeSince;
+    el.classList.toggle('stale', active && Date.now() - s.updatedAt > STALE_MS);
+
+    const inner = cardInner(s);
+    if (rec.inner === inner) return;
+    rec.inner = inner;
+    paint(el, inner);
   }
 
   function renderGrid() {
@@ -131,24 +363,42 @@
     renderUsage(); // session changes can change which sources' bars are shown
     if (list.length === 0) { renderEmpty(); return; }
 
-    gridEl.innerHTML = list.map((s) => `
-      <article class="card status-${escape(s.status)}${
-        ACTIVE_STATUSES.has(s.status) && Date.now() - s.updatedAt > STALE_MS ? ' stale' : ''
-      }" data-id="${escape(s.id)}"${
-        ACTIVE_STATUSES.has(s.status) ? ` data-active-since="${s.updatedAt}"` : ''
-      }>
-        <div class="card-head">
-          <div class="name" title="${escape(s.name)}">${escape(s.name)}</div>
-          <span class="badge status-${escape(s.status)}">${escape(s.status)}</span>
-          <button class="dismiss" type="button" data-dismiss="${escape(s.id)}" aria-label="Dismiss session" title="Dismiss">×</button>
-        </div>
-        ${s.message ? `<div class="message">${escape(s.message)}</div>` : ''}
-        <div class="meta">
-          <span class="project" title="${escape(s.project || '')}">${escape(s.project || '')}</span>
-          <span class="ts" data-ts="${s.updatedAt}">${relTime(s.updatedAt)}</span>
-        </div>${renderFocus(s)}
-      </article>
-    `).join('');
+    // Whatever message block was showing is not a card, so it goes first.
+    if (cards.size === 0 && gridEl.firstChild) paint(gridEl, '');
+
+    let anchor = null;
+    for (const s of list) {
+      let rec = cards.get(s.id);
+      if (!rec) {
+        const el = document.createElement('article');
+        el.className = 'card entering';
+        el.dataset.id = s.id;
+        // Both events, not just animationend: an animation that is cancelled —
+        // the card hidden mid-flight, the sheet swapped — never ends, and a
+        // `.changed` left behind cannot be re-added, so the card would stop
+        // reporting its next state change.
+        const settle = (e) => {
+          if (e.animationName === 'card-in') el.classList.remove('entering');
+          if (e.animationName === 'state-change') el.classList.remove('changed');
+        };
+        el.addEventListener('animationend', settle);
+        el.addEventListener('animationcancel', settle);
+        rec = { el, inner: '' };
+        cards.set(s.id, rec);
+      }
+      patchCard(rec, s);
+      // Ordering in one pass. insertBefore on a node already in place would
+      // still reparent it, which restarts nothing but is work for nothing.
+      const next = anchor ? anchor.nextSibling : gridEl.firstChild;
+      if (next !== rec.el) gridEl.insertBefore(rec.el, next);
+      anchor = rec.el;
+    }
+
+    for (const [id, rec] of cards) {
+      if (state.has(id)) continue;
+      rec.el.remove();
+      cards.delete(id);
+    }
   }
 
   async function refreshSessions() {
@@ -237,7 +487,7 @@
       return `${escape(name)} is offline — needs the <a href="/docs#hooks-focus-optional-opt-in">AgStatus listener</a> on that machine`;
     }
     return m.lastSeen
-      ? `${escape(name)} is offline (<span data-ts="${Number(m.lastSeen)}">${escape(relTime(m.lastSeen))}</span>)`
+      ? `${escape(name)} is offline (<span data-ts="${Number(m.lastSeen)}"></span>)`
       : `${escape(name)} is offline`;
   }
 
@@ -260,13 +510,22 @@
     }
     // aria-disabled rather than disabled: an offline machine's button keeps
     // its tooltip and stays reachable for a screen reader to say why.
-    const button = (type, label, hidden) => `
-          <button class="focus-btn" type="button" data-focus="${escape(s.id)}" data-type="${type}"
-                  title="${escape(title)}"${online ? '' : ' aria-disabled="true"'}${hidden ? ' hidden' : ''}>${escape(label)}</button>`;
+    // The machine's name is on the meta line now, and in this button's tooltip
+    // and accessible name — a 320px card cannot hold "Bring to front on
+    // MacBook Pro" as a label, and repeating a fact the card already states is
+    // what the label was doing.
+    const button = (type, cls, icon, label, hidden) => `
+          <button class="act ${cls} focus-btn" type="button" data-focus="${escape(s.id)}" data-type="${type}"
+                  title="${escape(title)}" aria-label="${escape(`${label} — ${title}`)}"${
+                    online ? '' : ' aria-disabled="true"'
+                  }${hidden ? ' hidden' : ''}>${icon}${escape(label)}</button>`;
+    // One element doing both jobs: `.focus` is what paintFocus() patches
+    // through, `.card-actions` is the rail board.css draws.
     return `
-        <div class="focus">
-          ${button('focus', `Bring to front on ${name}`, false)}
-          ${button('resume', 'Resume', !(st && st.resume))}
+        <div class="focus card-actions">
+          ${button('focus', 'act-focus', ICON.focus, 'Focus', false)}
+          ${button('resume', 'act-resume', ICON.resume, 'Resume', !(st && st.resume))}
+          <span class="act-spacer"></span>
           <span class="focus-note"${offline && !st ? '' : ' hidden'}>${noteHtml}</span>
           <span class="focus-status${st ? ` ${st.kind}` : ''}" aria-live="polite">${st ? escape(st.text) : ''}</span>
         </div>`;
@@ -440,12 +699,14 @@
     urlEl.textContent = '—';
     connEl.hidden = true;
     if (footerEl) footerEl.hidden = true;
-    statsEl.innerHTML = '';
-    gridEl.innerHTML = `
+    statsEl.hidden = true;
+    paint(statsEl, '');
+    setGridMessage(`
       <div class="empty">
-        This board no longer exists. It may have been deleted or expired.<br><br>
+        <strong>This board no longer exists</strong>
+        It may have been deleted, or expired.<br><br>
         <a href="/">Create a new board</a>
-      </div>`;
+      </div>`);
   }
 
   // Only trust an explicit 404 (unknown workspace); anything else — network
@@ -554,14 +815,16 @@
   function renderWelcome() {
     connEl.hidden = true;
     if (footerEl) footerEl.hidden = true;
-    gridEl.innerHTML = `
+    // The empty <div class="logo"> that used to sit above the title was a
+    // gradient square with a purple glow — and the <h1> beneath it already
+    // said the name.
+    setGridMessage(`
       <div class="welcome">
-        <div class="logo"></div>
         <h1>AgStatus</h1>
         <p>Live status board for your coding agents.</p>
         <button class="create-board" id="create-board" type="button">Create a status board</button>
         <div class="welcome-error" id="welcome-error" role="alert"></div>
-      </div>`;
+      </div>`);
     document.getElementById('create-board').addEventListener('click', createBoard);
   }
 
@@ -602,9 +865,7 @@
   });
 
   setInterval(() => {
-    document.querySelectorAll('[data-ts]').forEach((el) => {
-      el.textContent = relTime(Number(el.dataset.ts));
-    });
+    paintTimes();
     // Active cards cross the staleness threshold without any new event.
     document.querySelectorAll('.card[data-active-since]').forEach((el) => {
       el.classList.toggle('stale', Date.now() - Number(el.dataset.activeSince) > STALE_MS);
@@ -616,8 +877,9 @@
   function renderConnecting() {
     setConnected(false);
     if (footerEl) footerEl.hidden = true;
-    statsEl.innerHTML = '';
-    gridEl.innerHTML = '<div class="empty">Connecting…</div>';
+    statsEl.hidden = true;
+    paint(statsEl, '');
+    setGridMessage('<div class="empty">Connecting…</div>');
   }
 
   let configBackoff = 1000;
@@ -663,14 +925,15 @@
   // do not convert: a plan limit weights models and cache reads differently.
 
   const DETAIL_DAYS = 30;
-  const LINE_COLORS = ['#4D9FFF', '#B17AFF', '#FFB02E', '#3ECF8E', '#FF5C5C', '#8B93A7'];
+  // Tokens-and-limits in the palette's own terms. These were six hand-typed
+  // hex literals — the same drift the OKLCH move exists to prevent — and they
+  // were the old Tailwind-ish set, so the chart kept the look the board left.
+  // Same order as Theme.seriesColors on iOS.
+  const LINE_COLORS = [
+    'var(--st-done)', 'var(--st-coding)', 'var(--st-testing)',
+    'var(--st-planning)', 'var(--st-blocked)', 'var(--st-idle)',
+  ];
 
-  const fmtTokens = (n) => {
-    if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
-    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
-    if (n >= 1e3) return `${Math.round(n / 1e3)}K`;
-    return String(Math.round(n));
-  };
   const dayLabel = (day) => {
     const d = new Date(`${day}T00:00:00Z`);
     return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
@@ -781,7 +1044,7 @@
           <div class="dv-proj-track"><div class="dv-proj-fill" style="width:${(tokens / topShare) * 100}%"></div></div>
         </div>`).join('');
 
-    detailEl.innerHTML = `
+    paint(detailEl, `
       <div class="dv-head">
         <button class="dv-back" type="button" id="dv-back" aria-label="Back to the board">‹ Board</button>
         <h2 class="dv-title">${escape(name)} · last ${days.length} days</h2>
@@ -805,20 +1068,20 @@
       </div>
       <p class="dv-note">Bars are tokens your agent spent, read from its own local logs.
         Lines are the account-wide plan limit, recorded from when this board first saw it.
-        They track each other but are not the same measure.</p>`;
+        They track each other but are not the same measure.</p>`);
 
     document.getElementById('dv-back').addEventListener('click', () => { location.hash = ''; });
   }
 
   async function openDetail(source) {
     detailEl.hidden = false;
-    detailEl.innerHTML = '<p class="dv-empty">Loading…</p>';
+    paint(detailEl, '<p class="dv-empty">Loading…</p>');
     try {
       const res = await fetch(`${BASE}/api/usage/history?days=${DETAIL_DAYS}`);
       if (!res.ok) throw new Error(String(res.status));
       renderDetail(source, await res.json());
     } catch {
-      detailEl.innerHTML = '<p class="dv-empty">Could not load usage history.</p>';
+      paint(detailEl, '<p class="dv-empty">Could not load usage history.</p>');
     }
   }
 
@@ -828,7 +1091,7 @@
     const showing = Boolean(m);
     document.body.classList.toggle('detail-open', showing);
     if (showing) openDetail(m[1]);
-    else { detailEl.hidden = true; detailEl.innerHTML = ''; }
+    else { detailEl.hidden = true; paint(detailEl, ''); }
   }
 
   usageEl.addEventListener('click', (e) => {

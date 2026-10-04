@@ -3,12 +3,25 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <meta name="theme-color" content="#0b0d12" />
+  <!-- --ink-950, converted once. A meta cannot read a custom property. -->
+  <meta name="theme-color" content="#0c0f0d" />
   <title>AgStatus</title>
-  <link rel="stylesheet" href="/styles.css" />
+  <!-- Order is load-bearing: tokens, then the components that read them, then
+       the shell around the grid. -->
+  <link rel="stylesheet" href="/tokens.css" />
+  <link rel="stylesheet" href="/board.css" />
+  <link rel="stylesheet" href="/shell.css" />
 </head>
 <body>
-  <span class="conn" id="conn" title="Connection"></span>
+  <header class="topbar">
+    <span class="logo">AgStatus</span>
+    <!-- One bit of information, so it gets one dot. The words are in `title`,
+         and it is no longer `position: fixed` with `pointer-events: none`,
+         which meant the tooltip could never be read. -->
+    <span class="conn" id="conn" title="Connecting…"></span>
+    <span class="topbar-spacer"></span>
+  </header>
+
   <section class="usage" id="usage" aria-label="Plan usage limits" hidden></section>
   <div class="stats" id="stats" hidden></div>
   <section class="detail" id="detail" aria-label="Usage detail" hidden></section>

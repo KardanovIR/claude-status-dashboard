@@ -1,0 +1,555 @@
+/*
+ * AgStatus board — shell.
+ *
+ * board.css styles the cards and the page frame. Everything *around* the grid
+ * lives here: the plan-limit blocks, the status legend, the usage detail route,
+ * the webhook footer and the first-run landing. Same tokens, same rules — this
+ * file invents no colour and no spacing of its own either.
+ *
+ * It exists because the design commit that added tokens.css and board.css was
+ * additive only and never touched index.html, so the board went on loading the
+ * old styles.css: fourteen flat hex tokens, six unmodified Tailwind status
+ * colours and twelve hand-typed rgba tints. board.css covers 54 class names and
+ * the old sheet used 81, and 26 of their selectors were identical with no
+ * property names in common — so loading both rendered the page two-toned in
+ * either order. The old sheet had to be split, not layered. This is the half
+ * that survived, rewritten onto the tokens.
+ */
+
+/* ---- Page frame ---------------------------------------------------------
+ * board.css makes <body> the flex column; these are the parts of it that file
+ * never saw. `main` grows so the footer sits at the bottom of a short board
+ * instead of floating in the middle of one. */
+/* board.css's reset only sets box-sizing. These are the only elements the
+ * board emits that arrive with a margin from the UA. */
+h1,
+h2,
+p { margin: 0; }
+
+main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.empty { grid-column: 1 / -1; }
+
+/* Code is code — a monospace here is the real thing, not shorthand for
+ * "technical". These are literal payloads the reader will copy. */
+.empty code,
+.footer code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--t-xs);
+  color: var(--text-2);
+  background: var(--ink-950);
+  border: 1px solid var(--ink-800);
+  border-radius: var(--r-sm);
+  padding: 3px var(--space-2xs);
+}
+
+.empty a,
+.focus-note a {
+  color: var(--text-2);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--ink-700);
+}
+
+.empty a:hover,
+.focus-note a:hover { color: var(--text-1); }
+
+/* ---- Status legend ------------------------------------------------------
+ * Was six bordered pills in a row — "status pills everywhere" is the
+ * enterprise-admin tell, and at 16px they were louder than the cards they were
+ * counting. A legend's job is to be available, not to be read, so it is now a
+ * quiet line: the dot carries the colour, the count carries the weight.
+ *
+ * All six stay even at zero, because a row that reflows every time a count
+ * changes is movement that reports nothing — and this board animates only when
+ * something actually happened. Zeros recede instead. */
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2xs) var(--space-md);
+  font-size: var(--t-xs);
+  color: var(--text-3);
+}
+
+.stat {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.stat b {
+  color: var(--text-1);
+  font-weight: 600;
+  font-family: var(--font-read);
+  font-size: var(--t-sm);
+  letter-spacing: 0;
+}
+
+.stat.zero { opacity: 0.45; }
+.stat.zero b { color: var(--text-3); }
+
+.stat .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--state);
+  flex: none;
+}
+
+.dot.status-idle { --state: var(--st-idle); }
+.dot.status-planning { --state: var(--st-planning); }
+.dot.status-coding { --state: var(--st-coding); }
+.dot.status-testing { --state: var(--st-testing); }
+.dot.status-blocked { --state: var(--st-blocked); }
+.dot.status-done { --state: var(--st-done); }
+
+/* ---- Plan limits --------------------------------------------------------
+ * One block per agent, up to three across. A plan limit belongs to
+ * (board, agent, window) and never to a session — which is why these sit above
+ * the grid and no card carries a meter. The bars themselves are board.css's
+ * .meter, because that is exactly what it was written for: "a percentage of an
+ * unknown quota — never a token count". */
+.usage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  align-items: stretch;
+}
+
+.usage-block {
+  /* A basis of one third: three blocks sit across, fewer grow to fill. */
+  flex: 1 1 calc(33.333% - var(--space-xs));
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--ink-900);
+  border: 1px solid var(--ink-800);
+  border-radius: var(--r-lg);
+  cursor: pointer;
+  transition: border-color var(--d-fast) var(--ease), background var(--d-fast) var(--ease);
+}
+
+.usage-block:hover {
+  background: var(--ink-850);
+  border-color: var(--ink-700);
+}
+
+.usage-src {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  margin: 0;
+  font-family: var(--font-label);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+/* The affordance for "this opens something". It leans in on hover rather than
+ * sitting there animating — motion on this board reports a change, and a
+ * chevron that drifts on its own reports nothing. */
+.usage-more {
+  flex: none;
+  color: var(--text-3);
+  font-weight: 400;
+  transition: transform var(--d-fast) var(--ease), color var(--d-fast) var(--ease);
+}
+
+.usage-block:hover .usage-more,
+.usage-block:focus-visible .usage-more {
+  color: var(--text-1);
+  transform: translateX(2px);
+}
+
+.meter-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-reset {
+  color: var(--text-3);
+  font-weight: 400;
+  font-family: var(--font-ui);
+}
+
+/* ---- Usage detail ------------------------------------------------------- */
+
+body.detail-open > main,
+body.detail-open > .usage,
+body.detail-open > .stats,
+body.detail-open > .footer { display: none; }
+
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  width: 100%;
+  max-width: 980px;
+  margin: 0 auto;
+}
+
+.dv-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.dv-back {
+  min-height: 34px;
+  padding: var(--space-2xs) var(--space-sm);
+  background: transparent;
+  border: 1px solid var(--ink-800);
+  border-radius: var(--r-md);
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--t-sm);
+  cursor: pointer;
+  transition: background var(--d-fast) var(--ease), color var(--d-fast) var(--ease),
+    border-color var(--d-fast) var(--ease);
+}
+
+.dv-back:hover {
+  background: var(--ink-850);
+  border-color: var(--ink-700);
+  color: var(--text-1);
+}
+
+.dv-title {
+  margin: 0;
+  font-family: var(--font-read);
+  font-size: var(--t-md);
+  font-weight: 600;
+  line-height: var(--lh-tight);
+  color: var(--text-1);
+}
+
+.dv-card {
+  padding: var(--space-sm) var(--space-md);
+  background: var(--ink-900);
+  border: 1px solid var(--ink-800);
+  border-radius: var(--r-lg);
+}
+
+.dv-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-xs);
+}
+
+.dv-card-title {
+  font-size: var(--t-2xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.dv-sub {
+  color: var(--text-2);
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: var(--font-read);
+  font-variant-numeric: tabular-nums;
+}
+
+.dv-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  font-size: var(--t-2xs);
+  color: var(--text-3);
+}
+
+.dv-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.dv-key i {
+  display: inline-block;
+  width: 10px;
+  height: 2px;
+  border-radius: 2px;
+}
+
+/* Scales uniformly from its viewBox: stretching it would distort the axis
+ * labels along with the plot. */
+.dv-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Token spend is not a state, so the bars take the board's accent rather than
+ * borrowing a status colour. An earlier pass drew them in `planning` blue,
+ * which made a chart of tokens look like a chart of planning. */
+.dv-bar {
+  fill: var(--st-done);
+  opacity: 0.5;
+}
+
+.dv-line {
+  fill: none;
+  stroke-width: 1.75;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.dv-grid {
+  stroke: var(--ink-800);
+  stroke-width: 1;
+}
+
+.dv-axis {
+  fill: var(--text-3);
+  font-family: var(--font-label);
+  font-size: 10px;
+}
+
+.dv-axis-r { text-anchor: start; }
+
+.dv-proj + .dv-proj { margin-top: var(--space-xs); }
+
+.dv-proj-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-2xs);
+}
+
+.dv-proj-name {
+  min-width: 0;
+  font-size: var(--t-sm);
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dv-proj-val {
+  flex: none;
+  font-family: var(--font-read);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.dv-proj-pct {
+  margin-left: var(--space-2xs);
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+.dv-proj-track {
+  height: 6px;
+  border-radius: var(--r-sm);
+  background: var(--ink-850);
+  overflow: hidden;
+}
+
+.dv-proj-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--st-done);
+  opacity: 0.5;
+}
+
+.dv-empty {
+  margin: var(--space-2xs) 0;
+  color: var(--text-3);
+  font-size: var(--t-sm);
+}
+
+/* The one place on the board that explains itself, because the chart puts two
+ * units on one axis and nothing else can say that they do not convert. */
+.dv-note {
+  max-width: 68ch;
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--t-2xs);
+  line-height: var(--lh-body);
+}
+
+/* ---- Footer -------------------------------------------------------------
+ * The webhook URL, which is setup rather than triage. It used to be fixed to
+ * the bottom of the viewport behind a blur, which cost every card 104px of
+ * page padding to clear and put a frosted panel over the thing you were
+ * reading. It is the last row of the column now: present when you go looking,
+ * gone when you scroll past it. */
+.footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--ink-800);
+  font-size: var(--t-xs);
+  color: var(--text-3);
+}
+
+.footer .label {
+  flex: none;
+  font-family: var(--font-label);
+  font-size: var(--t-2xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.footer code {
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  user-select: all;
+}
+
+.copy {
+  flex: none;
+  min-height: 34px;
+  padding: var(--space-2xs) var(--space-sm);
+  background: transparent;
+  border: 1px solid var(--ink-800);
+  border-radius: var(--r-md);
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--t-xs);
+  cursor: pointer;
+  transition: background var(--d-fast) var(--ease), color var(--d-fast) var(--ease),
+    border-color var(--d-fast) var(--ease);
+}
+
+.copy:hover {
+  background: var(--ink-850);
+  color: var(--text-1);
+}
+
+.copy.copied {
+  color: var(--st-done);
+  border-color: var(--st-done);
+}
+
+/* A board that demands a secret on writes cannot do bring-to-front from here,
+ * which is a caution about a limit, not an alarm. */
+.auth {
+  flex: none;
+  color: var(--st-limit-warn);
+  font-size: var(--t-2xs);
+}
+
+/* ---- First run ----------------------------------------------------------
+ * The multi-tenant landing. One control, so it can afford to look like one —
+ * and it is the only filled button on the board. */
+.welcome {
+  grid-column: 1 / -1;
+  place-self: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--space-sm);
+  max-width: 46ch;
+  padding: var(--space-xl) var(--space-md);
+}
+
+.welcome h1 {
+  margin: 0;
+  font-family: var(--font-read);
+  font-size: var(--t-xl);
+  font-weight: 700;
+  line-height: var(--lh-tight);
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+
+.welcome p {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--t-md);
+}
+
+.create-board {
+  margin-top: var(--space-xs);
+  min-height: 44px;
+  padding: var(--space-xs) var(--space-lg);
+  background: var(--ink-850);
+  border: 1px solid var(--ink-700);
+  border-radius: var(--r-md);
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--d-fast) var(--ease), border-color var(--d-fast) var(--ease);
+}
+
+.create-board:hover {
+  background: var(--ink-800);
+  border-color: var(--text-3);
+}
+
+.create-board:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.welcome-error {
+  min-height: 1.3em;
+  color: var(--st-blocked);
+  font-size: var(--t-xs);
+}
+
+/* ---- Phone --------------------------------------------------------------
+ * Adapted, not amputated. board.css retunes the cards; these are the shell's
+ * own concessions. */
+@media (max-width: 560px) {
+  /* Half a phone's width fits the limit's name OR its number, not both. */
+  .usage { gap: var(--space-xs); }
+
+  .usage-block {
+    flex: 1 1 calc(50% - var(--space-2xs));
+    min-width: 0;
+    gap: var(--space-xs);
+    padding: var(--space-xs) var(--space-sm);
+    border-radius: var(--r-md);
+  }
+
+  .meter-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
+  }
+
+  .stats { gap: var(--space-2xs) var(--space-sm); }
+
+  .dv-card { padding: var(--space-sm); }
+
+  /* The URL is the long thing in the row and the button must stay reachable. */
+  .footer code { flex: 1 1 100%; }
+}
+
+/* Same rule as board.css applies to the cards: a target you cannot hover is a
+ * target you cannot aim at, so the shell's two buttons grow to Apple's
+ * minimum rather than staying at the 34px a cursor can manage. */
+@media (hover: none) {
+  .copy,
+  .dv-back { min-height: 44px; }
+}

@@ -413,8 +413,8 @@ from the working directory of every event instead of pinning the name at
 </tr>
 <tr>
 <td><code>PermissionRequest</code></td>
-<td><code>blocked</code></td>
-<td>Codex: fires before approval prompts — same push trigger.</td>
+<td><code>blocked</code>, <strong>or nothing</strong></td>
+<td>Codex: fires whenever the model asks to escalate — which is usually answered by Codex itself, not by you. The card turns <code>blocked</code> and pushes only when a human is the reviewer; an escalation Codex approves itself changes nothing and is reported as nothing, so the card keeps the status it had. See <a href="#hooks-who-answers-an-approval">Who answers an approval</a>.</td>
 </tr>
 <tr>
 <td><code>PreToolUse</code> — <code>apply_patch</code></td>
@@ -440,6 +440,87 @@ no descriptions, file names, queries, or command text.</p>
 each command they run, which reads better on a phone than a shell one-liner —
 and keeps flags, paths, and anything secret in the command out of the board.</p>
 </blockquote>
+<h4 id="hooks-who-answers-an-approval"><a class="anchor" href="#hooks-who-answers-an-approval">Who answers an approval</a></h4>
+<p>Codex fires <code>PermissionRequest</code> when the <strong>model asks to escalate</strong>, not when
+<strong>you</strong> are asked. Those are different things, and most escalations never reach
+a human: Codex answers them itself under the session&#39;s approval settings.</p>
+<p>Taking the event at face value is what the hook used to do, and it meant a red
+card and a push notification for work that never paused. It was caught by
+watching a live board: Codex requested an escalation, the card went red, and
+Codex carried straight on to running tests. Nobody had been asked anything.</p>
+<p>The field that tells them apart is <strong><code>approvals_reviewer</code></strong> in the rollout
+log&#39;s <code>turn_context</code> record: <code>user</code> means you, <code>auto_review</code> means Codex. The
+hook reads it from the session&#39;s own log and reports <code>blocked</code> only for <code>user</code>.</p>
+<p>Counted over the 2,097 turns on the machine this was diagnosed on:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th><code>approvals_reviewer</code></th>
+<th align="right">turns</th>
+<th>what the hook does now</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>auto_review</code></td>
+<td align="right">1,418</td>
+<td>nothing — the card is left alone</td>
+</tr>
+<tr>
+<td><code>user</code></td>
+<td align="right">679</td>
+<td><code>blocked</code>, and a push if you have one enabled</td>
+</tr>
+</tbody></table></div>
+<p><strong><code>approval_policy</code> is not the field</strong>, and it is the obvious wrong guess.
+Cross-tabulated over the same logs:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th><code>approval_policy</code></th>
+<th><code>approvals_reviewer</code></th>
+<th align="right">turns</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>on-request</code></td>
+<td><code>auto_review</code></td>
+<td align="right">441</td>
+</tr>
+<tr>
+<td><code>never</code></td>
+<td><code>user</code></td>
+<td align="right">433</td>
+</tr>
+<tr>
+<td><code>never</code></td>
+<td><code>auto_review</code></td>
+<td align="right">396</td>
+</tr>
+</tbody></table></div>
+<p>Gating on <code>approval_policy == &quot;never&quot;</code> would have suppressed 433 requests a
+human genuinely was waiting on — a worse failure than the noise it fixes, since
+a notification you never get is the one thing this product exists to prevent.</p>
+<p>Three things make the read reliable, and all three are load-bearing:</p>
+<ul>
+<li><strong>The log is found by <code>transcript_path</code></strong>, which Codex puts on the payload.
+A rollout file is named by the <em>thread</em> id, which is not the payload&#39;s
+<code>session_id</code>: of the 226 rollouts on that machine, 181 had a filename that
+did not match their own <code>session_meta.session_id</code>.</li>
+<li><strong>The turn is matched by <code>turn_id</code>.</strong> <code>turn_context</code> is written once, at the
+start of a turn, so the last record in a log can belong to a turn that began
+a minute later. Where the payload names no turn, the newest record is used as
+a deliberate approximation — correct while a turn is in flight, which is when
+the hook runs.</li>
+<li><strong>Unknown means <code>blocked</code>.</strong> If the log cannot be found, cannot be attributed
+to this session, or carries no <code>turn_context</code>, the hook reports <code>blocked</code>
+exactly as it always did. Only a positive <code>auto_review</code> suppresses anything.</li>
+</ul>
+<p>A blocked card now shows the model&#39;s own written-out question — &quot;May I run the
+readiness tests in a fresh disposable PostgreSQL cluster?&quot; — taken from
+<code>tool_input.description</code>, instead of the generic &quot;Needs approval&quot;.
+<code>--minimal</code> still replaces it with the generic label.</p>
+<p>The reasoning, and the capture that found it, are in
+<a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/docs/design/codex-approvals.md">docs/design/codex-approvals.md</a>.</p>
 <h4 id="hooks-what-each-status-means"><a class="anchor" href="#hooks-what-each-status-means">What each status means</a></h4>
 <div class="table-wrap"><table>
 <thead>
@@ -585,15 +666,23 @@ something reports it.</p>
 no usage API breaks the limit down by project. So the hook also reads the logs
 each agent already keeps locally (<code>~/.claude/projects/**/*.jsonl</code>,
 <code>$CODEX_HOME/sessions/**/rollout-*.jsonl</code>), totals tokens per project per UTC
-day, and reports those (<code>POST &lt;board&gt;/usage/projects</code>). Only a folder name, a
-date and a number leave your machine — never prompts, code or conversation.</p>
+day, and reports those (<code>POST &lt;board&gt;/usage/projects</code>), plus a lifetime total
+per session (<code>POST &lt;board&gt;/usage/sessions</code>). Only a folder name, a session id
+your coding tool generated, a date and a number leave your machine — never
+prompts, code or conversation.</p>
 <p>Reported tokens are input + output + cache creation. Cache reads are excluded:
 they are ~94% of raw token volume but a small share of what a limit charges,
 and counting them ranks projects by context size rather than by spend.</p>
-<p><strong>These totals are keyed by folder, never by card name or session id.</strong> Tokens
-are bucketed per project folder per UTC day and summed across every session
-that spent them there, so one row on the usage screen can be the work of three
-sessions, and one session can appear in two rows. Claude Code stamps every
+<p><strong>The per-day totals are keyed by folder, never by card name.</strong> Tokens are
+bucketed per project folder per UTC day and summed across every session that
+spent them there, so one row on the usage screen can be the work of three
+sessions, and one session can appear in two rows.</p>
+<p>The per-session totals answer the question that bucketing cannot: <em>which</em>
+session. They are lifetime figures keyed by the session id your coding tool
+already generated — the same id the card carries — and they are absolute
+totals rather than deltas, so a lost report costs a stale number and never a
+wrong one. Two agents working in one repo were indistinguishable before this;
+they are two rows now. This is what the number on a card&#39;s meta line is. Claude Code stamps every
 assistant record in its transcript with the directory it was made in, so a
 session that starts in one project and <code>cd</code>s into another has its spend split
 at the moment it moved: part lands under the first folder, the rest under the

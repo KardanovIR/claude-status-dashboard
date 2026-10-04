@@ -87,6 +87,17 @@ const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 // well past the largest gap seen between two rate_limits records (~257KB), so
 // one big tool output written after the last one can't push it out of range.
 const CODEX_ROLLOUT_TAIL_BYTES = 1024 * 1024;
+/**
+ * How far back to look for a `turn_context`, widening until one is found.
+ *
+ * Unlike a rate_limits block — appended after every turn, so always near the
+ * end — Codex writes turn_context ONCE, at the start of a turn. A turn with a
+ * lot of tool calls buries it: measured across the rollouts on this machine the
+ * median sits 94 KB from the end and the worst 1.37 MB, so the 1 MB tail used
+ * for rate limits would have missed it outright. Most reads stop at the first
+ * step.
+ */
+const CODEX_TURN_CONTEXT_WINDOWS = [256 * 1024, 1024 * 1024, 4 * 1024 * 1024];
 // Logs to try before giving up: the session's own, then recent siblings.
 const CODEX_ROLLOUT_CANDIDATES = 3;
 // The server accepts at most this many windows in one usage report.
@@ -511,8 +522,19 @@ function codexHome() {
 
 /**
  * Rollout logs to try, best first: the session's own, then recent siblings.
- * Files live at <home>/sessions/YYYY/MM/DD/rollout-<timestamp>-<id>.jsonl, so
- * the session id from the hook payload names the file directly.
+ *
+ * `transcriptPath` is the only RELIABLE way to name the session's own log, and
+ * it comes free on the payload. Files live at
+ * <home>/sessions/YYYY/MM/DD/rollout-<timestamp>-<id>.jsonl, and that <id> is
+ * the thread id — NOT the `session_id` the hook payload carries. They coincide
+ * sometimes and usually do not: of the 226 rollouts on the machine this was
+ * diagnosed on, 181 had a filename id that differed from their own
+ * session_meta.session_id. This function used to match the payload's
+ * session_id against the filename and therefore found `own` about one time in
+ * five; the rest of the time it silently fell through to the sibling list and
+ * got the right answer anyway, because the newest sibling usually IS the
+ * session's own log. That accident is fine for account-wide rate limits and
+ * useless for anything that has to be about THIS session.
  *
  * Siblings matter even when the session's own log is found: Codex writes its
  * first rate_limits block only when a turn completes, so at SessionStart the
@@ -521,9 +543,27 @@ function codexHome() {
  * visited newest-first; names are timestamp-prefixed, so a lexicographic sort
  * is chronological and no stat() calls are needed.
  */
-function findCodexRollouts(sessionId) {
+/**
+ * A payload's `transcript_path`, if it really is a readable rollout log.
+ * Checked rather than trusted: a stale or foreign path must not shadow the
+ * directory scan, and must never be mistaken for this session's own log.
+ */
+function codexRolloutFromPath(transcriptPath) {
+  if (typeof transcriptPath !== 'string' || transcriptPath === '') return '';
+  const base = path.basename(transcriptPath);
+  if (!base.startsWith('rollout-') || !base.endsWith('.jsonl')) return '';
+  try {
+    return fs.statSync(transcriptPath).isFile() ? transcriptPath : '';
+  } catch {
+    return '';
+  }
+}
+
+function findCodexRollouts(sessionId, transcriptPath) {
   const root = path.join(codexHome(), 'sessions');
   const suffix = sessionId ? `-${sessionId}.jsonl` : '';
+
+  const named = codexRolloutFromPath(transcriptPath);
   const subdirs = (dir) => {
     try {
       return fs
@@ -556,14 +596,133 @@ function findCodexRollouts(sessionId) {
         }
         for (const n of names) {
           const full = path.join(dir, n);
+          if (full === named) continue; // already first in the list
           if (suffix && n.endsWith(suffix)) own = own || full;
           else if (siblings.length < CODEX_ROLLOUT_CANDIDATES) siblings.push(full);
         }
-        if (done()) return own ? [own, ...siblings] : siblings;
+        if (done()) break;
+      }
+      if (done()) break;
+    }
+    if (done()) break;
+  }
+  const rest = own ? [own, ...siblings] : siblings;
+  return named ? [named, ...rest] : rest;
+}
+
+/**
+ * The `turn_context` for a turn: who answers an approval request in it.
+ *
+ * Codex writes one of these per turn, at the turn's START — a second after
+ * `task_started` and before any tool call — so by the time a PermissionRequest
+ * hook runs, the current turn's record is already on disk. That is what makes
+ * this readable at all.
+ *
+ * `turnId` picks the right one. Taking simply the last record in the file is
+ * WRONG once a turn has ended: the next turn writes its own context, and the
+ * one sitting at the end of the log can belong to a turn that started over a
+ * minute later. The newest is only used when the payload named no turn, and
+ * then it is an approximation — correct while a turn is in flight, which is
+ * when this is called, and that is the whole of the argument for it.
+ */
+function readCodexTurnContext(file, turnId) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const size = fs.fstatSync(fd).size;
+    let newest = null;
+    for (const window of CODEX_TURN_CONTEXT_WINDOWS) {
+      const start = Math.max(0, size - window);
+      const buf = Buffer.alloc(size - start);
+      // readSync may return short; loop rather than trust one call, or the
+      // unread tail is silently skipped (same reasoning as readLogSlice).
+      let filled = 0;
+      for (;;) {
+        const got = fs.readSync(fd, buf, filled, buf.length - filled, start + filled);
+        if (got <= 0 || filled >= buf.length) break;
+        filled += got;
+      }
+      const lines = buf.subarray(0, filled).toString('utf8').split('\n');
+      // Starting mid-file leaves a truncated first line; it can never parse.
+      if (start > 0) lines.shift();
+      for (let i = lines.length - 1; i >= 0; i -= 1) {
+        const line = lines[i];
+        if (line.indexOf('"turn_context"') === -1) continue;
+        let obj;
+        try {
+          obj = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (!obj || obj.type !== 'turn_context') continue;
+        const tc = obj.payload;
+        if (!tc || typeof tc !== 'object' || typeof tc.approvals_reviewer !== 'string') continue;
+        if (turnId && tc.turn_id === turnId) return tc;
+        if (!newest) newest = tc;
+      }
+      if (start === 0) break;       // whole file read; nothing more to widen to
+      if (!turnId && newest) break; // no turn to match: the newest is the answer
+    }
+    return newest;
+  } catch (err) {
+    dbg(`codex turn_context read failed: ${err && err.message ? err.message : String(err)}`);
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* nothing we can do */
       }
     }
   }
-  return own ? [own, ...siblings] : siblings;
+}
+
+/**
+ * Who answers the approval request this payload is about: 'user',
+ * 'auto_review', or '' when it cannot be determined.
+ *
+ * Codex fires PermissionRequest whenever the model asks to escalate, whoever
+ * ends up answering — so the event alone does NOT mean a human is waiting. On
+ * the machine this was diagnosed on, 1418 of 2097 turns were `auto_review`:
+ * roughly two in three `blocked` pushes were for nothing.
+ *
+ * `approval_policy` is NOT the discriminator, and is worth naming because it is
+ * the obvious wrong guess. Cross-tabulated over the same logs:
+ *     441  approval_policy="on-request"  approvals_reviewer="auto_review"
+ *     433  approval_policy="never"       approvals_reviewer="user"
+ *     396  approval_policy="never"       approvals_reviewer="auto_review"
+ * Gating on `policy === "never"` would have suppressed 433 requests a human was
+ * genuinely waiting on, which is a far worse failure than the noise it fixes.
+ */
+function codexApprovalReviewer(payload, transcriptPath) {
+  const sessionId = typeof payload.session_id === 'string' ? payload.session_id : '';
+  const turnId = typeof payload.turn_id === 'string' ? payload.turn_id : '';
+
+  // Only a log positively attributable to THIS session can answer this, so the
+  // sibling list that findCodexRollouts falls back on is deliberately not used:
+  // rate limits are account-wide and a sibling reports the same numbers, but a
+  // sibling's turn_context belongs to a different conversation, and reading
+  // `auto_review` out of one would silence a request a human really is waiting
+  // on. Unattributable means unknown, and unknown reports blocked.
+  let own = codexRolloutFromPath(transcriptPath);
+  if (!own && sessionId) {
+    const suffix = `-${sessionId}.jsonl`;
+    own = findCodexRollouts(sessionId, '').find((f) => path.basename(f).endsWith(suffix)) || '';
+  }
+  if (!own) {
+    dbg('no attributable Codex rollout log for the approval check');
+    return '';
+  }
+  const tc = readCodexTurnContext(own, turnId);
+  if (!tc) {
+    dbg(`no turn_context in ${path.basename(own)}`);
+    return '';
+  }
+  if (turnId && tc.turn_id !== turnId) {
+    dbg(`turn_context for ${tc.turn_id} used in place of ${turnId}`);
+  }
+  return tc.approvals_reviewer;
 }
 
 /**
@@ -739,8 +898,8 @@ function windowsFromCodexBuckets(blocks) {
 }
 
 /** Plan usage for a Codex run, read entirely from local state. */
-function readCodexUsage(sessionId) {
-  const files = findCodexRollouts(sessionId);
+function readCodexUsage(sessionId, transcriptPath) {
+  const files = findCodexRollouts(sessionId, transcriptPath);
   if (files.length === 0) {
     dbg('no Codex rollout log found');
     return null;
@@ -1233,7 +1392,7 @@ async function reportProjectUsage(base, full) {
   return rows.length + sessionRows.length;
 }
 
-async function maybeReportUsage(base, sessionId) {
+async function maybeReportUsage(base, sessionId, transcriptPath) {
   if (process.env.AGSTATUS_USAGE === 'off') return;
   // Each agent reports from its own source and only its own: Claude reads
   // Claude Code's OAuth credentials, Codex reads Codex's rollout log. A Codex
@@ -1276,7 +1435,7 @@ async function maybeReportUsage(base, sessionId) {
     // SessionStart the log reliably has no limits yet — so the slot is claimed
     // only once there is something to send. Claiming first would silence a
     // session's first bars for the whole throttle window.
-    usage = readCodexUsage(sessionId);
+    usage = readCodexUsage(sessionId, transcriptPath);
     if (!usage) return;
     if (!claimSlot()) return;
   } else {
@@ -2202,6 +2361,13 @@ async function main() {
     return;
   }
 
+  // Hoisted above the status decision: on Codex this names the rollout log the
+  // approval check reads, and that decision happens before anything is posted.
+  const transcript =
+    typeof payload.transcript_path === 'string' && path.isAbsolute(payload.transcript_path)
+      ? payload.transcript_path
+      : '';
+
   let status = '';
   let message = '';
 
@@ -2211,18 +2377,48 @@ async function main() {
     // end is `done` (see Stop, below), not idle.
     status = 'idle';
     message = 'Session started';
-  } else if (event === 'Notification' || event === 'PermissionRequest') {
-    // Claude Code fires Notification; Codex fires PermissionRequest before
-    // approval prompts. Both mean "a human needs to look at this".
+  } else if (event === 'Notification') {
+    // Claude Code fires this for permission prompts and other attention-needed
+    // events. It means what it says: a human is being asked.
     status = 'blocked';
-    const generic = event === 'PermissionRequest' ? 'Needs approval' : 'Needs input';
     // The prompt text can quote the command awaiting approval, so honor the
     // privacy switch here too: minimal mode sends only the generic label.
-    message = MINIMAL
-      ? generic
-      : typeof payload.message === 'string' && payload.message !== ''
-        ? payload.message
-        : generic;
+    message =
+      MINIMAL || typeof payload.message !== 'string' || payload.message === ''
+        ? 'Needs input'
+        : payload.message;
+  } else if (event === 'PermissionRequest') {
+    // Codex fires this whenever the model asks to ESCALATE — not when a human
+    // is asked. Most escalations are answered by Codex itself, so taking the
+    // event at face value sent a push for nothing roughly two times in three.
+    // See codexApprovalReviewer for the counts and for why `approval_policy`
+    // is the wrong field to gate on.
+    //
+    // Unknown reports blocked. A missed notification defeats the product; an
+    // extra one is the noise we already had.
+    if (codexApprovalReviewer(payload, transcript) === 'auto_review') {
+      // Codex approved its own request and carried on. Nothing changed that a
+      // board should show, so the card keeps the status it already had rather
+      // than being told anything — the usage report below still runs.
+      dbg('PermissionRequest auto-approved; no status change');
+      status = '';
+    } else {
+      status = 'blocked';
+      // `tool_input.description` is the model's own written-out question —
+      // "May I run the readiness tests in a fresh disposable PostgreSQL
+      // cluster…" — which is the single most useful thing a blocked card can
+      // say, and it is already on stdin. `message` is the fallback for payload
+      // shapes that carry one instead.
+      const ti =
+        payload.tool_input && typeof payload.tool_input === 'object' ? payload.tool_input : {};
+      const asked = [ti.description, payload.message].find(
+        (v) => typeof v === 'string' && v.trim() !== ''
+      );
+      message =
+        MINIMAL || asked === undefined
+          ? 'Needs approval'
+          : str(asked).replace(/\s+/g, ' ').slice(0, COMMAND_MAX);
+    }
   } else if (event === 'UserPromptSubmit') {
     // The user just answered — flip the card away from blocked/idle right now,
     // not at the first tool call (which may come much later, or never for a
@@ -2299,16 +2495,18 @@ async function main() {
     project,
     source: SOURCE,
   };
-  // Focus (opt-in): where this session lives, in three labels. Awaited before
-  // the post because the post carries it; once cached it costs one file read.
-  const transcript =
-    typeof payload.transcript_path === 'string' && path.isAbsolute(payload.transcript_path)
-      ? payload.transcript_path
-      : '';
-  const host = await hostSummary(base, session, cwd, transcript).catch(() => undefined);
-  if (host !== undefined) body.host = host;
-
-  const statusPost = send('POST', `${base}/webhook`, body);
+  // An auto-approved Codex escalation leaves the card exactly as it was, so
+  // there is nothing to post and no host to look up for it. The usage and
+  // project reports below still run — the event is a fine moment to refresh
+  // bars, it just is not a state change.
+  let statusPost = Promise.resolve();
+  if (status !== '') {
+    // Focus (opt-in): where this session lives, in three labels. Awaited before
+    // the post because the post carries it; once cached it costs one file read.
+    const host = await hostSummary(base, session, cwd, transcript).catch(() => undefined);
+    if (host !== undefined) body.host = host;
+    statusPost = send('POST', `${base}/webhook`, body);
+  }
   // Claude's report costs a network round trip, so it stays off PreToolUse,
   // which fires between every tool call. Codex reads a local file instead, and
   // PreToolUse is most of what Codex fires at all (its only other events are
@@ -2318,7 +2516,7 @@ async function main() {
   const usagePost =
     event === 'PreToolUse' && SOURCE !== 'codex'
       ? Promise.resolve()
-      : maybeReportUsage(base, session);
+      : maybeReportUsage(base, session, transcript);
   // Same reasoning as the usage report, and cheaper: off-slot runs stop at the
   // throttle file, and a run that does scan is capped by its byte budget.
   const projectPost =

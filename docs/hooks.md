@@ -205,7 +205,7 @@ from the working directory of every event instead of pinning the name at
 | `PreToolUse` — `Bash` (other)                                   | `coding`       | Card shows the agent's own one-line description of the command ("Show working tree status"), falling back to the command text when none was supplied. |
 | `PreToolUse` — `Task` / `WebSearch` / `WebFetch`                | `planning`     | Card shows what is being looked for — the subagent's task description, "Searching: &lt;query&gt;", or "Reading &lt;host&gt;". |
 | `Notification`                                                  | `blocked`      | Claude Code: permission prompts and other attention-needed events — this is what triggers a push. |
-| `PermissionRequest`                                             | `blocked`      | Codex: fires before approval prompts — same push trigger. |
+| `PermissionRequest`                                             | `blocked`, **or nothing** | Codex: fires whenever the model asks to escalate — which is usually answered by Codex itself, not by you. The card turns `blocked` and pushes only when a human is the reviewer; an escalation Codex approves itself changes nothing and is reported as nothing, so the card keeps the status it had. See [Who answers an approval](#who-answers-an-approval). |
 | `PreToolUse` — `apply_patch`                                    | `coding`       | Codex's file-edit tool; the card shows "Editing files". |
 | `Stop`                                                          | `done`         | The agent finished its turn: the answer is on screen and it is waiting for your next prompt. The card reads "Turn finished", and this is the transition an opt-in push fires on. A turn you interrupt fires no `Stop` at all, so that card keeps its last tool status until the session's next event. |
 | `SessionEnd`                                                    | _card removed_ | Claude Code only — the hook calls `DELETE /sessions/:id` so the card disappears. Codex has no session-end hook; its cards expire via the server's session TTL instead. |
@@ -217,6 +217,64 @@ no descriptions, file names, queries, or command text.
 > **Why descriptions instead of commands?** Agents write a short description of
 > each command they run, which reads better on a phone than a shell one-liner —
 > and keeps flags, paths, and anything secret in the command out of the board.
+
+### Who answers an approval
+
+Codex fires `PermissionRequest` when the **model asks to escalate**, not when
+**you** are asked. Those are different things, and most escalations never reach
+a human: Codex answers them itself under the session's approval settings.
+
+Taking the event at face value is what the hook used to do, and it meant a red
+card and a push notification for work that never paused. It was caught by
+watching a live board: Codex requested an escalation, the card went red, and
+Codex carried straight on to running tests. Nobody had been asked anything.
+
+The field that tells them apart is **`approvals_reviewer`** in the rollout
+log's `turn_context` record: `user` means you, `auto_review` means Codex. The
+hook reads it from the session's own log and reports `blocked` only for `user`.
+
+Counted over the 2,097 turns on the machine this was diagnosed on:
+
+| `approvals_reviewer` | turns | what the hook does now |
+| --- | ---: | --- |
+| `auto_review` | 1,418 | nothing — the card is left alone |
+| `user` | 679 | `blocked`, and a push if you have one enabled |
+
+**`approval_policy` is not the field**, and it is the obvious wrong guess.
+Cross-tabulated over the same logs:
+
+| `approval_policy` | `approvals_reviewer` | turns |
+| --- | --- | ---: |
+| `on-request` | `auto_review` | 441 |
+| `never` | `user` | 433 |
+| `never` | `auto_review` | 396 |
+
+Gating on `approval_policy == "never"` would have suppressed 433 requests a
+human genuinely was waiting on — a worse failure than the noise it fixes, since
+a notification you never get is the one thing this product exists to prevent.
+
+Three things make the read reliable, and all three are load-bearing:
+
+- **The log is found by `transcript_path`**, which Codex puts on the payload.
+  A rollout file is named by the *thread* id, which is not the payload's
+  `session_id`: of the 226 rollouts on that machine, 181 had a filename that
+  did not match their own `session_meta.session_id`.
+- **The turn is matched by `turn_id`.** `turn_context` is written once, at the
+  start of a turn, so the last record in a log can belong to a turn that began
+  a minute later. Where the payload names no turn, the newest record is used as
+  a deliberate approximation — correct while a turn is in flight, which is when
+  the hook runs.
+- **Unknown means `blocked`.** If the log cannot be found, cannot be attributed
+  to this session, or carries no `turn_context`, the hook reports `blocked`
+  exactly as it always did. Only a positive `auto_review` suppresses anything.
+
+A blocked card now shows the model's own written-out question — "May I run the
+readiness tests in a fresh disposable PostgreSQL cluster?" — taken from
+`tool_input.description`, instead of the generic "Needs approval".
+`--minimal` still replaces it with the generic label.
+
+The reasoning, and the capture that found it, are in
+[docs/design/codex-approvals.md](design/codex-approvals.md).
 
 ### What each status means
 
@@ -354,17 +412,26 @@ The bars answer "how much of the plan is left", not "which project spent it" —
 no usage API breaks the limit down by project. So the hook also reads the logs
 each agent already keeps locally (`~/.claude/projects/**/*.jsonl`,
 `$CODEX_HOME/sessions/**/rollout-*.jsonl`), totals tokens per project per UTC
-day, and reports those (`POST <board>/usage/projects`). Only a folder name, a
-date and a number leave your machine — never prompts, code or conversation.
+day, and reports those (`POST <board>/usage/projects`), plus a lifetime total
+per session (`POST <board>/usage/sessions`). Only a folder name, a session id
+your coding tool generated, a date and a number leave your machine — never
+prompts, code or conversation.
 
 Reported tokens are input + output + cache creation. Cache reads are excluded:
 they are ~94% of raw token volume but a small share of what a limit charges,
 and counting them ranks projects by context size rather than by spend.
 
-**These totals are keyed by folder, never by card name or session id.** Tokens
-are bucketed per project folder per UTC day and summed across every session
-that spent them there, so one row on the usage screen can be the work of three
-sessions, and one session can appear in two rows. Claude Code stamps every
+**The per-day totals are keyed by folder, never by card name.** Tokens are
+bucketed per project folder per UTC day and summed across every session that
+spent them there, so one row on the usage screen can be the work of three
+sessions, and one session can appear in two rows.
+
+The per-session totals answer the question that bucketing cannot: *which*
+session. They are lifetime figures keyed by the session id your coding tool
+already generated — the same id the card carries — and they are absolute
+totals rather than deltas, so a lost report costs a stale number and never a
+wrong one. Two agents working in one repo were indistinguishable before this;
+they are two rows now. This is what the number on a card's meta line is. Claude Code stamps every
 assistant record in its transcript with the directory it was made in, so a
 session that starts in one project and `cd`s into another has its spend split
 at the moment it moved: part lands under the first folder, the rest under the

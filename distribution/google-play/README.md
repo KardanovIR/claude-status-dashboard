@@ -23,19 +23,35 @@ distribution/google-play/
 
 ## Checklist
 
+App version: **`versionName 1.6.0`, `versionCode 5`** (`android/app/build.gradle.kts`).
+The checklist below was written against 1.1.0 / versionCode 1 and the app has
+moved four releases since, so read the rows in bold before uploading anything.
+
 | Step | Status |
 | --- | --- |
-| Signed App Bundle built (`versionName 1.1.0`, `versionCode 1`) | **done** |
 | Upload key created, stored outside the repo | **done** |
-| Icon, feature graphic, screenshots at Play's required sizes | **done** |
-| Listing copy within every character limit | **done** |
+| Listing copy within every character limit | **done** — re-counted for 1.6.0 |
 | Data safety answers derived from the code | **done** — transcribe into Console |
 | Content rating + app content declarations | **done** — transcribe into Console |
 | Privacy policy URL — https://agstatus.online/privacy | **done**, already live |
+| **Screenshots regenerated against 1.6.0** | **done** — the redesign changed every surface |
+| **Icon and feature graphic regenerated** | **TODO** — both still use the retired palette |
+| **Signed App Bundle rebuilt at versionCode 5** | **TODO** — `scripts/build-play-bundle.sh` |
 | Create the app in Play Console and pay the one-time $25 registration | you |
 | Upload the bundle to a track (internal testing first) | you |
 | Fill Data safety, content rating, and app content from the docs here | you |
 | Countries, pricing (free), and rollout | you |
+
+### The two graphics still to redo
+
+`graphics/icon-512.png` and `graphics/feature-graphic.png` were exported from
+the palette this project retired in 1.5 — the near-black `#0B0D12` ground with
+Tailwind's `blue-500` / `purple-500` / `amber-500` on it. The launcher icon in
+the app itself (`res/drawable/ic_launcher_foreground.xml`) has been ported and
+is the reference: four solid tiles, planning `#D4A3DF`, coding `#78B2DB`,
+testing `#69BABF`, done `#69C88E`, on `#0C0F0D`. Play wants PNG with no alpha
+at 512×512 and 1024×500, and nothing in this repo renders that vector to one,
+so both need exporting by hand.
 
 ## Rebuilding the bundle
 
@@ -62,6 +78,16 @@ Captured from the emulator in demo mode, so nothing personal appears and the
 board is populated without pairing a machine. Play caps phone screenshots at a
 2:1 aspect ratio, so these are 1080×1920 (16:9) rather than the emulator's
 native 1080×2400, which would be rejected.
+
+The APK they are captured from comes from CI, not from this Mac: AGP 8.13 needs
+JDK 17 and this machine has 11 and 8. The `Android (build + tests)` job keeps
+`agstatus-debug-apk` for fourteen days.
+
+```bash
+gh run download <run-id> -n agstatus-debug-apk -D /tmp/apk
+adb uninstall com.kardanov.agstatus   # CI signs with its own debug key
+adb install /tmp/apk/app-debug.apk
+```
 
 | # | File | Shows |
 | --- | --- | --- |
@@ -94,5 +120,9 @@ adb shell wm size reset && adb shell wm density reset
   appear only as interoperability statements, with an explicit disclaimer in
   the full description. Play rejects listings that imply a relationship with
   another brand.
-- **versionCode 1** is correct for the first upload. Every later upload needs a
-  higher one, even for a rejected build.
+- **Every upload needs a higher versionCode than the last**, including the
+  replacement for a rejected build. Nothing has been uploaded yet, so 5 is
+  simply the next number after the four versions this repo has released.
+- **The screenshots have to match the build.** Play rejects listings whose
+  images do not show the app as submitted, and the 1.5 redesign changed every
+  surface of it: palette, card, status marks, controls.

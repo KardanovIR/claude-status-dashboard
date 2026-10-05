@@ -4,19 +4,21 @@ AgStatus is an independent open-source project that plugs into the hook systems 
 
 How it works
 
-A small hook script on your computer posts a short update whenever an agent starts a session, edits a file, runs a command, or gets stuck. Your board server keeps those updates and streams them to the app. One command sets the whole thing up: npx agstatus init.
+A small hook script on your computer posts a short update whenever an agent starts a session, edits a file, runs a command, or gets stuck. Your board server keeps those updates and streams them to the app. One command sets the whole thing up: curl -fsSL https://agstatus.online/install.sh | sh
 
 The app is a companion for a machine where agents run. It reads your board; it does not run agents on the phone.
 
 On the board
 
-- One card per session, showing the project folder, a color-coded status, and the current activity line.
-- Six plain statuses: idle, planning, coding, testing, blocked, done.
+- One card per session: the name, the current activity line, and which machine it is running on.
+- Six plain statuses - idle, planning, coding, testing, blocked, done - each with its own mark as well as its own colour, so the board reads the same if you cannot tell red from green.
 - Sessions from both supported agents land on the same board.
 - A streaming connection keeps cards current, with a dot in the toolbar for the connection state.
 - Tap a card for its timeline: every status change with a timestamp, newest first.
 - Usage bars for plan limit windows, with the share used and when the window resets.
+- Tap Focus on a card and the Mac running that session brings its terminal window, tab or pane to the front. If the session has already ended, the card offers Resume instead and the Mac starts it again where it left off.
 - Pull to refresh. Swipe a card away once you are done with that session.
+- Nothing on the board animates for its own sake. A card moves when it has news, and the system setting for reduced animation is honoured.
 
 Getting connected
 
@@ -36,7 +38,7 @@ The server, the web dashboard, the command-line tool, and this app are MIT licen
 
 What actually leaves your computer
 
-Your machine sends the board a session id, the project folder name, one status word, a short activity line, and timestamps. Nothing else. Command text can be switched off, so messages carry only tool names, and usage reporting can be switched off too. On the hosted server, sessions are removed 24 hours after their last update, and boards untouched for 60 days are removed entirely. You can delete a board and everything on it from Settings, whenever you like.
+Your machine sends the board a session id, the project folder name, one status word, a short activity line, and timestamps. Nothing else. Command text can be switched off, so messages carry only tool names, and usage reporting can be switched off too. On the hosted server, sessions stop being shown or served 24 hours after their last update, and boards untouched for 60 days go the same way. You can delete a board and everything on it from Settings, whenever you like.
 
 Privacy policy: https://agstatus.online/privacy
 Source code: https://github.com/KardanovIR/claude-status-dashboard

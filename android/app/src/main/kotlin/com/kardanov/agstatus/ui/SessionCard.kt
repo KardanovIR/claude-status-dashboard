@@ -1,5 +1,6 @@
 package com.kardanov.agstatus.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -7,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -387,20 +389,34 @@ private fun FocusButton(
     Button(
         onClick = onClick,
         enabled = enabled,
-        modifier = modifier.semantics {
-            contentDescription = description
-            if (!enabled && disabledReason != null) stateDescription = disabledReason
-        },
+        shape = RoundedCornerShape(10.dp),
+        modifier = modifier
+            // 44dp, the comfortable target. The side padding is deliberately
+            // modest: this sits on a card, and width here comes off the name.
+            .defaultMinSize(minHeight = 44.dp)
+            .semantics {
+                contentDescription = description
+                if (!enabled && disabledReason != null) stateDescription = disabledReason
+            },
+        // NOT the accent, though it is the card's only control.
+        //
+        // Filled in accent green it became the loudest thing on the card by a
+        // wide margin — a 56dp saturated pill against a 20sp name — and a card
+        // with two loudest elements has failed the first design principle. The
+        // state is what you read; this is what you do about it, and it waits.
+        // iOS's FocusButtonStyle is the same raised surface and hairline.
+        //
+        // Disabled drops to the card surface rather than rising above it, so
+        // "no listener on that machine" reads as recessed at a glance and not
+        // only in the label's brightness.
         colors = ButtonDefaults.buttonColors(
-            // Theme.onAccent, not white. White on the accent measures 2.05:1;
-            // this is 9.41:1. The blue this used to be was already failing at
-            // 2.72:1 with white on it.
-            containerColor = Theme.accent,
-            contentColor = Theme.onAccent,
-            disabledContainerColor = Theme.cardBorder,
-            disabledContentColor = Theme.textSecondary,
+            containerColor = Theme.raised,
+            contentColor = Theme.textPrimary,
+            disabledContainerColor = Theme.card,
+            disabledContentColor = Theme.textTertiary,
         ),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+        border = BorderStroke(1.dp, Theme.cardBorder),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
     ) {
         Icon(
             imageVector = icon,

@@ -1,6 +1,7 @@
 package com.kardanov.agstatus.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.History
@@ -180,10 +182,12 @@ private fun HistoryHeader(session: Session) {
                 color = Theme.textSecondary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                // Bordered, not filled — the same box the card draws around
+                // its agent name. A filled pill is the badge shape this
+                // redesign took off every other surface.
                 modifier = Modifier
-                    .clip(CircleShape)
-                    .background(Theme.cardBorder)
-                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                    .border(1.dp, Theme.cardBorder, RoundedCornerShape(4.dp))
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
             )
         }
         Spacer(Modifier.weight(1f))
@@ -252,31 +256,17 @@ private fun HistoryTimelineRow(
                     .height(10.dp)
                     .background(if (isFirst) Color.Transparent else Theme.cardBorder)
             )
+            // One size of dot, all the way down. The newest event used to get a
+            // halo of its own colour at 25% behind it, which worked out as a
+            // 1.5dp ring you cannot see — decoration too faint to be data. What
+            // marks the newest event is that its message is the only one in
+            // textPrimary, and that it is at the top.
             Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(12.dp)
-                    .then(
-                        // The newest event sits in a halo of its own colour at
-                        // 25% — a ring, not a glow: it is drawn behind the dot
-                        // rather than bled outwards, so it reads as a marker and
-                        // not as light. Nothing in this app glows now.
-                        if (isFirst) {
-                            Modifier
-                                .clip(CircleShape)
-                                .background(color.copy(alpha = 0.25f))
-                        } else {
-                            Modifier
-                        }
-                    ),
-            ) {
-                Box(
-                    Modifier
-                        .size(9.dp)
-                        .clip(CircleShape)
-                        .background(color)
-                )
-            }
+                Modifier
+                    .size(9.dp)
+                    .clip(CircleShape)
+                    .background(color)
+            )
             Box(
                 Modifier
                     .width(2.dp)
@@ -300,9 +290,12 @@ private fun HistoryTimelineRow(
                     imageVector = Theme.iconFor(event.status),
                     contentDescription = null,
                     tint = color,
+                    // Bottom-aligned in a row that is baseline-aligned for the
+                    // text, so without this the glyph hangs a descender's depth
+                    // below the word it labels.
                     modifier = Modifier
                         .size(14.dp)
-                        .padding(end = 1.dp),
+                        .padding(bottom = 3.dp),
                 )
                 Spacer(Modifier.width(5.dp))
                 Text(

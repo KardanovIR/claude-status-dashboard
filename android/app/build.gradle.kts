@@ -24,8 +24,11 @@ android {
         applicationId = "com.kardanov.agstatus"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.5.0"
+        // versionCode is Play's monotonic counter and has nothing to do with
+        // versionName: every upload needs a higher one, including a rejected
+        // build's replacement. versionName tracks this repo's releases.
+        versionCode = 5
+        versionName = "1.6.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

@@ -1,4 +1,5 @@
-- Tap a session to bring its terminal to the front on the Mac running it — the app tells that machine, and the window, tab or pane comes forward.
-- If the session has already ended, the card offers Resume: the Mac starts it again where it left off.
-- A card no longer shows a false "no answer" when the Mac is just slow — a late reply now corrects it instead of being discarded.
-- Machines you own appear on the board with their name, and show when one is offline.
+- The board is redesigned: low-glare dark surfaces for late-night use, and every card tinted by what its session is doing.
+- Each status now has a mark as well as a colour, so the board reads the same if you cannot tell red from green.
+- A card shows which machine its session runs on.
+- Nothing pulses any more. A card moves when it has news, and reduced-animation settings are honoured.
+- A finished session stands out instead of fading — it is waiting on you.

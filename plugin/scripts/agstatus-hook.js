@@ -2286,6 +2286,15 @@ function writeSessionNames(file, names) {
   }
 }
 
+/** A bare UUID is never a project name a person picked. */
+const UUID_NAME_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** "Codex", "Claude" — what to call a session that has no folder of its own. */
+function agentLabel() {
+  const s = String(SOURCE || 'agent');
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
 /**
  * The name this session's card carries: the first name it was ever given, held
  * for the life of the session. Normally that is SessionStart's working
@@ -2314,9 +2323,23 @@ function pinnedName(base, session, live) {
     }
     return entry.name;
   }
-  // basename('/') is '' — nothing worth pinning, and the server already falls
-  // back to the session id for an empty name.
-  if (live === '') return '';
+  // No project folder to name the card after. A GUI-launched agent has no
+  // working directory — macOS LaunchServices starts it in `/`, and
+  // basename('/') is '' — which is how Codex Desktop sessions ended up on the
+  // board titled `01a10b09-b1ee-7501-95b4-d0ebf7acad5e`: an empty name reaches
+  // the server, and its last-resort fallback is the session id (store.ts,
+  // `input.name || prev?.name || input.id`). A 36-character UUID is the least
+  // useful thing a card can be called.
+  //
+  // A UUID that came from the cwd is the same problem wearing a folder: Codex
+  // writes scratch workspaces under `.codex/visualizations/<date>/<uuid>`, and
+  // basename of one of those is a UUID a human never chose.
+  //
+  // Deliberately NOT pinned. The agent's name is a placeholder, and a later
+  // event that does know its folder should still get to claim the card — the
+  // rename this function exists to prevent is between two real directories,
+  // not from a stand-in to the real thing.
+  if (live === '' || UUID_NAME_RE.test(live)) return agentLabel();
   names[session] = { name: live, at: Date.now() };
   writeSessionNames(file, names);
   return live;

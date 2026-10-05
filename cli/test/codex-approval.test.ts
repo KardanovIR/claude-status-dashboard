@@ -291,6 +291,46 @@ describe('Codex PermissionRequest: only a human reviewer means blocked', () => {
   });
 });
 
+describe('a session with no project folder gets a readable name', () => {
+  // A GUI-launched agent has no working directory: macOS starts it in `/`, and
+  // basename('/') is ''. That empty name reached the server, whose last-resort
+  // fallback is the session id — so Codex Desktop sessions arrived on the board
+  // titled `01a10b09-b1ee-7501-95b4-d0ebf7acad5e`.
+  it('names a card after the agent when cwd has no basename', () => {
+    const posts = fire({ hook_event_name: 'SessionStart', session_id: 'gui-1', cwd: '/' });
+    const c = card(posts)!;
+    expect(c.name).toBe('Codex');
+    expect(c.name).not.toBe('gui-1');
+  });
+
+  it('does the same when the folder is a bare UUID', () => {
+    // Codex writes scratch workspaces under .codex/visualizations/<date>/<uuid>.
+    const posts = fire({
+      hook_event_name: 'SessionStart', session_id: 'gui-2',
+      cwd: '/Users/x/.codex/visualizations/2026/10/02/01a0fd9d-47fd-7602-82b0-31491467be57',
+    });
+    expect(card(posts)!.name).toBe('Codex');
+  });
+
+  it('still lets a real folder claim the card afterwards', () => {
+    // The placeholder is not pinned, so the first event that does know where it
+    // is gets to name the session. The rename pinning prevents is between two
+    // real directories, not from a stand-in to the real thing.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-pin-'));
+    const env = { TMPDIR: tmp, AGSTATUS_STATE_DIR: tmp };
+    expect(card(fire({ hook_event_name: 'SessionStart', session_id: 'gui-3', cwd: '/' }, env))!.name)
+      .toBe('Codex');
+    fs.writeFileSync(capturePath, '');
+    expect(card(fire({ hook_event_name: 'Stop', session_id: 'gui-3', cwd: '/Users/x/my-repo' }, env))!.name)
+      .toBe('my-repo');
+  });
+
+  it('leaves a real folder name alone', () => {
+    const posts = fire({ hook_event_name: 'SessionStart', session_id: 'ok-1', cwd: '/Users/x/perf-ads' });
+    expect(card(posts)!.name).toBe('perf-ads');
+  });
+});
+
 describe('Claude Code Notification is unaffected', () => {
   it('still means blocked, with no rollout log anywhere', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-tmp-'));

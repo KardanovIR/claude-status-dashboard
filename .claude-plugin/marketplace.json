@@ -9,7 +9,7 @@
       "name": "agstatus",
       "source": "./plugin",
       "description": "Live status board + push alerts for your Claude Code sessions — see every agent at a glance from your phone.",
-      "version": "1.5.1",
+      "version": "1.5.2",
       "author": { "name": "Inal Kardanov" }
     }
   ]

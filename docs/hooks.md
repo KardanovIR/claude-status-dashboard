@@ -130,6 +130,7 @@ via `POST /api/pair/claim` for the board's URLs. Claims are rate limited to
 agstatus status      # show configured URL, hook file, server reachability + session count
 agstatus uninstall   # remove the hook file and AgStatus settings entries (backup kept), and the Focus listener if installed
 agstatus listener …  # the Focus listener, see below (install | uninstall | status | doctor | plan | run)
+agstatus version     # the version of this install, e.g. `agstatus 1.5.3`
 agstatus help        # usage
 ```
 
@@ -147,8 +148,9 @@ channel — it needs no installer and no terminal, and it is the right choice on
 a Claude Code-only machine.
 
 AgStatus used to ship through npm and a Homebrew tap. Neither gets new
-releases any more, and the installer above replaces both. Nothing was
-unpublished, though: `agstatus@1.3.0` stays resolvable on the npm registry, so
+releases any more, the tap is archived, and the installer above replaces both.
+Nothing was unpublished, though: `agstatus@1.3.0` stays resolvable on the npm
+registry and the archived formula still resolves to it, so
 an `npx agstatus init` in somebody's notes, a script, or a screenshot from
 last year still runs and still works — it just installs 1.3.0 rather than the
 current release. Re-run the installer to move a machine onto current: it

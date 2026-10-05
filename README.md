@@ -146,10 +146,13 @@ The [Claude Code plugin](docs/hooks.md#claude-code-plugin) is a separate,
 fully supported channel — no installer, no terminal, Claude Code only.
 
 AgStatus used to ship through npm and a Homebrew tap; neither gets new
-releases now. Nothing was unpublished, though: `agstatus@1.3.0` stays
-resolvable on the npm registry, so an `npx agstatus init` in an old script or
-somebody's notes still runs and still works — it just installs 1.3.0 instead
-of the current release. Re-run the installer to move a machine onto current.
+releases now, and [the tap](https://github.com/KardanovIR/homebrew-tap) is
+archived. Nothing was unpublished, though: `agstatus@1.3.0` stays resolvable on
+the npm registry and the archived formula still resolves to it, so an
+`npx agstatus init` or a `brew install kardanovir/tap/agstatus` in an old
+script or somebody's notes still runs and still works — it just installs 1.3.0
+instead of the current release. Re-run the installer to move a machine onto
+current.
 
 ## License
 

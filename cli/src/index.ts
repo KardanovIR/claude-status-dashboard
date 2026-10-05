@@ -64,6 +64,32 @@ export interface InitOptions {
 
 const BUNDLED_HOOK = path.join(__dirname, '..', 'assets', 'agstatus-hook.js');
 
+/**
+ * This build's version, from the package.json shipped beside it.
+ *
+ * One level up from the compiled file, exactly as BUNDLED_HOOK is: the release
+ * artifact lays out lib/agstatus/{package.json,dist/,assets/}, and under tsx
+ * src/ sits in the same place relative to cli/package.json. Read at call time
+ * rather than inlined at build time, so a hand-patched install reports what is
+ * actually on disk instead of what the compiler saw.
+ *
+ * `release.yml` has referred to `agstatus --version` in its version-guard
+ * comment since the guard was written, as the thing a mistagged release would
+ * make disagree with the artifact's name. It did not exist until now.
+ */
+export function cliVersion(): string {
+  try {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')
+    ) as { version?: string };
+    return typeof pkg.version === 'string' && pkg.version !== '' ? pkg.version : 'unknown';
+  } catch {
+    // A missing or unreadable package.json is not worth failing a version
+    // query over — say so and exit 0, the way every other tool does.
+    return 'unknown';
+  }
+}
+
 function installHookFile(dest: string = hookInstallPath()): string {
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.copyFileSync(BUNDLED_HOOK, dest);
@@ -468,6 +494,7 @@ Usage:
   agstatus focus <n>        Bring the n-th session's window to the front (bind it to a key)
   agstatus keys             Show the shortcut for each slot, and config for your hotkey tool
   agstatus listener <cmd>   Focus listener (bring a session's terminal to the front from the board)
+  agstatus version          Print the version of this install
   agstatus help             This help
 
 init options:
@@ -619,6 +646,13 @@ export async function main(argv: string[]): Promise<number> {
         );
       case 'listener':
         return await runListenerCommand(positional[0], positional[1], flags);
+      case 'version':
+      case '--version':
+      case '-v':
+        // One line, parseable: `agstatus 1.5.2`. Anything a script wants to
+        // compare lives after the space.
+        console.log(`agstatus ${cliVersion()}`);
+        return 0;
       case undefined:
       case 'help':
       case '--help':

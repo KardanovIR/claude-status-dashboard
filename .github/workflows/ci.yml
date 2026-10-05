@@ -185,7 +185,13 @@ jobs:
           Assert-Refusal @('--code','ABCD-1234') 'That looks like a POSIX-style flag'
           # param() is a simple block, so anything unbindable lands in $args
           # instead of erroring. The guard is what turns that into a refusal.
+          #
+          # These two also pin WHICH refusal. A misspelled PowerShell parameter
+          # binds positionally exactly as `--code` does, so it used to come back
+          # with the POSIX message — advice about `--code` vs -Code for someone
+          # who never typed a POSIX flag. It gets the list of real parameters.
           Assert-Refusal @('-Bogus','x') 'Unrecognised argument(s)'
+          Assert-Refusal @('-Cde','ABCD-1234') 'Unrecognised argument(s)'
           # And on a non-Windows host it must say so rather than start work.
           Assert-Refusal @() 'install.ps1 is the Windows installer'
 
@@ -342,8 +348,10 @@ jobs:
         if: always()
         shell: powershell
         run: |
-          $pid = Get-Content "$env:RUNNER_TEMP\board.pid" -ErrorAction SilentlyContinue
-          if ($pid) { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue }
+          # Not $pid: that is a read-only automatic variable, and assigning to
+          # it fails the step after the assertions have already passed.
+          $boardPid = Get-Content "$env:RUNNER_TEMP\board.pid" -ErrorAction SilentlyContinue
+          if ($boardPid) { Stop-Process -Id $boardPid -Force -ErrorAction SilentlyContinue }
           net user agstatusci /delete 2>$null | Out-Null
           Remove-Item 'C:\Users\agstatusci' -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item 'C:\agstatus-ci' -Recurse -Force -ErrorAction SilentlyContinue
@@ -358,7 +366,7 @@ jobs:
   # keystore.properties that is gitignored and must never reach CI, and
   # compiling every source file is the whole point here.
   android:
-    name: Android (build)
+    name: Android (build + tests)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -375,6 +383,21 @@ jobs:
         # Separate from the build so a lint regression is distinguishable from
         # a compile error in the log.
         run: ./gradlew --no-daemon lintDebug
+      - name: unit tests
+        working-directory: android
+        # app/src/test has had five suites since the client was written and
+        # nothing ever ran them: this job built the APK and stopped.
+        run: ./gradlew --no-daemon testDebugUnitTest
+      - name: test report
+        if: failure()
+        working-directory: android
+        run: |
+          for f in app/build/reports/tests/testDebugUnitTest/classes/*.html; do
+            [ -e "$f" ] || continue
+            echo "::group::$(basename "$f")"
+            sed -e 's/<[^>]*>//g' "$f" | grep -v '^[[:space:]]*$'
+            echo '::endgroup::'
+          done
 
   docker:
     name: Docker image (build only)

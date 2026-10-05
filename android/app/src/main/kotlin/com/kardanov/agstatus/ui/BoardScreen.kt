@@ -60,8 +60,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -78,6 +76,7 @@ import com.kardanov.agstatus.AgentStatus
 import com.kardanov.agstatus.Board
 import com.kardanov.agstatus.SessionStore
 import com.kardanov.agstatus.Theme
+import com.kardanov.agstatus.rememberReduceMotion
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -158,7 +157,7 @@ fun BoardScreen(
                             Text(
                                 text = "Exit demo",
                                 style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold),
-                                color = Theme.planning,
+                                color = Theme.accent,
                             )
                         }
                     }
@@ -220,6 +219,12 @@ fun BoardScreen(
                         modifier = Modifier.fillMaxSize(),
                     ) {
                         val now by rememberTickingClock(30_000L)
+                        // A card that moves has news: the list is keyed by
+                        // session id, so a card only animates when the board
+                        // actually reordered. Nulling the specs is how a
+                        // device that asked for less motion gets the same
+                        // reorder with no travel.
+                        val reduceMotion = rememberReduceMotion()
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
@@ -239,7 +244,15 @@ fun BoardScreen(
                                 )
                                 SwipeToDismissBox(
                                     state = dismissState,
-                                    modifier = Modifier.animateItem(),
+                                    modifier = if (reduceMotion) {
+                                        Modifier.animateItem(
+                                            fadeInSpec = null,
+                                            placementSpec = null,
+                                            fadeOutSpec = null,
+                                        )
+                                    } else {
+                                        Modifier.animateItem()
+                                    },
                                     enableDismissFromStartToEnd = false,
                                     enableDismissFromEndToStart = true,
                                     backgroundContent = { DismissBackground(dismissState) },
@@ -288,17 +301,20 @@ private fun DismissBackground(state: SwipeToDismissBoxState) {
         horizontalArrangement = Arrangement.End,
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // Theme.background on the red, not white: white measures 3.15:1
+        // against #F75E51 and the ground measures 6.12:1. Same reasoning as
+        // Theme.onAccent, one surface over.
         Icon(
             imageVector = Icons.Filled.Close,
             contentDescription = null,
-            tint = Color.White,
+            tint = Theme.background,
             modifier = Modifier.size(18.dp),
         )
         Spacer(Modifier.size(8.dp))
         Text(
             text = "Dismiss",
             style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold),
-            color = Color.White,
+            color = Theme.background,
         )
     }
 }
@@ -339,8 +355,8 @@ private fun EmptyState(board: Board?, onOpenPair: () -> Unit) {
             Button(
                 onClick = onOpenPair,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = Theme.planning,
-                    contentColor = Color.White,
+                    containerColor = Theme.accent,
+                    contentColor = Theme.onAccent,
                 ),
                 contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
             ) {
@@ -480,8 +496,8 @@ private fun BoardGoneState(onStartOver: () -> Unit) {
         Button(
             onClick = onStartOver,
             colors = ButtonDefaults.buttonColors(
-                containerColor = Theme.planning,
-                contentColor = Color.White,
+                containerColor = Theme.accent,
+                contentColor = Theme.onAccent,
             ),
             contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp),
         ) {
@@ -513,10 +529,11 @@ private fun ConnectionDot(connection: SessionStore.Connection) {
         SessionStore.Connection.IDLE -> "Not connected"
         SessionStore.Connection.DEMO -> "Demo"
     }
+    // No glow. It carried a 3dp coloured shadow, which is the one decorative
+    // light left in the app once the card's halo went.
     Box(
         modifier = Modifier
             .size(9.dp)
-            .shadow(3.dp, CircleShape, clip = false, ambientColor = color, spotColor = color)
             .background(color, CircleShape)
             .semantics { contentDescription = description },
     )
@@ -524,7 +541,10 @@ private fun ConnectionDot(connection: SessionStore.Connection) {
 
 @Composable
 private fun DemoBadge() {
-    val color = Theme.colorFor(AgentStatus.CODING)
+    // Quiet, and in no state colour at all. It used to borrow `coding` purple
+    // and sit in a tinted pill, which made the toolbar look like a session in
+    // progress. Demo mode is chrome — where you are, not what an agent is
+    // doing — and the accent "Exit demo" button beside it does the pointing.
     Text(
         text = "DEMO",
         style = TextStyle(
@@ -532,11 +552,10 @@ private fun DemoBadge() {
             fontWeight = FontWeight.Bold,
             letterSpacing = 1.sp,
         ),
-        color = color,
+        color = Theme.textSecondary,
         maxLines = 1,
         modifier = Modifier
-            .background(color.copy(alpha = 0.15f), CircleShape)
-            .border(1.dp, color.copy(alpha = 0.35f), CircleShape)
+            .border(1.dp, Theme.cardBorder, CircleShape)
             .padding(horizontal = 8.dp, vertical = 3.dp)
             .semantics { contentDescription = "Demo mode" },
     )

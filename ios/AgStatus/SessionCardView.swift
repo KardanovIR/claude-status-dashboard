@@ -153,7 +153,7 @@ struct SessionCardView: View {
                     metaFacts(includeProject: false)
                     EmptyView()
                 }
-                Text("·").foregroundStyle(Theme.hairlineStrong)
+                Text("·").foregroundStyle(Theme.textTertiary)
                 Text(Self.relativeTime(from: session.updatedDate, to: now))
                     .monospacedDigit()
                     .foregroundStyle(Theme.textTertiary)
@@ -176,7 +176,7 @@ struct SessionCardView: View {
                 // second loud element on a card whose whole job is to have
                 // exactly one.
                 if let tokensLabel = session.tokensLabel {
-                    Text("·").foregroundStyle(Theme.hairlineStrong)
+                    Text("·").foregroundStyle(Theme.textTertiary)
                     Text(tokensLabel)
                         // Tabular figures: this ticks in place as the hook
                         // reports, and proportional digits would make the whole
@@ -238,13 +238,13 @@ struct SessionCardView: View {
     private func metaFacts(includeProject: Bool) -> some View {
         HStack(spacing: Theme.Space.xxs) {
             if let host = session.host {
-                Text("·").foregroundStyle(Theme.hairlineStrong)
+                Text("·").foregroundStyle(Theme.textTertiary)
                 Text(store.machineLabel(for: host))
                     .lineLimit(1)
                     .foregroundStyle(Theme.textTertiary)
             }
             if includeProject && !session.project.isEmpty && session.project != session.name {
-                Text("·").foregroundStyle(Theme.hairlineStrong)
+                Text("·").foregroundStyle(Theme.textTertiary)
                 Text("in \(session.project)")
                     .lineLimit(1)
                     .foregroundStyle(Theme.textTertiary)

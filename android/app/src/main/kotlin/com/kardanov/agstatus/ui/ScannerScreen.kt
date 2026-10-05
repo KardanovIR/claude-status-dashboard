@@ -300,7 +300,7 @@ private fun ManualFallback(
                     text = "Open system settings",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Medium,
-                    color = Theme.planning,
+                    color = Theme.accent,
                 )
             }
         }
@@ -318,10 +318,12 @@ private fun ManualFallback(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = Theme.planning,
-                contentColor = Theme.textPrimary,
-                disabledContainerColor = Theme.planning.copy(alpha = 0.5f),
-                disabledContentColor = Theme.textPrimary.copy(alpha = 0.7f),
+                // See WelcomeScreen: white and textPrimary both fail on the
+                // accent; the background is 9.41:1 against it.
+                containerColor = Theme.accent,
+                contentColor = Theme.onAccent,
+                disabledContainerColor = Theme.cardBorder,
+                disabledContentColor = Theme.textSecondary,
             ),
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
         ) {

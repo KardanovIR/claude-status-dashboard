@@ -3,7 +3,15 @@ package com.kardanov.agstatus.ui
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -74,6 +82,7 @@ import com.kardanov.agstatus.ApiException
 import com.kardanov.agstatus.Board
 import com.kardanov.agstatus.SessionStore
 import com.kardanov.agstatus.Theme
+import com.kardanov.agstatus.rememberReduceMotion
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -157,17 +166,22 @@ fun WelcomeScreen(store: SessionStore, modifier: Modifier = Modifier) {
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = Theme.planning,
-                    contentColor = Theme.textPrimary,
-                    disabledContainerColor = Theme.planning.copy(alpha = 0.5f),
-                    disabledContentColor = Theme.textPrimary.copy(alpha = 0.7f),
+                    // Theme.onAccent on the fill, not textPrimary: that pairing
+                    // measured 1.72:1. Disabled drops to the hairline surface
+                    // rather than a half-alpha accent, which would have put a
+                    // 1.9:1 label on a washed-out green.
+                    containerColor = Theme.accent,
+                    contentColor = Theme.onAccent,
+                    disabledContainerColor = Theme.cardBorder,
+                    disabledContentColor = Theme.textSecondary,
                 ),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
             ) {
                 if (isCreating) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(18.dp),
-                        color = Theme.textPrimary,
+                        // On the accent fill, like the label beside it.
+                        color = Theme.onAccent,
                         strokeWidth = 2.dp,
                     )
                     Spacer(Modifier.size(10.dp))
@@ -223,7 +237,7 @@ fun WelcomeScreen(store: SessionStore, modifier: Modifier = Modifier) {
                 text = "Try the demo",
                 style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.Medium,
-                color = Theme.planning,
+                color = Theme.accent,
             )
         }
     }
@@ -252,7 +266,8 @@ private fun WelcomeHeader() {
             Icon(
                 imageVector = Icons.Rounded.ShowChart,
                 contentDescription = null,
-                tint = Theme.coding,
+                // The app's own mark, which is not a session state: the accent.
+                tint = Theme.accent,
                 modifier = Modifier.size(44.dp),
             )
         }
@@ -301,8 +316,12 @@ private fun SelfHostingSection(
     onToggle: () -> Unit,
     onServerTextChange: (String) -> Unit,
 ) {
+    // Both of this screen's animations report the same thing — you opened or
+    // closed the section — so both are gated together.
+    val reduceMotion = rememberReduceMotion()
     val rotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
+        animationSpec = if (reduceMotion) snap() else spring(),
         label = "selfHostingChevron",
     )
     Column(
@@ -334,7 +353,11 @@ private fun SelfHostingSection(
             )
         }
 
-        AnimatedVisibility(visible = expanded) {
+        AnimatedVisibility(
+            visible = expanded,
+            enter = if (reduceMotion) EnterTransition.None else expandVertically() + fadeIn(),
+            exit = if (reduceMotion) ExitTransition.None else shrinkVertically() + fadeOut(),
+        ) {
             UrlInputField(
                 value = serverText,
                 onValueChange = onServerTextChange,
@@ -421,17 +444,22 @@ private fun BoardUrlSheet(store: SessionStore, onDismiss: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = Theme.planning,
-                    contentColor = Theme.textPrimary,
-                    disabledContainerColor = Theme.planning.copy(alpha = 0.5f),
-                    disabledContentColor = Theme.textPrimary.copy(alpha = 0.7f),
+                    // Theme.onAccent on the fill, not textPrimary: that pairing
+                    // measured 1.72:1. Disabled drops to the hairline surface
+                    // rather than a half-alpha accent, which would have put a
+                    // 1.9:1 label on a washed-out green.
+                    containerColor = Theme.accent,
+                    contentColor = Theme.onAccent,
+                    disabledContainerColor = Theme.cardBorder,
+                    disabledContentColor = Theme.textSecondary,
                 ),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
             ) {
                 if (isConnecting) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(18.dp),
-                        color = Theme.textPrimary,
+                        // On the accent fill, like the label beside it.
+                        color = Theme.onAccent,
                         strokeWidth = 2.dp,
                     )
                     Spacer(Modifier.size(10.dp))
@@ -495,8 +523,8 @@ internal fun UrlInputField(
             unfocusedTextColor = Theme.textPrimary,
             focusedContainerColor = Theme.card,
             unfocusedContainerColor = Theme.card,
-            cursorColor = Theme.planning,
-            focusedBorderColor = Theme.planning,
+            cursorColor = Theme.accent,
+            focusedBorderColor = Theme.accent,
             unfocusedBorderColor = Theme.cardBorder,
             focusedPlaceholderColor = Theme.textSecondary,
             unfocusedPlaceholderColor = Theme.textSecondary,

@@ -196,9 +196,9 @@ fun SettingsScreen(store: SessionStore, onBack: () -> Unit, modifier: Modifier =
                             }
                         },
                         colors = SwitchDefaults.colors(
-                            checkedThumbColor = Theme.textPrimary,
-                            checkedTrackColor = Theme.planning,
-                            checkedBorderColor = Theme.planning,
+                            checkedThumbColor = Theme.onAccent,
+                            checkedTrackColor = Theme.accent,
+                            checkedBorderColor = Theme.accent,
                             uncheckedThumbColor = Theme.textSecondary,
                             uncheckedTrackColor = Theme.card,
                             uncheckedBorderColor = Theme.cardBorder,
@@ -277,7 +277,7 @@ fun SettingsScreen(store: SessionStore, onBack: () -> Unit, modifier: Modifier =
             text = { Text(message) },
             confirmButton = {
                 TextButton(onClick = { deleteError = null }) {
-                    Text("OK", color = Theme.planning)
+                    Text("OK", color = Theme.accent)
                 }
             },
         )
@@ -327,9 +327,9 @@ private fun DisplaySection(store: SessionStore) {
                 checked = keepAwake,
                 onCheckedChange = store::setKeepAwake,
                 colors = SwitchDefaults.colors(
-                    checkedThumbColor = Theme.textPrimary,
-                    checkedTrackColor = Theme.planning,
-                    checkedBorderColor = Theme.planning,
+                    checkedThumbColor = Theme.onAccent,
+                    checkedTrackColor = Theme.accent,
+                    checkedBorderColor = Theme.accent,
                     uncheckedThumbColor = Theme.textSecondary,
                     uncheckedTrackColor = Theme.card,
                     uncheckedBorderColor = Theme.cardBorder,
@@ -357,7 +357,7 @@ private fun DisplaySection(store: SessionStore) {
                         text = SLEEP_AFTER_OPTIONS.firstOrNull { it.first == idleMinutes }?.second
                             ?: "$idleMinutes minutes",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = Theme.planning,
+                        color = Theme.accent,
                     )
                     DropdownMenu(
                         expanded = showSleepMenu,
@@ -370,7 +370,7 @@ private fun DisplaySection(store: SessionStore) {
                                     Text(
                                         text = label,
                                         color = if (minutes == idleMinutes) {
-                                            Theme.planning
+                                            Theme.accent
                                         } else {
                                             Theme.textPrimary
                                         },
@@ -492,7 +492,7 @@ private fun CopyRow(
                 Text(
                     text = "Open",
                     style = MaterialTheme.typography.labelLarge,
-                    color = Theme.planning,
+                    color = Theme.accent,
                 )
             }
         }
@@ -526,7 +526,7 @@ private fun LinkRow(title: String, onClick: () -> Unit) {
         Text(
             text = "Open",
             style = MaterialTheme.typography.labelLarge,
-            color = Theme.planning,
+            color = Theme.accent,
         )
     }
 }

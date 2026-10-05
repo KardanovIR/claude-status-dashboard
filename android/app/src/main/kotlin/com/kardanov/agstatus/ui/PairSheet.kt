@@ -139,7 +139,7 @@ fun PairSheet(store: SessionStore, onDismiss: () -> Unit) {
                     Icon(
                         imageVector = Icons.Rounded.Refresh,
                         contentDescription = "Get a new code",
-                        tint = Theme.planning,
+                        tint = Theme.accent,
                     )
                 }
             }
@@ -162,7 +162,8 @@ fun PairSheet(store: SessionStore, onDismiss: () -> Unit) {
                         Icon(
                             imageVector = Icons.Rounded.Warning,
                             contentDescription = null,
-                            tint = Theme.testing,
+                            // A failed request is an error, not a caution.
+                            tint = Theme.blocked,
                             modifier = Modifier.size(36.dp),
                         )
                     },
@@ -231,7 +232,10 @@ private fun ActiveCode(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        val tint = if (remainingSeconds < 60) Theme.testing else Theme.textSecondary
+        // Theme.limitWarn, not a state colour. A code running out is the one
+        // place a traffic light belongs; `testing` here meant the clock and a
+        // testing session were the same shade of teal.
+        val tint = if (remainingSeconds < 60) Theme.limitWarn else Theme.textSecondary
         Icon(
             imageVector = Icons.Rounded.Schedule,
             contentDescription = null,
@@ -268,8 +272,11 @@ private fun ActiveCode(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = if (copied) Theme.done else Theme.planning,
-                contentColor = Theme.textPrimary,
+                // One colour for both states. It used to go green on copy —
+                // and the accent IS that green now, so the two branches became
+                // the same fill. The tick and the word "Copied" carry it.
+                containerColor = Theme.accent,
+                contentColor = Theme.onAccent,
             ),
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
         ) {
@@ -365,8 +372,8 @@ private fun MessageBlock(
                 onClick = onAction,
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = Theme.planning,
-                    contentColor = Theme.textPrimary,
+                    containerColor = Theme.accent,
+                    contentColor = Theme.onAccent,
                 ),
                 contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
             ) {

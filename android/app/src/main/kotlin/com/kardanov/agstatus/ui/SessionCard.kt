@@ -1,15 +1,11 @@
 package com.kardanov.agstatus.ui
 
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,7 +13,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.FlipToFront
@@ -27,24 +22,20 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -61,19 +52,21 @@ import com.kardanov.agstatus.TimeFormat
 
 /**
  * An active card gone quiet for this long is probably a dead agent
- * (killed mid-turn, crashed machine) — stop pulsing and dim it.
+ * (killed mid-turn, crashed machine) — stop reading it as live and dim it.
  */
 private const val STALE_AFTER_MILLIS = 10 * 60 * 1000L
 
 /**
- * One agent session, readable at arm's length: big name, colored status,
- * last message, and how fresh it all is. `nowMillis` is supplied by the
- * caller's clock so the timestamp and staleness refresh together.
+ * One agent session, readable at arm's length: big name, the state as a shape
+ * and a word, the last message, and the facts underneath. `nowMillis` is
+ * supplied by the caller's clock so the timestamp and staleness refresh
+ * together.
  *
  * A session that reports a host gets a Focus footer: an explicit control —
  * never the card's tap, which is history — enabled only while that machine's
  * listener is online, and the outcome of the last tap under it.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SessionCard(
     session: Session,
@@ -85,34 +78,32 @@ fun SessionCard(
 ) {
     val statusColor = Theme.colorFor(session.status)
     val stale = session.status.isActive && nowMillis - session.updatedAt > STALE_AFTER_MILLIS
-    val blocked = session.status == AgentStatus.BLOCKED
     val shape = RoundedCornerShape(16.dp)
 
     Column(
         modifier = modifier
             .fillMaxWidth()
             .semantics(mergeDescendants = true) {}
-            .alpha(if (session.status == AgentStatus.DONE || stale) 0.55f else 1f)
-            .shadow(
-                elevation = if (blocked) 12.dp else 0.dp,
-                shape = shape,
-                clip = false,
-                ambientColor = statusColor,
-                spotColor = statusColor,
-            )
-            // A plain full-height stripe, clipped by the card's own shape so it
-            // hugs the rounded left edge instead of floating beside it.
+            // Only staleness dims a card now. `done` used to be dimmed to 0.55
+            // as well, from when it meant "finished, nothing to see". It means
+            // the agent handed back and is waiting on YOU — and it is the
+            // board's accent colour — so dimming it hid the one state this
+            // board most needs to surface.
+            .alpha(if (stale) 0.62f else 1f)
+            // No glow. The blocked card used to carry a 12dp coloured shadow;
+            // a lit halo is the trading-terminal tell, and it is exactly wrong
+            // in a dark room at 1am, which is when this board gets read. The
+            // brighter edge below is what marks blocked instead.
             .clip(shape)
-            .background(Theme.card)
-            .drawBehind {
-                drawRect(color = statusColor, size = Size(4.dp.toPx(), size.height))
-            }
-            .border(
-                width = 1.dp,
-                color = if (blocked) statusColor.copy(alpha = 0.45f) else Theme.cardBorder,
-                shape = shape,
-            )
-            .padding(start = 18.dp, top = 14.dp, end = 14.dp, bottom = 14.dp),
+            // The whole surface carries the state, so the board can be sorted
+            // by colour before a word is read. This replaces a 4dp coloured
+            // stripe down the leading edge: that pattern is the most overused
+            // device in dashboard UI and never reads as intentional, whatever
+            // colour or corner radius it is given. A large tinted area also
+            // reads from much further away than a 4dp sliver.
+            .background(Theme.cardSurface(session.status))
+            .border(1.dp, Theme.cardEdge(session.status), shape)
+            .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(
@@ -128,24 +119,7 @@ fun SessionCard(
                 modifier = Modifier.weight(1f),
             )
             Spacer(Modifier.width(8.dp))
-            StatusBadge(
-                status = session.status,
-                color = statusColor,
-                pulsing = session.status.isActive && !stale,
-            )
-        }
-
-        if (session.project.isNotEmpty() && session.project != session.displayName) {
-            Text(
-                text = session.project,
-                style = TextStyle(fontSize = 11.sp, fontFamily = FontFamily.Monospace),
-                color = Theme.textSecondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .background(Theme.cardBorder, CircleShape)
-                    .padding(horizontal = 8.dp, vertical = 3.dp),
-            )
+            StatusMark(status = session.status, color = statusColor)
         }
 
         if (session.message.isNotEmpty()) {
@@ -158,11 +132,7 @@ fun SessionCard(
             )
         }
 
-        Text(
-            text = TimeFormat.relative(session.updatedAt, nowMillis),
-            style = TextStyle(fontSize = 12.sp, fontFeatureSettings = "tnum"),
-            color = Theme.textSecondary.copy(alpha = 0.75f),
-        )
+        MetaLine(session = session, nowMillis = nowMillis, machines = machines)
 
         session.host?.let { host ->
             FocusFooter(
@@ -176,11 +146,156 @@ fun SessionCard(
     }
 }
 
+// MARK: - Status
+
+/**
+ * The state as a shape, a word and a colour — in that order of reliability.
+ *
+ * The pulsing pill that used to live here is gone, and so is the pill. It
+ * looped forever on every active card, which is ambient animation: it reported
+ * nothing, it never stopped, and on a board left open all day it cost battery
+ * to say the same thing continuously. Motion on this board now means something
+ * changed. The pill itself was a status badge of the kind the enterprise admin
+ * panel is made of; the card's own tint does that job across a far larger area.
+ */
+@Composable
+private fun StatusMark(status: AgentStatus, color: Color) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        // One node reading "Coding", not a glyph and a word in sequence.
+        modifier = Modifier.clearAndSetSemantics { contentDescription = status.label },
+    ) {
+        Icon(
+            imageVector = Theme.iconFor(status),
+            contentDescription = null,
+            tint = color,
+            modifier = Modifier.size(14.dp),
+        )
+        Text(
+            text = status.label.uppercase(),
+            style = TextStyle(
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.6.sp,
+            ),
+            color = color,
+            maxLines = 1,
+        )
+    }
+}
+
+// MARK: - Meta
+
+/**
+ * Agent, machine, directory, when — four different facts, one line.
+ *
+ * The machine is the one the card never showed: it was buried inside the Focus
+ * control's label, so two sessions of the same project on two machines were
+ * indistinguishable at a glance.
+ *
+ * It wraps, because it must. The web board shipped this same line as a
+ * non-wrapping flex row and a 320px card rendered the machine name four pixels
+ * wide — present to a screen reader, invisible to everyone else. A FlowRow
+ * cannot fail that way: it takes a second line instead of taking it out of the
+ * one item that can shrink.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun MetaLine(
+    session: Session,
+    nowMillis: Long,
+    machines: Map<String, MachinePresence>,
+) {
+    val machine = session.host?.let { remember(it, machines) { FocusCopy.machineLabel(it, machines) } }
+    val project = session.project.takeIf { it.isNotEmpty() && it != session.displayName }
+
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        // Which agent, as a word in a box. No glyph: "CLAUDE" and "CODEX" are
+        // already distinct at a glance, and the one mark this card needs to
+        // carry without colour is the status.
+        Text(
+            text = session.source.uppercase(),
+            style = TextStyle(
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.4.sp,
+            ),
+            color = Theme.textTertiary,
+            maxLines = 1,
+            modifier = Modifier
+                .border(1.dp, Theme.cardBorder, RoundedCornerShape(4.dp))
+                .padding(horizontal = 5.dp, vertical = 2.dp),
+        )
+        if (machine != null) {
+            MetaSeparator()
+            MetaFact(machine)
+        }
+        // Only when the session has MOVED. The name is pinned at the session's
+        // first event while `project` follows the live directory, so the two
+        // are identical for a session that stayed put and differ precisely when
+        // one moved — which is also where its tokens are being attributed.
+        if (project != null) {
+            MetaSeparator()
+            MetaFact("in $project")
+        }
+        MetaSeparator()
+        Text(
+            text = TimeFormat.relative(session.updatedAt, nowMillis),
+            // Tabular figures: this ticks in place on the board's clock, and
+            // proportional digits make the whole line twitch sideways each time.
+            style = TextStyle(fontSize = 12.sp, fontFeatureSettings = "tnum"),
+            color = Theme.textTertiary,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun MetaFact(text: String) {
+    Text(
+        text = text,
+        fontSize = 12.sp,
+        color = Theme.textTertiary,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+/**
+ * The dot between two facts.
+ *
+ * [Theme.textTertiary], the same colour as the facts it separates — NOT a
+ * hairline token. The web board shipped these in `--ink-700` and they were the
+ * only contrast failure its audit found, all seventeen of them, at 1.52:1. The
+ * strong hairline is barely better: 1.80:1 against the card. A glyph is text
+ * whatever job it is doing.
+ */
+@Composable
+private fun MetaSeparator() {
+    Text(
+        text = "·",
+        fontSize = 12.sp,
+        color = Theme.textTertiary,
+        modifier = Modifier.clearAndSetSemantics {},
+    )
+}
+
 // MARK: - Focus footer
 
 /**
- * "Bring to front on <machine>", a Resume control after "not running", and
- * one line of status: why the control is disabled, or how the last tap went.
+ * "Focus" on the machine this session runs on, a Resume control after
+ * "not running", and one line of status: why the control is disabled, or how
+ * the last tap went.
+ *
+ * The verb alone on the button. "Bring to front on Mac mini" is the better
+ * sentence but it is most of a card's width, and it was the second-loudest
+ * element on a card whose job is to have exactly one. The full phrasing
+ * survives where width is free: the accessibility label.
  */
 @Composable
 private fun FocusFooter(
@@ -206,16 +321,17 @@ private fun FocusFooter(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             FocusButton(
-                label = "Bring to front on $name",
+                label = "Focus",
+                description = "Bring to front on $name",
                 icon = Icons.Outlined.FlipToFront,
                 enabled = online,
                 disabledReason = offlineNote,
                 onClick = { onCommand(CommandType.FOCUS) },
-                modifier = Modifier.weight(1f, fill = false),
             )
             if (status?.offersResume == true) {
                 FocusButton(
                     label = "Resume",
+                    description = "Resume on $name",
                     icon = Icons.Outlined.PlayArrow,
                     enabled = online,
                     disabledReason = offlineNote,
@@ -254,12 +370,14 @@ private fun FocusFooter(
 }
 
 /**
- * [disabledReason], when given, becomes the button's state description, so
- * TalkBack reads the label, "disabled", and why together.
+ * [description] is what TalkBack reads — the whole sentence the visible label
+ * abbreviates. [disabledReason], when given, becomes the state description, so
+ * the label, "disabled", and why are read together.
  */
 @Composable
 private fun FocusButton(
     label: String,
+    description: String,
     icon: ImageVector,
     enabled: Boolean,
     onClick: () -> Unit,
@@ -270,11 +388,15 @@ private fun FocusButton(
         onClick = onClick,
         enabled = enabled,
         modifier = modifier.semantics {
+            contentDescription = description
             if (!enabled && disabledReason != null) stateDescription = disabledReason
         },
         colors = ButtonDefaults.buttonColors(
-            containerColor = Theme.planning,
-            contentColor = Color.White,
+            // Theme.onAccent, not white. White on the accent measures 2.05:1;
+            // this is 9.41:1. The blue this used to be was already failing at
+            // 2.72:1 with white on it.
+            containerColor = Theme.accent,
+            contentColor = Theme.onAccent,
             disabledContainerColor = Theme.cardBorder,
             disabledContentColor = Theme.textSecondary,
         ),
@@ -293,35 +415,4 @@ private fun FocusButton(
             overflow = TextOverflow.Ellipsis,
         )
     }
-}
-
-@Composable
-private fun StatusBadge(status: AgentStatus, color: Color, pulsing: Boolean) {
-    val alpha = if (pulsing) {
-        val transition = rememberInfiniteTransition(label = "badgePulse")
-        val animated by transition.animateFloat(
-            initialValue = 1f,
-            targetValue = 0.45f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 1100, easing = FastOutSlowInEasing),
-                repeatMode = RepeatMode.Reverse,
-            ),
-            label = "badgeAlpha",
-        )
-        animated
-    } else {
-        1f
-    }
-
-    Text(
-        text = status.label,
-        style = TextStyle(fontSize = 13.sp, fontWeight = FontWeight.SemiBold),
-        color = color,
-        maxLines = 1,
-        modifier = Modifier
-            .alpha(alpha)
-            .background(color.copy(alpha = 0.16f), CircleShape)
-            .border(1.dp, color.copy(alpha = 0.35f), CircleShape)
-            .padding(horizontal = 10.dp, vertical = 4.dp),
-    )
 }

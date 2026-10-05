@@ -5,7 +5,7 @@
     <style name="Theme.AgStatus" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/agstatus_background</item>
         <item name="android:colorBackground">@color/agstatus_background</item>
-        <item name="android:colorAccent">@color/agstatus_coding</item>
+        <item name="android:colorAccent">@color/agstatus_accent</item>
         <item name="android:windowDrawsSystemBarBackgrounds">true</item>
         <item name="android:statusBarColor">@color/agstatus_background</item>
         <item name="android:navigationBarColor">@color/agstatus_background</item>

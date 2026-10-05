@@ -41,6 +41,12 @@ enum Theme {
     /// oklch(30% 0.011 155)
     static let cardBorder = rgb(0x2A302B)
     /// oklch(38% 0.012 155)
+    /// Hairlines, emphatic: a RULE, never a glyph.
+    ///
+    /// 1.80:1 against a card. It was the "·" between the facts on a card's meta
+    /// line until the web board's audit caught the same token failing there at
+    /// 1.52:1 — a separator is text whatever job it is doing, and takes
+    /// `textTertiary`.
     static let hairlineStrong = rgb(0x3E4440)
 
     // MARK: - Text

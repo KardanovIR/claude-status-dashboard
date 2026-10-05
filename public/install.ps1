@@ -434,20 +434,34 @@ function Invoke-AgStatusInstall {
         if ($extraText.Trim().Length -eq 0) { continue }
         $unknownArgs += $extraText
     }
-    # POSIX spellings never reach $args: a simple param() block binds them
-    # POSITIONALLY, so `--code ABCD-1234` arrives as Code='--code', Url='ABCD-1234'
-    # and the loop above sees nothing. That is the likeliest mistake of all,
-    # because `--code` is what the sibling installer and the docs tell a
-    # cross-platform user to type (install.sh: `sh -s -- --code ABCD-1234`).
-    # A real value never begins with a dash, so this is unambiguous.
+    # A flag that lands in a VALUE never reaches $args: a simple param() block
+    # binds the unbindable POSITIONALLY, so `--code ABCD-1234` arrives as
+    # Code='--code', Url='ABCD-1234' and the loop above sees nothing. A real
+    # value never begins with a dash, so finding one there is unambiguous - but
+    # which mistake it is depends on how many dashes it has, and the two want
+    # opposite advice:
+    #
+    #   `--code`  a POSIX spelling. The likeliest mistake of all, because it is
+    #             what the sibling installer and the docs tell a cross-platform
+    #             user to type (install.sh: `sh -s -- --code ABCD-1234`). The
+    #             answer is the PowerShell spelling of that same flag.
+    #   `-Cde`    a misspelled PowerShell parameter, which binds positionally
+    #             exactly as above. Telling this user about `--code` vs -Code
+    #             answers a question they did not ask; what they need is the
+    #             list of parameters that exist, which is the second message.
+    #
+    # Both refuse, before the download and before anything is written. Only the
+    # advice differs, and a test covers each - sending `-Bogus x` down the POSIX
+    # path is how this was found.
     $dashed = @()
     foreach ($pair in @(
         @{ Name = '-Code';   Value = $Code },
         @{ Name = '-Url';    Value = $Url },
         @{ Name = '-Secret'; Value = $Secret }
     )) {
-        $v = [string] $pair.Value
-        if ($v.Trim().StartsWith('-')) { $dashed += ("$($pair.Name) $v") }
+        $v = ([string] $pair.Value).Trim()
+        if ($v.StartsWith('--')) { $dashed += ("$($pair.Name) $v") }
+        elseif ($v.StartsWith('-')) { $unknownArgs += $v }
     }
     if ($dashed.Count -gt 0) {
         throw @"

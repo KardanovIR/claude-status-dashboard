@@ -41,8 +41,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
@@ -542,16 +540,18 @@ private fun ProjectRow(
         }
         Canvas(modifier = Modifier.fillMaxWidth().height(6.dp)) {
             val radius = CornerRadius(size.height / 2)
-            drawRoundRect(color = Color.White.copy(alpha = 0.06f), cornerRadius = radius)
+            // Theme.raised, the surface token for exactly this. White at 6%
+            // over the new ground is not that colour, and drifts from it.
+            drawRoundRect(color = Theme.raised, cornerRadius = radius)
             if (share > 0f) {
                 // A hairline keeps the smallest project visible next to the top one.
                 val filled = max(size.width * share, 4.dp.toPx())
                 drawRoundRect(
-                    brush = Brush.horizontalGradient(
-                        colors = listOf(Theme.planning, Color(0xFF7CC0FF)),
-                        startX = 0f,
-                        endX = filled,
-                    ),
+                    // Solid. This was a blue-to-lighter-blue gradient with a
+                    // hand-typed #7CC0FF on the end of it — decoration on a
+                    // bar whose only job is to be read as a length, and the
+                    // one hex in this app that belonged to no token at all.
+                    color = Theme.usageTokenBar,
                     size = Size(filled, size.height),
                     cornerRadius = radius,
                 )

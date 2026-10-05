@@ -1,6 +1,8 @@
 package com.kardanov.agstatus.ui
 
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -26,7 +28,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.TextStyle
@@ -35,6 +36,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kardanov.agstatus.Theme
+import com.kardanov.agstatus.rememberReduceMotion
 import com.kardanov.agstatus.UsageInfo
 import com.kardanov.agstatus.UsageWindow
 import kotlinx.coroutines.delay
@@ -146,7 +148,15 @@ private fun UsageBarRow(
     val barColor = Theme.usageColor(window.usedPct)
     val pctText = "${window.usedPct.roundToInt()}%"
     val reset = resetText(window.resetsAt, nowMillis)
-    val fraction by animateFloatAsState(window.fraction, label = "usageFraction")
+    // The bar slides to its new length because the number changed, which is
+    // the one reason this board animates anything. A device asked for less
+    // motion gets the new length immediately instead.
+    val reduceMotion = rememberReduceMotion()
+    val fraction by animateFloatAsState(
+        targetValue = window.fraction,
+        animationSpec = if (reduceMotion) snap() else spring(),
+        label = "usageFraction",
+    )
 
     val description = buildString {
         append("$sourceName ${window.displayLabel}: $pctText used")
@@ -202,7 +212,9 @@ private fun UsageBarRow(
         }
         Canvas(modifier = Modifier.fillMaxWidth().height(6.dp)) {
             val radius = CornerRadius(size.height / 2)
-            drawRoundRect(color = Color.White.copy(alpha = 0.06f), cornerRadius = radius)
+            // Theme.raised, the surface token for exactly this. White at 6%
+            // over the new ground is not that colour, and drifts from it.
+            drawRoundRect(color = Theme.raised, cornerRadius = radius)
             if (fraction > 0f) {
                 // A hairline of progress stays visible even at ~0%.
                 val filled = max(size.width * fraction, 4.dp.toPx())

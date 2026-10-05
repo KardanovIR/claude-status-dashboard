@@ -45,7 +45,11 @@
   --ink-900: oklch(20.5% 0.009 var(--hue)); /* card */
   --ink-850: oklch(24.5% 0.010 var(--hue)); /* raised: inputs, tracks, hover */
   --ink-800: oklch(30% 0.011 var(--hue));   /* hairlines */
-  --ink-700: oklch(38% 0.012 var(--hue));   /* hairlines, emphatic */
+  /* --ink-700: hairlines, emphatic. A RULE, never a glyph — it measures 1.80:1
+     against a card, and every contrast failure this design system has had was
+     this token or the one above it used as text. The dot between two facts in
+     a card's meta line is text; it takes --text-3. */
+  --ink-700: oklch(38% 0.012 var(--hue));
 
   /* ---- Text ------------------------------------------------------------
    * All three clear WCAG AA on --ink-900. The palette this replaces used a

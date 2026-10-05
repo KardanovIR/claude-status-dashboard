@@ -145,6 +145,237 @@ jobs:
           }
           Write-Host "public/install.ps1 parses under Windows PowerShell $($PSVersionTable.PSVersion)"
 
+  # The two jobs above prove install.ps1 PARSES. Nothing had ever RUN it — the
+  # only documented Windows install path had never been executed end to end, so
+  # it could have been broken for a whole release and nothing would have said
+  # so. These two execute it.
+  #
+  # This one runs the refusals, which are the only part that can run anywhere:
+  # every one of them throws before the first network call and the first write.
+  installer-guards:
+    name: install.ps1 (argument guards)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The guards refuse what they are supposed to refuse
+        shell: pwsh
+        run: |
+          $text = Get-Content -Raw 'public/install.ps1'
+          function Assert-Refusal([string[]] $Arguments, [string] $Expected) {
+            $threw = $false
+            try { & ([scriptblock]::Create($text)) @Arguments } catch {
+              $threw = $true
+              if ($_.Exception.Message -notlike "*$Expected*") {
+                Write-Host "::error::install.ps1 $Arguments refused with the wrong message: $($_.Exception.Message)"
+                exit 1
+              }
+            }
+            if (-not $threw) {
+              Write-Host "::error::install.ps1 $Arguments was accepted; it must be refused"
+              exit 1
+            }
+            Write-Host "refused as expected: $Arguments"
+          }
+          # The script-block form is the one the file's own header documents,
+          # and the only one that can carry parameters through `irm`.
+          #
+          # A POSIX spelling binds POSITIONALLY to -Code here, so without the
+          # guard `--code ABCD-1234` would be silently taken as a board code of
+          # "--code" and a stray argument.
+          Assert-Refusal @('--code','ABCD-1234') 'That looks like a POSIX-style flag'
+          # param() is a simple block, so anything unbindable lands in $args
+          # instead of erroring. The guard is what turns that into a refusal.
+          Assert-Refusal @('-Bogus','x') 'Unrecognised argument(s)'
+          # And on a non-Windows host it must say so rather than start work.
+          Assert-Refusal @() 'install.ps1 is the Windows installer'
+
+  # The real thing: the documented one-liner, executed on Windows, against a
+  # real board built from this checkout.
+  #
+  # It installs the LATEST PUBLISHED RELEASE, not this PR's code — `$repo` in
+  # install.ps1 is hard-coded and has no override — so what this proves is that
+  # the install path works right now, which is exactly the thing that was never
+  # being checked. It does not prove this PR's artifact layout installs.
+  #
+  # It runs as a created standard user because step 1 of the installer refuses
+  # an elevated shell, and GitHub's Windows image runs jobs elevated. That
+  # refusal is itself asserted below, so if the image ever stops being elevated
+  # this job says so instead of quietly testing something else.
+  windows-install:
+    name: install.ps1 (real install, Windows PowerShell 5.1)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+      - name: The elevation refusal, asserted where it applies
+        shell: powershell
+        run: |
+          $principal = New-Object Security.Principal.WindowsPrincipal(
+            [Security.Principal.WindowsIdentity]::GetCurrent())
+          if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            Write-Host '::error::this runner is no longer elevated - the refusal below cannot be asserted, and the install can run directly instead of through a created user'
+            exit 1
+          }
+          $text = Get-Content -Raw 'public/install.ps1'
+          $threw = $false
+          try { & ([scriptblock]::Create($text)) } catch {
+            $threw = $true
+            if ($_.Exception.Message -notlike '*non-elevated PowerShell window*') {
+              Write-Host "::error::elevated run refused with the wrong message: $($_.Exception.Message)"
+              exit 1
+            }
+          }
+          if (-not $threw) { Write-Host '::error::an elevated run was accepted'; exit 1 }
+          # Step 1 precedes every write, so nothing can have landed yet.
+          if (Test-Path "$env:LOCALAPPDATA\AgStatus") {
+            Write-Host '::error::the refused run still wrote to %LOCALAPPDATA%'
+            exit 1
+          }
+          Write-Host 'elevated run refused, nothing written'
+
+      - name: Blast shield
+        shell: powershell
+        run: |
+          # resolveBaseUrl falls back to AGSTATUS_URL and then to the PRODUCTION
+          # board, so any run that loses its -Url must die on a dead local port
+          # rather than mint a real board on agstatus.online.
+          [Environment]::SetEnvironmentVariable('AGSTATUS_URL','http://127.0.0.1:1','Machine')
+
+      - name: A real board to install against
+        shell: powershell
+        run: |
+          $port = 4399
+          # PUBLIC_URL is deliberately wrong, exactly as cli/test/e2e.test.ts
+          # has it: the CLI must build board URLs from the origin it reached.
+          $env:MULTI_TENANT = 'true'; $env:PORT = "$port"
+          $env:PUBLIC_URL = 'http://misconfigured.example'; $env:SESSION_TTL_MS = '0'
+          Start-Process node -ArgumentList 'dist/server.js' -PassThru |
+            Select-Object -ExpandProperty Id |
+            Set-Content "$env:RUNNER_TEMP\board.pid"
+          $base = "http://127.0.0.1:$port"
+          $up = $false
+          foreach ($i in 1..30) {
+            try { Invoke-RestMethod "$base/healthz" -TimeoutSec 2 | Out-Null; $up = $true; break }
+            catch { Start-Sleep -Seconds 1 }
+          }
+          if (-not $up) { Write-Host '::error::the board never came up'; exit 1 }
+          "AGSTATUS_TEST_BASE=$base" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: A non-elevated user to install as
+        shell: powershell
+        run: |
+          $pw = [Guid]::NewGuid().ToString('N') + '!Aa1'   # throwaway, never echoed
+          "AGSTATUS_CI_PW=$pw" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          net user agstatusci $pw /add /y | Out-Null       # NOT in Administrators
+          $stage = 'C:\agstatus-ci'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item 'public/install.ps1' "$stage\install.ps1"
+          icacls $stage /grant 'agstatusci:(OI)(CI)(M)' /T | Out-Null
+          # The wrapper is scaffolding for the invocation only: install.ps1 is
+          # loaded verbatim and called through its own documented form.
+          @'
+          param([string] $Base)
+          try {
+            & ([scriptblock]::Create((Get-Content -Raw 'C:\agstatus-ci\install.ps1'))) -Url $Base
+            exit 0
+          } catch { Write-Host "INSTALLER THREW: $($_.Exception.Message)"; exit 1 }
+          '@ | Set-Content "$stage\run.ps1" -Encoding ascii
+          $cred = New-Object System.Management.Automation.PSCredential('.\agstatusci',
+            (ConvertTo-SecureString $pw -AsPlainText -Force))
+          # Warm the profile so C:\Users\agstatusci exists before the
+          # installer reads %LOCALAPPDATA%.
+          Start-Process powershell.exe -ArgumentList '-NoProfile','-Command','whoami' `
+            -Credential $cred -WorkingDirectory $stage -Wait
+
+      - name: Install, then upgrade over it
+        shell: powershell
+        run: |
+          $cred = New-Object System.Management.Automation.PSCredential('.\agstatusci',
+            (ConvertTo-SecureString $env:AGSTATUS_CI_PW -AsPlainText -Force))
+          function Invoke-Install([string] $Label) {
+            $out = "$env:RUNNER_TEMP\$Label.out"; $err = "$env:RUNNER_TEMP\$Label.err"
+            $p = Start-Process powershell.exe -ArgumentList `
+              '-NoProfile','-ExecutionPolicy','Bypass','-File','C:\agstatus-ci\run.ps1', `
+              '-Base',$env:AGSTATUS_TEST_BASE `
+              -Credential $cred -WorkingDirectory 'C:\agstatus-ci' `
+              -RedirectStandardOutput $out -RedirectStandardError $err -Wait -PassThru
+            Get-Content $out -ErrorAction SilentlyContinue | Write-Host
+            if ($p.ExitCode -ne 0) {
+              Get-Content $err -ErrorAction SilentlyContinue | Write-Host
+              Write-Host "::error::$Label exited $($p.ExitCode)"
+              exit 1
+            }
+          }
+          # The same command is a first install and an upgrade — the README and
+          # docs/hooks.md both promise that, and nothing checked it.
+          Invoke-Install 'install'
+          Invoke-Install 'upgrade'
+
+      - name: What landed, and does it run
+        shell: powershell
+        run: |
+          $prefix = 'C:\Users\agstatusci\AppData\Local\AgStatus'
+          foreach ($rel in @('lib\agstatus\dist\cli.js','lib\agstatus\package.json','lib\agstatus\assets\agstatus-hook.js')) {
+            if (-not (Test-Path "$prefix\$rel")) {
+              Write-Host "::error::missing after install: $rel"
+              exit 1
+            }
+          }
+          # End to end: the installed build runs and can say what it is. This
+          # is the published release, so it is deliberately NOT compared
+          # against this checkout's cli/package.json.
+          $v = & node "$prefix\lib\agstatus\dist\cli.js" version
+          if ($v -notmatch '^agstatus \d+\.\d+\.\d+') {
+            Write-Host "::error::the installed build did not report a version: $v"
+            exit 1
+          }
+          Write-Host "installed and runnable: $v"
+
+      - name: Clean up
+        if: always()
+        shell: powershell
+        run: |
+          $pid = Get-Content "$env:RUNNER_TEMP\board.pid" -ErrorAction SilentlyContinue
+          if ($pid) { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue }
+          net user agstatusci /delete 2>$null | Out-Null
+          Remove-Item 'C:\Users\agstatusci' -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item 'C:\agstatus-ci' -Recurse -Force -ErrorAction SilentlyContinue
+
+  # Android has never been compiled by CI, which is why docs/release-notes
+  # /v1.5.0.md could say "Android still has the old palette" for a whole
+  # release cycle without anything objecting: there was no build to go red.
+  # The machine this is usually developed on has JDK 11 and 8, and AGP needs
+  # 17, so for a long time this runner was the only place it COULD be built.
+  #
+  # assembleDebug, not assembleRelease: signing is conditional on a
+  # keystore.properties that is gitignored and must never reach CI, and
+  # compiling every source file is the whole point here.
+  android:
+    name: Android (build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: gradle
+      - name: assembleDebug
+        working-directory: android
+        run: ./gradlew --no-daemon assembleDebug
+      - name: lint
+        working-directory: android
+        # Separate from the build so a lint regression is distinguishable from
+        # a compile error in the log.
+        run: ./gradlew --no-daemon lintDebug
+
   docker:
     name: Docker image (build only)
     runs-on: ubuntu-latest

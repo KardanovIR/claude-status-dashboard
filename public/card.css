@@ -120,7 +120,46 @@
   color: var(--state);
 }
 
+/* The board makes the title a real button, so a card's timeline has an
+ * accessible name and a keyboard stop; the landing page renders a plain .name
+ * with no control, because its cards illustrate rather than navigate. The two
+ * must look identical, so the button contributes behaviour and nothing else. */
+.name-open {
+  all: unset;
+  flex: 1 1 auto;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.name-open {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2xs);
+}
+
+/* The same affordance .usage-more gives the plan-limit block: it leans in on
+ * approach rather than animating on its own. */
+.name-more {
+  flex: none;
+  font-size: var(--t-md);
+  color: var(--text-3);
+  transition: transform var(--d-fast) var(--ease), color var(--d-fast) var(--ease);
+}
+
+.name-open:hover .name-more,
+.name-open:focus-visible .name-more {
+  color: var(--text-1);
+  transform: translateX(2px);
+}
+
+.name-open:focus-visible {
+  outline: 2px solid var(--st-done);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
 .name {
+  display: block;
   flex: 1 1 auto;
   min-width: 0;
   /* The one value on this card meant to be legible across a room, so it takes

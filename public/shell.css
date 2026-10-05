@@ -326,6 +326,105 @@ body.detail-open > .footer { display: none; }
   line-height: var(--lh-body);
 }
 
+/* ---- Session timeline ---------------------------------------------------
+ * The other thing the detail surface shows. Mirrors the iOS timeline rather
+ * than inventing a second design: a gutter line with a state-coloured dot,
+ * the state's own word, when it happened, and what it said.
+ *
+ * The word carries the state. The dot is a second channel for reading the
+ * column at a glance, never the only one. It deliberately does NOT reuse the
+ * state icons: at 9px beside their own name they would be decoration of a
+ * label rather than a channel of their own.
+ */
+.tl { list-style: none; margin: 0 0 var(--space-lg); padding: 0; }
+
+.tl-row {
+  --state: var(--st-idle);
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.tl-row.status-idle { --state: var(--st-idle); }
+.tl-row.status-planning { --state: var(--st-planning); }
+.tl-row.status-coding { --state: var(--st-coding); }
+.tl-row.status-testing { --state: var(--st-testing); }
+.tl-row.status-blocked { --state: var(--st-blocked); }
+.tl-row.status-done { --state: var(--st-done); }
+
+/* One continuous hairline down the column, stopped at both ends so the run
+ * reads as bounded rather than as something cut off. */
+.tl-gutter {
+  position: relative;
+  flex: none;
+  width: 9px;
+  display: flex;
+  justify-content: center;
+}
+
+.tl-gutter::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--ink-800);
+}
+
+.tl-first .tl-gutter::before { top: 11px; }
+.tl-last .tl-gutter::before { bottom: calc(100% - 11px); }
+.tl-first.tl-last .tl-gutter::before { display: none; }
+
+.tl-dot {
+  position: relative;
+  margin-top: 6px;
+  width: 9px;
+  height: 9px;
+  border-radius: var(--r-pill);
+  background: var(--state);
+}
+
+.tl-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: var(--space-sm);
+  min-width: 0;
+}
+
+.tl-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-xs);
+}
+
+.tl-status {
+  font-family: var(--font-label);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--state);
+}
+
+.tl-at {
+  font-family: var(--font-read);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+}
+
+.tl-ago { font-size: var(--t-2xs); color: var(--text-3); }
+
+.tl-msg {
+  font-size: var(--t-sm);
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+
+/* The newest entry is the one you came to read. */
+.tl-first .tl-msg { color: var(--text-1); }
+
 /* ---- Footer -------------------------------------------------------------
  * The webhook URL, which is setup rather than triage. It used to be fixed to
  * the bottom of the viewport behind a blur, which cost every card 104px of

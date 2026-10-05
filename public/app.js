@@ -108,6 +108,7 @@
     const d = node.dataset || {};
     if (SAFE.test(d.type || '')) return `[data-type="${d.type}"]`;
     if (d.dismiss !== undefined) return '[data-dismiss]';
+    if (d.open !== undefined) return '[data-open]';
     if (SAFE.test(d.source || '')) return `[data-source="${d.source}"]`;
     if (SAFE.test(node.id || '')) return `#${node.id}`;
     return null;
@@ -282,7 +283,10 @@
   function cardInner(s) {
     return `<div class="card-head">
         <div class="card-title-row">
-          <div class="name" title="${escape(s.name)}">${escape(s.name)}</div>
+          <button class="name-open" type="button" data-open="${escape(s.id)}"
+                  aria-label="${escape(`${s.name} — open this session's history`)}"
+            ><span class="name" title="${escape(s.name)}">${escape(s.name)}</span
+            ><span class="name-more" aria-hidden="true">›</span></button>
           <button class="dismiss" type="button" data-dismiss="${escape(s.id)}" aria-label="Dismiss session" title="Dismiss">×</button>
         </div>
         <div class="card-state-row">${stateMark(s.status)}<span class="badge">${escape(s.status)}</span></div>
@@ -643,6 +647,20 @@
     e.preventDefault();
     if (focusBtn.getAttribute('aria-disabled') === 'true') return;
     sendCommand(focusBtn.dataset.focus, focusBtn.dataset.type === 'resume' ? 'resume' : 'focus');
+  });
+
+  // Last, deliberately: the card's own controls are matched first, so a
+  // control nested inside the title can never be swallowed by it.
+  //
+  // The id is NOT encodeURIComponent'd. SESSION_ID_RE allows ':', which that
+  // would turn into %3A — and the route below matches the raw charset, so
+  // encoding here would break every session whose id contains one. Every
+  // character the server accepts is already legal in a fragment.
+  gridEl.addEventListener('click', (e) => {
+    const open = e.target.closest('[data-open]');
+    if (!open) return;
+    e.preventDefault();
+    location.hash = `session/${open.dataset.open}`;
   });
 
   function setConnected(ok) {
@@ -1046,6 +1064,75 @@
     back.focus();
   }
 
+  // ---- Session timeline ----------------------------------------------------
+  //
+  // The second hash route. It renders into the same `.detail` element and
+  // under the same `body.detail-open` as the usage screen, because they are
+  // the same thing from the page's point of view: a view that takes over.
+  //
+  // Mirrors the iOS timeline (SessionHistoryView / HistoryRow) rather than
+  // inventing a second design — a gutter line with a state-coloured dot, the
+  // state's own word, when it happened, and what it said. The word is what
+  // carries the state here; the dot is a second channel, not the only one.
+
+  /** "18:42" today, "26 Jul, 18:42" otherwise — the same split iOS makes. */
+  function eventTime(at) {
+    const d = new Date(at);
+    const hhmm = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    const today = new Date();
+    const sameDay = d.getFullYear() === today.getFullYear()
+      && d.getMonth() === today.getMonth()
+      && d.getDate() === today.getDate();
+    if (sameDay) return hhmm;
+    return `${d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}, ${hhmm}`;
+  }
+
+  function renderSession(id, events) {
+    const s = state.get(id);
+    const name = s ? s.name : id;
+    const rows = events.map((e, i) => `
+      <li class="tl-row${i === 0 ? ' tl-first' : ''}${i === events.length - 1 ? ' tl-last' : ''} ${statusClass(e.status)}">
+        <span class="tl-gutter" aria-hidden="true"><span class="tl-dot"></span></span>
+        <span class="tl-body">
+          <span class="tl-head">
+            <span class="tl-status">${escape(e.status)}</span>
+            <span class="tl-at">${escape(eventTime(e.at))}</span>
+            <span class="tl-ago" data-ts="${Number(e.at)}"></span>
+          </span>
+          ${e.message ? `<span class="tl-msg">${escape(e.message)}</span>` : ''}
+        </span>
+      </li>`).join('');
+
+    paint(detailEl, `
+      <div class="dv-head">
+        <button class="dv-back" type="button" id="dv-back" aria-label="Back to the board">‹ Board</button>
+        <h2 class="dv-title">${escape(name)}</h2>
+      </div>
+      ${events.length === 0
+        ? '<p class="dv-empty">No history yet. Events appear here as the agent works.</p>'
+        : `<ol class="tl">${rows}</ol>`}
+      <p class="dv-note">Every status this session reported, newest first. A session's history
+        is bounded and goes when its card does — a card stops being served 24 hours after its
+        last update.</p>`);
+
+    const back = document.getElementById('dv-back');
+    back.addEventListener('click', () => { location.hash = ''; });
+    back.focus();   // same reasoning as the usage detail: the opener is now hidden
+  }
+
+  async function openSession(id) {
+    detailEl.hidden = false;
+    paint(detailEl, '<p class="dv-empty">Loading…</p>');
+    try {
+      const res = await fetch(`${BASE}/api/sessions/${encodeURIComponent(id)}/history`);
+      if (!res.ok) throw new Error(String(res.status));
+      const events = await res.json();
+      renderSession(id, Array.isArray(events) ? events : []);
+    } catch {
+      paint(detailEl, '<p class="dv-empty">Could not load this session\'s history.</p>');
+    }
+  }
+
   async function openDetail(source) {
     detailEl.hidden = false;
     paint(detailEl, '<p class="dv-empty">Loading…</p>');
@@ -1058,17 +1145,27 @@
     }
   }
 
-  /** The detail view is a hash route, so Back returns to the board. */
-  // Remembered so closing the detail can return focus to the block that
-  // opened it, which is no longer on screen by the time the route changes.
+  /** Two detail routes, one surface. Back returns to the board from either. */
+  // Remembered so closing can return focus to the control that opened it,
+  // which is no longer on screen by the time the route changes.
   let lastSource = '';
+  let lastSession = '';
+
+  // The server's own session-id charset (SESSION_ID_RE in src/app.ts). Every
+  // character in it is safe unescaped inside a quoted attribute selector, and
+  // none of them is a quote — which is what lets the focus-return below build
+  // one by interpolation.
+  const SESSION_HASH_RE = /^#session\/([A-Za-z0-9._:-]{1,128})$/;
 
   function applyRoute() {
     const m = /^#usage\/([a-z][a-z0-9_-]*)$/.exec(location.hash);
+    const sm = SESSION_HASH_RE.exec(location.hash);
     if (m) lastSource = m[1];
-    const showing = Boolean(m);
+    if (sm) lastSession = sm[1];
+    const showing = Boolean(m || sm);
     document.body.classList.toggle('detail-open', showing);
-    if (showing) openDetail(m[1]);
+    if (m) openDetail(m[1]);
+    else if (sm) openSession(sm[1]);
     else { detailEl.hidden = true; paint(detailEl, ''); }
     // Opening the detail hides `.usage` — including the button that was just
     // pressed — so without this the keyboard user is dropped back to <body>
@@ -1079,9 +1176,14 @@
     // openDetail is async and there is nothing to focus until it resolves.)
     // No CSS.escape needed: the regex above already constrains lastSource to
     // [a-z][a-z0-9_-]*, which is selector-safe by construction.
-    if (!showing && lastSource) {
-      const land = usageEl.querySelector(`[data-source="${lastSource}"] .usage-open`);
+    if (!showing) {
+      const land = lastSession
+        ? gridEl.querySelector(`[data-open="${lastSession}"]`)
+        : lastSource
+          ? usageEl.querySelector(`[data-source="${lastSource}"] .usage-open`)
+          : null;
       if (land) land.focus();
+      lastSession = '';
     }
   }
 

@@ -139,6 +139,14 @@ const session = (over: Record<string, unknown> = {}) => ({
 });
 const online = () => [{ id: 'm1', name: 'Studio', online: true, since: Date.now() }];
 
+/** What GET /api/sessions/:id/history returns: SessionEvent[], newest first. */
+const HISTORY = [
+  { seq: 3, status: 'done', message: 'Turn finished', at: 1_700_000_300_000 },
+  { seq: 2, status: 'blocked', message: 'May I push to master?', at: 1_700_000_200_000 },
+  { seq: 1, status: 'coding', message: 'editing src/app.ts', at: 1_700_000_100_000 },
+  { seq: 0, status: 'planning', message: '', at: 1_700_000_000_000 },
+];
+
 /** Evaluates public/app.js against a real DOM and returns the handles a test drives it by. */
 async function loadBoard() {
   const dom = new JSDOM(INDEX_HTML, { url: 'http://board.test/' });
@@ -150,10 +158,29 @@ async function loadBoard() {
   vi.stubGlobal('document', doc);
   // Not dom.window: the board assigns location.hash, which jsdom treats as a
   // navigation it then refuses to perform. Only these four members are read.
-  vi.stubGlobal('window', { addEventListener() {} });   // marks.js writes AGSTATUS_MARKS onto this
+  // Captured, so a hash assignment can fire hashchange the way a browser
+  // does. The previous stub swallowed both, which meant the board's two hash
+  // routes were never exercised by a test at all — a click set a property on
+  // a plain object and nothing downstream ran.
+  const listeners: Record<string, () => void> = {};
+  vi.stubGlobal('window', {                            // marks.js writes AGSTATUS_MARKS onto this
+    addEventListener(type: string, fn: () => void) { listeners[type] = fn; },
+  });
   // A browser global the board uses and the plain stub above does not carry.
   vi.stubGlobal('requestAnimationFrame', (fn: () => void) => setTimeout(fn, 0));
-  vi.stubGlobal('location', { pathname: '/', hash: '', origin: 'http://board.test', href: '' });
+  let hash = '';
+  vi.stubGlobal('location', {
+    pathname: '/', origin: 'http://board.test', href: '',
+    get hash() { return hash; },
+    set hash(v: string) {
+      // A browser normalises a bare fragment to one with '#', and leaves the
+      // empty string empty rather than making it '#'.
+      const next = v === '' ? '' : v.startsWith('#') ? v : `#${v}`;
+      if (next === hash) return;
+      hash = next;
+      listeners.hashchange?.();
+    },
+  });
   vi.stubGlobal('navigator', { clipboard: { writeText: async () => {} } });
   vi.stubGlobal('EventSource', class extends FakeStream {
     constructor(_url: string) { super(); stream = this; }
@@ -162,6 +189,7 @@ async function loadBoard() {
     calls.push({ url, method: init?.method || 'GET', body: init?.body || '' });
     if (url.endsWith('/api/config')) return reply({ mode: 'legacy', webhookUrl: 'http://board.test/webhook' });
     if (url.endsWith('/commands')) return reply({ id: JSON.parse(init!.body!).id, delivered: true });
+    if (url.includes('/history')) return reply(HISTORY);
     return reply({});
   });
 
@@ -180,10 +208,12 @@ async function loadBoard() {
     /** Any session event re-renders the grid, which is where focus state is readable. */
     repaint(over: Record<string, unknown> = {}) { stream!.emit('session', session(over)); return gridEl; },
     /** A real click on the real control, so aria-disabled is honoured as it is in a browser. */
-    tap(id: string, kind: 'focus' | 'resume' | 'dismiss') {
+    tap(id: string, kind: 'focus' | 'resume' | 'dismiss' | 'open') {
       const sel = kind === 'dismiss'
         ? `[data-dismiss="${id}"]`
-        : `[data-focus="${id}"][data-type="${kind}"]`;
+        : kind === 'open'
+          ? `[data-open="${id}"]`
+          : `[data-focus="${id}"][data-type="${kind}"]`;
       const btn = gridEl.querySelector(sel);
       if (!btn) throw new Error(`no ${kind} control on the card for ${id}`);
       btn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
@@ -391,6 +421,105 @@ describe('board script: focus lifecycle', () => {
     expect(odd.querySelector('.badge')!.textContent).toBe('rogue status');
     expect(odd.querySelector('.state-mark')).not.toBeNull();
     expect(b.$('.card[data-id="b"]')!.className).toContain('status-coding');
+  });
+
+  // The web board served no session timeline at all: the server has had
+  // /api/sessions/:id/history since 1.2 and iOS has rendered it since, but a
+  // click on a web card matched only [data-dismiss] and [data-focus] and fell
+  // through. The landing page had to say "In the app, tap any session for its
+  // timeline" to stay honest about it.
+  describe('a card opens its own timeline', () => {
+    const openCard = async (b: Awaited<ReturnType<typeof loadBoard>>) => {
+      b.tap('s1', 'open');
+      await b.settle();
+      await b.settle();   // openSession awaits a fetch before it paints
+    };
+
+    it('makes the title a real control, not a click handler on the article', async () => {
+      vi.useFakeTimers();
+      const b = await loadBoard();
+      b.emit('snapshot', [session()]);
+      const open = b.$('[data-open]') as HTMLButtonElement;
+      expect(open.tagName).toBe('BUTTON');
+      // A name a screen reader can act on: what it is, then what it does.
+      expect(open.getAttribute('aria-label')).toBe("Fix the parser — open this session's history");
+      // The card's other controls are siblings, never inside the title, so
+      // one can never swallow a press meant for another.
+      expect(b.$('[data-dismiss]')!.closest('[data-open]')).toBeNull();
+      expect(b.$('[data-focus]')!.closest('[data-open]')).toBeNull();
+    });
+
+    it('renders the timeline newest-first, one row per event', async () => {
+      vi.useFakeTimers();
+      const b = await loadBoard();
+      b.emit('snapshot', [session()]);
+      await openCard(b);
+
+      const rows = [...document.querySelectorAll('.tl-row')];
+      expect(rows).toHaveLength(HISTORY.length);
+      expect(rows.map((r) => r.querySelector('.tl-status')!.textContent))
+        .toEqual(['done', 'blocked', 'coding', 'planning']);
+      // Each row carries its own state, so the dot and the word agree.
+      expect(rows.map((r) => r.className)).toEqual([
+        expect.stringContaining('status-done'),
+        expect.stringContaining('status-blocked'),
+        expect.stringContaining('status-coding'),
+        expect.stringContaining('status-planning'),
+      ]);
+      // An event with no message renders no message element rather than one
+      // that is empty.
+      expect(rows[3].querySelector('.tl-msg')).toBeNull();
+      expect(rows[0].querySelector('.tl-msg')!.textContent).toBe('Turn finished');
+    });
+
+    it('takes over the page and hands focus to Back, then gives it back', async () => {
+      vi.useFakeTimers();
+      const b = await loadBoard();
+      b.emit('snapshot', [session()]);
+      const open = b.$('[data-open]') as HTMLButtonElement;
+      await openCard(b);
+
+      expect(document.body.classList.contains('detail-open')).toBe(true);
+      expect(document.activeElement).toBe(document.getElementById('dv-back'));
+
+      (document.getElementById('dv-back') as HTMLButtonElement).click();
+      await b.settle();
+      expect(document.body.classList.contains('detail-open')).toBe(false);
+      // Back on the control that opened it — not dumped at the top of the page.
+      expect(document.activeElement).toBe(open);
+    });
+
+    it('survives a session id with the punctuation the server allows', async () => {
+      // SESSION_ID_RE is [A-Za-z0-9._:-]; ':' is why the hash is not
+      // encodeURIComponent'd, and '.' and ':' are why the focus-return
+      // selector has to be a quoted attribute match.
+      vi.useFakeTimers();
+      const b = await loadBoard();
+      const id = 'host:1.2-3_4';
+      b.emit('snapshot', [session({ id })]);
+      b.tap(id, 'open');
+      await b.settle();
+      await b.settle();
+      expect(document.querySelectorAll('.tl-row')).toHaveLength(HISTORY.length);
+      (document.getElementById('dv-back') as HTMLButtonElement).click();
+      await b.settle();
+      expect((document.activeElement as HTMLElement).dataset.open).toBe(id);
+    });
+
+    it('keeps the title focused across a repaint of its own card', async () => {
+      // focusKey has to know about [data-open]: the button carries no
+      // data-type, data-source or id, so without a branch for it the user is
+      // dropped to <body> the next time anything about that card changes.
+      vi.useFakeTimers();
+      const b = await loadBoard();
+      b.emit('snapshot', [session()]);
+      const before = b.$('[data-open]') as HTMLButtonElement;
+      before.focus();
+      b.emit('session', session({ message: 'now editing src/store.ts' }));
+      const after = b.$('[data-open]') as HTMLButtonElement;
+      expect(after).not.toBe(before);          // the card really did repaint
+      expect(document.activeElement).toBe(after);
+    });
   });
 
   // paintFocus() patches the ack line in place rather than re-rendering the

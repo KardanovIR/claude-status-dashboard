@@ -91,8 +91,8 @@ adb install /tmp/apk/app-debug.apk
 
 | # | File | Shows |
 | --- | --- | --- |
-| 1 | `01-board.png` | The live board: plan-limit bars and sessions across coding, done, and blocked |
-| 2 | `02-history.png` | A session timeline, every status change timestamped |
+| 1 | `01-board.png` | The live board: plan-limit bars, a coding session with its Focus control and why it is disabled, a finished one, and the next card beginning |
+| 2 | `02-history.png` | A session timeline: every status change with its mark, its message and its time |
 | 3 | `03-welcome.png` | Setup options and demo mode — no account required |
 
 To regenerate:

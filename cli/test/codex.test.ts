@@ -9,7 +9,7 @@ import type { Server } from 'http';
 import { createApp } from '../../src/app';
 import { runInit, runStatus, runUninstall, codexNeedsRetrust } from '../src/index';
 import {
-  codexCommandsInFile,
+  ourCommands,
   CODEX_EVENTS,
   codexConfigPath,
   codexHookCommand,
@@ -468,10 +468,15 @@ describe('init/uninstall with a detected Codex install', () => {
 
   it('reads back every AgStatus command a hooks file registers', () => {
     const cmd = 'node "$HOME/.codex/hooks/agstatus-hook.js"';
-    expect(codexCommandsInFile(mergeCodexHooks({}, cmd))).toEqual([cmd]);
-    expect(codexCommandsInFile({})).toEqual([]);
+    // One entry per registered event, not a set — codexHasOurHooks only reads
+    // the length, and the retrust check only asks whether ours is among them.
+    const found = ourCommands(mergeCodexHooks({}, cmd));
+    expect(found).toHaveLength(CODEX_EVENTS.length);
+    expect([...new Set(found)]).toEqual([cmd]);
+
+    expect(ourCommands({})).toEqual([]);
     // Malformed shapes must not throw here — readCodexHooks is the gate.
-    expect(codexCommandsInFile({ hooks: { Stop: 'nope' } } as never)).toEqual([]);
+    expect(ourCommands({ hooks: { Stop: 'nope' } } as never)).toEqual([]);
   });
 
   it('respects --no-codex and force-configures with --codex when undetected', async () => {

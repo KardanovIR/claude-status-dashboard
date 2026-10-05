@@ -31,7 +31,7 @@ import { runFocus } from './focus';
 import { runKeys } from './keys';
 import type { ListenerConfig } from './listener/types';
 import {
-  codexCommandsInFile,
+  ourCommands,
   codexConfigPath,
   codexDetected,
   codexHasOurHooks,
@@ -99,7 +99,7 @@ function setupCodex(
   // this notice used to print unconditionally, on every upgrade, saying "this
   // release changed that command" whether or not it had. A warning that is
   // wrong most of the time is one nobody acts on the time it is right.
-  const previous = codexCommandsInFile(hooks);
+  const previous = ourCommands(hooks);
   const retrust = previous.length > 0 && !previous.includes(command);
   const merged = mergeCodexHooks(hooks, command);
   installHookFile(codexHookInstallPath());
@@ -123,7 +123,7 @@ function setupCodex(
 
 /** Whether the installer needs to tell the user to re-run /hooks. */
 export function codexNeedsRetrust(hooks: HooksFile, command: string): boolean {
-  const previous = codexCommandsInFile(hooks);
+  const previous = ourCommands(hooks);
   return previous.length > 0 && !previous.includes(command);
 }
 

@@ -34,7 +34,7 @@ export const CODEX_EVENTS: Array<{ event: string; matcher?: string }> = [
 /** Keep hooks snappy: our script self-exits at ~4s; Codex's default is 600s. */
 const HOOK_TIMEOUT_SECONDS = 10;
 
-type HooksFile = Record<string, unknown>;
+export type HooksFile = Record<string, unknown>;
 
 interface HookEntry {
   matcher?: string;
@@ -171,8 +171,15 @@ export function codexHookCommand(): string {
   return hookCommandFor(codexHookInstallPath(), os.homedir(), process.platform);
 }
 
-/** Every command string in a parsed hooks.json that is one of ours. */
-function ourCommands(input: HooksFile): string[] {
+/**
+ * Every command string in a parsed hooks.json that is one of ours.
+ *
+ * Exported because Codex keys its trust on a hash of the command: comparing
+ * what is registered against what we are about to write is what tells an
+ * upgrade that CHANGED the command from one that did not, and therefore
+ * whether the user has to re-run /hooks or can ignore the subject.
+ */
+export function ourCommands(input: HooksFile): string[] {
   if (!isPlainObject(input.hooks)) return [];
   const out: string[] = [];
   for (const entries of Object.values(input.hooks)) {
@@ -338,32 +345,6 @@ const isOurs = (entry: HookEntry): boolean =>
  * Pure merge: registers our events under the top-level "hooks" key,
  * replacing previous agstatus entries and preserving everything else.
  */
-/**
- * Every AgStatus command already registered in a hooks file.
- *
- * Codex keys its trust on a hash of the command string, so this is what tells
- * an upgrade that changed the command from one that did not — and therefore
- * whether the user has to re-run /hooks or can ignore the subject entirely.
- * Only our own entries count: a hook somebody else registered is not ours to
- * reason about.
- */
-export function codexCommandsInFile(input: HooksFile): string[] {
-  const out = new Set<string>();
-  const hooks = isPlainObject(input.hooks) ? (input.hooks as Record<string, unknown>) : {};
-  for (const entries of Object.values(hooks)) {
-    if (!Array.isArray(entries)) continue;
-    for (const entry of entries) {
-      const inner = isPlainObject(entry) ? (entry as Record<string, unknown>).hooks : undefined;
-      if (!Array.isArray(inner)) continue;
-      for (const h of inner) {
-        const cmd = isPlainObject(h) ? (h as Record<string, unknown>).command : undefined;
-        if (typeof cmd === 'string' && cmd.includes('agstatus-hook')) out.add(cmd);
-      }
-    }
-  }
-  return [...out];
-}
-
 export function mergeCodexHooks(input: HooksFile, command: string): HooksFile {
   if (input.hooks !== undefined && !isPlainObject(input.hooks)) {
     throw new Error(

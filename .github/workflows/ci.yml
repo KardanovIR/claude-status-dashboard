@@ -383,6 +383,18 @@ jobs:
         # Separate from the build so a lint regression is distinguishable from
         # a compile error in the log.
         run: ./gradlew --no-daemon lintDebug
+      - name: keep the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: agstatus-debug-apk
+          # The only machine that can build this is the one with JDK 17, which
+          # is this runner: AGP 8.13 refuses anything older and the development
+          # Mac has 11 and 8. Keeping the APK is what makes the Android client
+          # reviewable at all — download it, install it on an emulator, look at
+          # it. Fourteen days is longer than any review takes.
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 14
+          if-no-files-found: error
       - name: unit tests
         working-directory: android
         # app/src/test has had five suites since the client was written and

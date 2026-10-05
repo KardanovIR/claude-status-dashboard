@@ -1095,7 +1095,7 @@
         <span class="tl-gutter" aria-hidden="true"><span class="tl-dot"></span></span>
         <span class="tl-body">
           <span class="tl-head">
-            <span class="tl-status">${escape(e.status)}</span>
+            <span class="tl-status">${stateMark(e.status)}${escape(e.status)}</span>
             <span class="tl-at">${escape(eventTime(e.at))}</span>
             <span class="tl-ago" data-ts="${Number(e.at)}"></span>
           </span>

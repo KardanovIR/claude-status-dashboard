@@ -1,7 +1,6 @@
 package com.kardanov.agstatus.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,6 +42,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -190,20 +191,35 @@ private fun HistoryHeader(session: Session) {
     }
 }
 
+/**
+ * The session's current state, drawn exactly as the card draws it: glyph, word,
+ * colour. It was a tinted pill with a tinted border — a status badge of the
+ * kind the enterprise admin panel is made of, and the only thing on this screen
+ * that did not match the card you tapped to get here.
+ */
 @Composable
 private fun HistoryStatusBadge(status: AgentStatus) {
     val color = Theme.colorFor(status)
-    Text(
-        text = status.label,
-        fontSize = 12.sp,
-        fontWeight = FontWeight.SemiBold,
-        color = color,
-        modifier = Modifier
-            .clip(CircleShape)
-            .background(color.copy(alpha = 0.16f))
-            .border(1.dp, color.copy(alpha = 0.35f), CircleShape)
-            .padding(horizontal = 10.dp, vertical = 4.dp),
-    )
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.clearAndSetSemantics { contentDescription = status.label },
+    ) {
+        Icon(
+            imageVector = Theme.iconFor(status),
+            contentDescription = null,
+            tint = color,
+            modifier = Modifier.size(14.dp),
+        )
+        Text(
+            text = status.label.uppercase(),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.6.sp,
+            color = color,
+            maxLines = 1,
+        )
+    }
 }
 
 // MARK: - Timeline row
@@ -241,7 +257,10 @@ private fun HistoryTimelineRow(
                 modifier = Modifier
                     .size(12.dp)
                     .then(
-                        // The newest event glows; the older ones are plain dots.
+                        // The newest event sits in a halo of its own colour at
+                        // 25% — a ring, not a glow: it is drawn behind the dot
+                        // rather than bled outwards, so it reads as a marker and
+                        // not as light. Nothing in this app glows now.
                         if (isFirst) {
                             Modifier
                                 .clip(CircleShape)
@@ -273,6 +292,19 @@ private fun HistoryTimelineRow(
             verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
             Row(verticalAlignment = Alignment.Bottom) {
+                // The row carried its state in the gutter dot and in the colour
+                // of this word, and nowhere else — two carriers, both of them
+                // hue. Not baseline-aligned: an icon has no baseline, so it
+                // takes the word's own centre instead.
+                Icon(
+                    imageVector = Theme.iconFor(event.status),
+                    contentDescription = null,
+                    tint = color,
+                    modifier = Modifier
+                        .size(14.dp)
+                        .padding(end = 1.dp),
+                )
+                Spacer(Modifier.width(5.dp))
                 Text(
                     text = event.status.label,
                     fontSize = 15.sp,

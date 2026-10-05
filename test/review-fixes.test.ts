@@ -466,6 +466,12 @@ describe('board script: focus lifecycle', () => {
         expect.stringContaining('status-coding'),
         expect.stringContaining('status-planning'),
       ]);
+      // And its own mark, beside the word. The row used to carry the state in
+      // the gutter dot and in the colour of that word, and nowhere else — two
+      // carriers, both of them hue, on the one board whose second design
+      // principle forbids exactly that.
+      expect(rows.map((r) => Boolean(r.querySelector('.tl-status .state-mark'))))
+        .toEqual([true, true, true, true]);
       // An event with no message renders no message element rather than one
       // that is empty.
       expect(rows[3].querySelector('.tl-msg')).toBeNull();

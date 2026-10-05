@@ -398,13 +398,24 @@ body.detail-open > .footer { display: none; }
   gap: var(--space-xs);
 }
 
+/* The mark rides the word here exactly as it does on a card. The row had the
+ * state in the gutter dot and in the colour of this word, and nowhere else —
+ * two carriers, both of them hue. */
 .tl-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
   font-family: var(--font-label);
   font-size: var(--t-xs);
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--state);
+}
+
+.tl-status .state-mark {
+  width: 13px;
+  height: 13px;
 }
 
 .tl-at {

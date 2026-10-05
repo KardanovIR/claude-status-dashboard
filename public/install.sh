@@ -814,10 +814,43 @@ codex_wired() {
 # says this the moment it wires Codex up (cli/src/index.ts, setupCodex); the
 # summary repeats it word for word, because by then the init output has
 # scrolled past and this is the one thing left for the user to do.
+# The AgStatus command(s) currently registered, newline-separated. Captured
+# before `init` runs so the notice below can tell an upgrade that CHANGED the
+# command from one that did not.
+codex_registered_commands() {
+  cc_file="${CODEX_HOME:-$HOME/.codex}/hooks.json"
+  [ -f "$cc_file" ] || return 0
+  "$NODE" -e '
+    const fs = require("fs");
+    let d; try { d = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(0); }
+    const out = new Set();
+    for (const entries of Object.values((d && d.hooks) || {})) {
+      if (!Array.isArray(entries)) continue;
+      for (const e of entries) for (const h of (e && e.hooks) || []) {
+        if (h && typeof h.command === "string" && h.command.includes("agstatus-hook")) out.add(h.command);
+      }
+    }
+    process.stdout.write([...out].join("\n"));
+  ' "$cc_file" 2>/dev/null || true
+}
+
 codex_retrust_notice() {
+  # Only when the command actually changed. This used to print on every
+  # upgrade, saying "this release changed that command" whether it had or not —
+  # and a warning that is wrong most of the time is one nobody acts on the time
+  # it is right.
+  [ -n "$CODEX_CMDS_BEFORE" ] || return 0
+  cc_after=$(codex_registered_commands)
+  case "
+$cc_after
+" in
+    *"
+$CODEX_CMDS_BEFORE
+"*) return 0 ;;
+  esac
   say ''
   warn 'One-time step: run /hooks inside Codex to trust the AgStatus hook.'
-  note 'Codex trusts a hook by hashing its command, and this release changed'
+  note 'Codex trusts a hook by hashing its command, and this upgrade changed'
   note 'that command — an existing install stays silent until you re-run /hooks.'
 }
 
@@ -952,6 +985,8 @@ main() {
   install_shim
   setup_path
 
+  # Before init rewrites hooks.json, so the notice can compare.
+  CODEX_CMDS_BEFORE=$(codex_registered_commands)
   ma_rc=0
   run_init "$@" || ma_rc=$?
   if [ "$ma_rc" -eq 0 ]; then setup_focus; fi

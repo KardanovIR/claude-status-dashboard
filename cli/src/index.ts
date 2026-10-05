@@ -31,6 +31,7 @@ import { runFocus } from './focus';
 import { runKeys } from './keys';
 import type { ListenerConfig } from './listener/types';
 import {
+  codexCommandsInFile,
   codexConfigPath,
   codexDetected,
   codexHasOurHooks,
@@ -45,6 +46,7 @@ import {
   writeCodexHookConfig,
   writeCodexHooksWithBackup,
 } from './codex';
+import type { HooksFile } from './codex';
 
 export interface InitOptions {
   url?: string;
@@ -90,7 +92,16 @@ function setupCodex(
   const file = codexHooksPath();
   const configFile = codexConfigPath();
   const hooks = readCodexHooks(file); // throws (aborting) on malformed JSON
-  const merged = mergeCodexHooks(hooks, codexHookCommand());
+  const command = codexHookCommand();
+  // Codex trusts a hook by hashing its command string, so a CHANGED command
+  // invalidates every trusted_hash and the hook goes silent until the user
+  // re-runs /hooks. A command that did not change costs them nothing — and
+  // this notice used to print unconditionally, on every upgrade, saying "this
+  // release changed that command" whether or not it had. A warning that is
+  // wrong most of the time is one nobody acts on the time it is right.
+  const previous = codexCommandsInFile(hooks);
+  const retrust = previous.length > 0 && !previous.includes(command);
+  const merged = mergeCodexHooks(hooks, command);
   installHookFile(codexHookInstallPath());
   // Config before registration: between these two writes the hook is on disk
   // but unregistered, so nothing can fire against a missing config.
@@ -100,9 +111,20 @@ function setupCodex(
   log('✔ Codex is set up too.');
   log(`  Hooks:     ${file}`);
   log(`  Config:    ${configFile} (board URL${secret ? ' and secret' : ''}, mode 0600)`);
-  log('  ⚠ One-time step: run /hooks inside Codex to trust the AgStatus hook.');
-  log('    Codex trusts a hook by hashing its command, and this release changed');
-  log('    that command — an existing install stays silent until you re-run /hooks.');
+  if (retrust) {
+    log('  ⚠ One-time step: run /hooks inside Codex to trust the AgStatus hook.');
+    log('    Codex trusts a hook by hashing its command, and this release changed');
+    log('    that command — an existing install stays silent until you re-run /hooks.');
+  } else if (previous.length === 0) {
+    log('  ⚠ One-time step: run /hooks inside Codex to trust the AgStatus hook.');
+    log('    Codex will not run a hook it has not been told to trust.');
+  }
+}
+
+/** Whether the installer needs to tell the user to re-run /hooks. */
+export function codexNeedsRetrust(hooks: HooksFile, command: string): boolean {
+  const previous = codexCommandsInFile(hooks);
+  return previous.length > 0 && !previous.includes(command);
 }
 
 function renderQr(url: string, log: (line: string) => void): void {

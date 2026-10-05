@@ -7,8 +7,9 @@ import http from 'http';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import { createApp } from '../../src/app';
-import { runInit, runStatus, runUninstall } from '../src/index';
+import { runInit, runStatus, runUninstall, codexNeedsRetrust } from '../src/index';
 import {
+  codexCommandsInFile,
   CODEX_EVENTS,
   codexConfigPath,
   codexHookCommand,
@@ -441,6 +442,38 @@ describe('init/uninstall with a detected Codex install', () => {
     }
   });
 
+  // Codex trusts a hook by hashing its command string, so only a CHANGED
+  // command invalidates the trust. The notice used to print on every upgrade,
+  // saying "this release changed that command" whether it had or not — and a
+  // warning that is wrong most of the time is one nobody acts on the time it
+  // is right.
+  it('asks for /hooks only when the registered command actually changed', () => {
+    const cmd = 'node "$HOME/.codex/hooks/agstatus-hook.js"';
+    const withCmd = (c: string) => mergeCodexHooks({}, c);
+
+    // A fresh install has nothing registered: no re-trust to ask for.
+    expect(codexNeedsRetrust({}, cmd)).toBe(false);
+
+    // An upgrade that writes the same command: nothing to do.
+    expect(codexNeedsRetrust(withCmd(cmd), cmd)).toBe(false);
+
+    // An upgrade that changes it: the hook goes silent until /hooks is re-run.
+    const old = 'CLAUDE_STATUS_URL="x" node "$HOME/.codex/hooks/agstatus-hook.js"';
+    expect(codexNeedsRetrust(withCmd(old), cmd)).toBe(true);
+
+    // Somebody else's hook is not ours to reason about.
+    expect(codexNeedsRetrust({ hooks: { Stop: [{ hooks: [{ command: 'echo hi' }] }] } }, cmd))
+      .toBe(false);
+  });
+
+  it('reads back every AgStatus command a hooks file registers', () => {
+    const cmd = 'node "$HOME/.codex/hooks/agstatus-hook.js"';
+    expect(codexCommandsInFile(mergeCodexHooks({}, cmd))).toEqual([cmd]);
+    expect(codexCommandsInFile({})).toEqual([]);
+    // Malformed shapes must not throw here — readCodexHooks is the gate.
+    expect(codexCommandsInFile({ hooks: { Stop: 'nope' } } as never)).toEqual([]);
+  });
+
   it('respects --no-codex and force-configures with --codex when undetected', async () => {
     await runInit({ url: base, noQr: true, codex: false, log });
     expect(fs.existsSync(codexHooksPath())).toBe(false);
@@ -580,16 +613,36 @@ describe('init/uninstall with a detected Codex install', () => {
     expect(fs.readFileSync(codexHooksPath(), 'utf8')).not.toContain('ags_oldtoken');
   });
 
-  it('prints the sidecar path and the re-run-/hooks warning', async () => {
+  it('prints the sidecar path, and asks for /hooks without claiming a change', async () => {
     const lines: string[] = [];
     await runInit({ url: base, noQr: true, log: (l) => lines.push(l) });
     const out = lines.join('\n');
     expect(out).toContain(codexConfigPath());
-    // Codex trusts a hook by hashing its command string, and this release
-    // changed that string: without re-running /hooks an upgraded install is
-    // silently dead, so the warning has to say why, not just what.
+    // Codex will not run a hook it has not been told to trust, so a FIRST
+    // install still has to say "go and run /hooks".
     expect(out).toMatch(/run \/hooks inside Codex/);
-    expect(out).toMatch(/changed/);
+    // But it must not claim the command changed — nothing was registered
+    // before. That sentence used to print on every install and every upgrade
+    // whether it was true or not.
+    expect(out).not.toMatch(/changed/);
+  });
+
+  it('says the command changed only when it did', async () => {
+    // Re-running over our own registration: same command, nothing to re-trust.
+    await runInit({ url: base, noQr: true, log: () => {} });
+    const again: string[] = [];
+    await runInit({ url: base, noQr: true, log: (l) => again.push(l) });
+    expect(again.join('\n')).not.toMatch(/run \/hooks inside Codex/);
+
+    // An older registration with a different command string: say so.
+    const old = JSON.parse(fs.readFileSync(codexHooksPath(), 'utf8'));
+    for (const entries of Object.values(old.hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>)) {
+      for (const e of entries) for (const h of e.hooks) h.command = `CLAUDE_STATUS_URL="x" ${h.command}`;
+    }
+    fs.writeFileSync(codexHooksPath(), JSON.stringify(old));
+    const upgraded: string[] = [];
+    await runInit({ url: base, noQr: true, log: (l) => upgraded.push(l) });
+    expect(upgraded.join('\n')).toMatch(/changed/);
   });
 });
 

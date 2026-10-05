@@ -16,7 +16,6 @@
 
 /* Every figure on a card sits in a column with other figures, or ticks in
  * place every 15s. Proportional numerals make both jump. */
-.reading-value,
 .meter-value,
 .ts,
 .tok {
@@ -289,40 +288,6 @@
   color: var(--text-3);
 }
 
-/* ---- Readings -----------------------------------------------------------
- * The precision half of the card: exact values, wide figures, unit beneath.
- * Read on approach, not at a glance — which is why they are small and calm
- * while the state above them is not. */
-.readings {
-  display: flex;
-  gap: var(--space-md);
-  flex-wrap: wrap;
-}
-
-.reading {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-
-.reading-value {
-  font-family: var(--font-read);
-  font-size: var(--t-lg);
-  font-weight: 600;
-  line-height: var(--lh-tight);
-  color: var(--text-1);
-}
-
-.reading-value.dim { color: var(--text-3); }
-
-.reading-label {
-  font-size: var(--t-2xs);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-3);
-}
-
 /* A plan limit, which is a percentage of an unknown quota — never a token
  * count. The two measures do not convert and the UI must not imply they do. */
 .meter {
@@ -387,5 +352,125 @@
  * dismiss target grows. Lives with the card rather than with the board,
  * because the landing page shows these cards without the board's page shell. */
 @media (max-width: 560px) {
+  .grid { grid-template-columns: 1fr; }
   .message { -webkit-line-clamp: 2; }
+}
+
+/* ---- Grid ---------------------------------------------------------------
+ * Lives with the card rather than with the board, because the landing page
+ * lays out the same component and was using a second grid of its own at a
+ * 250px minimum — 70px under the floor this track sets, so the card was
+ * advertised at a measure the product never renders it at.
+ *
+ * The old board grid was capped at two columns above 700px, so a 27-inch
+ * monitor showed two enormous cards. This is the breakpoint-free version:
+ * cards keep a sane measure and the column count follows the space. */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+  gap: var(--space-sm);
+  align-content: start;
+}
+
+/* ---- The plan-limit block -----------------------------------------------
+ * One agent's windows, and the control that opens its detail. Lives here
+ * rather than in shell.css because the landing page draws these too, and the
+ * last hand-drawn copy of this component on that page had already drifted
+ * four ways from the real one — a different flex basis, a different min-width,
+ * a different radius and no reset line at all. `.usage` itself, the flex row
+ * these sit in, is page layout and stays in shell.css.
+ */
+
+.usage-block {
+  position: relative;   /* the overlay below is anchored to this */
+  /* A basis of one third: three blocks sit across, fewer grow to fill. */
+  flex: 1 1 calc(33.333% - var(--space-xs));
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--ink-900);
+  border: 1px solid var(--ink-800);
+  border-radius: var(--r-lg);
+  transition: border-color var(--d-fast) var(--ease), background var(--d-fast) var(--ease);
+}
+
+/* Only when the block actually holds a control. The landing page renders these
+ * as an illustration with no button in them, and a block that lifts under the
+ * cursor and cannot be clicked is the same kind of lie as a disabled-looking
+ * thing that works. The cursor lives on the button, whose overlay covers the
+ * whole block anyway, so the pointer still appears across all of it. */
+.usage-block:has(.usage-open):hover {
+  background: var(--ink-850);
+  border-color: var(--ink-700);
+}
+
+/* The whole block is the target, but only this is the control. The overlay is
+ * on the button rather than role="button" on the section, so the percentages
+ * underneath stay in the accessibility tree instead of being replaced by one
+ * label. */
+.usage-open {
+  all: unset;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  width: 100%;
+  cursor: pointer;
+}
+
+.usage-open::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.usage-open:focus-visible {
+  outline: 2px solid var(--st-done);
+  outline-offset: 3px;
+}
+
+.usage-src {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  margin: 0;
+  font-family: var(--font-label);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+/* The affordance for "this opens something". It leans in on hover rather than
+ * sitting there animating — motion on this board reports a change, and a
+ * chevron that drifts on its own reports nothing. */
+.usage-more {
+  flex: none;
+  color: var(--text-3);
+  font-weight: 400;
+  transition: transform var(--d-fast) var(--ease), color var(--d-fast) var(--ease);
+}
+
+.usage-block:has(.usage-open):hover .usage-more,
+.usage-open:focus-visible .usage-more {
+  color: var(--text-1);
+  transform: translateX(2px);
+}
+
+.meter-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-reset {
+  color: var(--text-3);
+  font-weight: 400;
+  font-family: var(--font-ui);
 }

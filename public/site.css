@@ -100,8 +100,20 @@ h1, h2, h3, h4, h5 {
 
 h1 { font-size: clamp(32px, 6vw, 64px); letter-spacing: -0.03em; }
 h2 { font-size: clamp(24px, 3.4vw, 36px); letter-spacing: -0.022em; }
-h3 { font-size: clamp(17px, 1.6vw, 20px); font-weight: 600; }
-h4 { font-size: 16px; font-weight: 600; }
+h3 { font-size: clamp(20px, 1.8vw, 24px); font-weight: 600; }
+
+/* Separated from h3 by face and case rather than by one pixel. 1.6vw hit its
+ * floor at a 1062px viewport, so on every phone, tablet and most laptops h3
+ * was 17px and h4 was 16px — same weight, same family, same colour — and h4
+ * was also the exact size of body text, so it read as a bold sentence. */
+h4 {
+  font-family: var(--font-label);
+  font-size: var(--t-sm);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
 
 /* ---- Code ---------------------------------------------------------------
  * The one legitimate monospace. These are payloads a reader copies. */

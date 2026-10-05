@@ -63,7 +63,8 @@ function renderDoc(doc) {
     return `href="${REPO}/blob/master/${path.posix.normalize(repoPath)}${frag ? `#${frag}` : ''}"`;
   });
 
-  // Demote headings one level (the page owns <h1>) and give each an id
+  // Demote headings one level — the page owns the <h1>, emitted below in the
+  // template — and give each an id
   // prefixed with the doc's section id so the three docs never collide.
   const headings = [];
   html = html.replace(/<h([1-5])>([\s\S]*?)<\/h\1>/g, (_m, level, inner) => {
@@ -207,6 +208,17 @@ const page = `<!doctype html>
   .anchor { text-decoration: none; color: inherit; }
   .anchor:hover::after { content: " #"; color: var(--text-3); }
 
+  /* The page's one h1. Every markdown title is demoted to h2 on the way in,
+     so without this the generated page had no h1 at all — and the comment in
+     the generator claimed it did. */
+  .doc-h1 {
+    margin: 0 0 var(--space-lg);
+    /* Not 3.4vw: site.css gives h2 the same coefficient, so the two tracked
+       each other and rendered identically — 26.1px apiece at 768px. A page
+       title has to outrank its sections at every width, not just wide ones. */
+    font-size: clamp(32px, 4.6vw, 44px);
+  }
+
   .doc-split {
     border: 0;
     border-top: 1px solid var(--ink-800);
@@ -230,12 +242,13 @@ const page = `<!doctype html>
 
 <div class="layout">
   <aside class="toc" aria-label="Table of contents">
-    <div class="toc-title">Documentation</div>
+    <div class="toc-title" aria-hidden="true">Documentation</div>
     <ul>
       ${toc}
     </ul>
   </aside>
   <main>
+    <h1 class="doc-h1">AgStatus documentation</h1>
 ${body}
   </main>
 </div>

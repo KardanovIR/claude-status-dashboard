@@ -273,8 +273,9 @@ enum Theme {
 
 // The third design principle is that motion means something changed. Its
 // corollary is that someone who has asked the system for less motion gets none
-// — which is the board's own rule, not a courtesy. public/board.css:507 honours
-// prefers-reduced-motion on the web; until these existed the iOS app honoured
+// — which is the board's own rule, not a courtesy. public/board.css:232 honours
+// prefers-reduced-motion on the web, and public/site.css:431 does the same for
+// the landing, docs and privacy pages; until these existed the iOS app honoured
 // it nowhere, in any view, while the principle claimed otherwise.
 //
 // Transitions need no separate treatment. A SwiftUI transition only plays

@@ -131,7 +131,9 @@ notifications off, when the token expires, or when the board is deleted.
 The iOS app keeps your board's URL and token in the iOS Keychain on your device.
 It makes network requests only to the board server you configure. Demo mode runs
 entirely on-device and sends nothing anywhere. The app requests camera access only
-when you choose to scan a setup QR code, and the camera is used for nothing else.
+when you choose to scan a setup QR code. The frames are decoded on the device to read the
+URL out of the code; no image is stored, and none is transmitted anywhere. The camera is
+used for nothing else.
 
 The Android client in the repository behaves the same way, with one difference
 worth stating: it keeps the URL and token in an encrypted preferences file, and if

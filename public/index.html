@@ -16,11 +16,17 @@
 </head>
 <body>
   <header class="topbar">
-    <span class="logo">AgStatus</span>
-    <!-- One bit of information, so it gets one dot. The words are in `title`,
-         and it is no longer `position: fixed` with `pointer-events: none`,
-         which meant the tooltip could never be read. -->
-    <span class="conn" id="conn" title="Connecting…"></span>
+    <!-- The board's h1. It was a plain span, so the page shipped with no
+         heading at all and a screen reader had nothing to navigate by. -->
+    <h1 class="logo">AgStatus</h1>
+    <!-- One bit of information, so it gets one dot — but a dot is colour
+         alone, and an empty span has no accessible name at all. The word is
+         in a live region beside it now, so the state is announced when it
+         changes instead of living only in a `title` nothing reads. -->
+    <span class="conn" id="conn" role="status">
+      <span class="conn-dot" aria-hidden="true"></span>
+      <span class="sr-only" id="conn-text">Connecting…</span>
+    </span>
     <span class="topbar-spacer"></span>
   </header>
 

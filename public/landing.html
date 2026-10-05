@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
 <title>AgStatus — live status for your coding agents</title>
 <meta name="description" content="See what Claude Code and Codex are doing right now, from your phone — then tap the one that needs you and its terminal comes to the front. Open source, self-hostable." />
-<!-- --ink-950 and --st-done, converted once. A meta cannot read a custom property. -->
+<!-- --ink-950 (#0c0f0d), --ink-900 (#141815) and --st-done (#69c88e), converted
+     once. A meta tag and a data-URI cannot read a custom property. -->
 <meta name="theme-color" content="#0c0f0d" />
 <meta property="og:title" content="AgStatus — live status for your coding agents" />
 <meta property="og:description" content="See what Claude Code and Codex are doing right now, and tap the one that needs you to bring its terminal to the front." />
@@ -121,7 +122,7 @@
   .install-tabs .tab:hover { color: var(--text-1); }
 
   .os-btn[aria-pressed="true"],
-  .install-tabs .tab[aria-selected="true"] {
+  .install-tabs .tab[aria-pressed="true"] {
     background: var(--ink-850);
     border-color: var(--ink-800);
     color: var(--text-1);
@@ -162,6 +163,29 @@
     flex: none;
   }
 
+  .board-pause {
+    margin-left: auto;
+    padding: 4px 10px;
+    min-height: 28px;
+    font: inherit;
+    font-family: var(--font-label);
+    font-size: var(--t-2xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    background: none;
+    border: 1px solid var(--ink-800);
+    border-radius: var(--r-sm);
+    cursor: pointer;
+    transition: color var(--d-fast) var(--ease), border-color var(--d-fast) var(--ease);
+  }
+
+  .board-pause:hover { color: var(--text-1); border-color: var(--ink-700); }
+
+  @media (hover: none) {
+    .board-pause { min-height: 44px; }
+  }
+
   .board-bar span:not(.live-dot) {
     font-family: var(--font-label);
     font-size: var(--t-2xs);
@@ -170,46 +194,16 @@
     color: var(--text-3);
   }
 
-  /* Per-agent blocks, up to three across, exactly as the board arranges them. */
-  .demo-usage {
+  /* The plan-limit blocks and the card grid are card.css's, the same rules the
+     board loads. What used to be here was a hand-drawn copy of .usage-block
+     that had already drifted four ways from the real one, and a second grid at
+     a 250px minimum — 70px under the floor the board actually renders cards
+     at. The only thing this page still needs is the row they sit in. */
+  .usage {
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-sm);
     margin-bottom: var(--space-md);
-  }
-
-  .demo-block {
-    flex: 1 1 calc(50% - var(--space-xs));
-    min-width: 230px;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    padding: var(--space-sm) var(--space-md);
-    background: var(--ink-900);
-    border: 1px solid var(--ink-800);
-    border-radius: var(--r-md);
-  }
-
-  .demo-src {
-    font-family: var(--font-label);
-    font-size: var(--t-xs);
-    font-weight: 700;
-    letter-spacing: 0.09em;
-    text-transform: uppercase;
-    color: var(--text-2);
-  }
-
-  .meter-label {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .cards {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
-    gap: var(--space-sm);
   }
 
   /* ---- Sections --------------------------------------------------------- */
@@ -246,12 +240,17 @@
     transition: border-color var(--d-mid) var(--ease);
   }
 
-  .feature:hover { border-color: color-mix(in oklab, var(--ink-800) 50%, var(--status)); }
+  .feature:hover { border-color: var(--ink-700); }
 
   @media (min-width: 760px) {
     .feature.wide { grid-column: span 2; }
   }
 
+  /* The tag names the subject; the heading leads. Every card used to be
+     assigned a palette colour that had nothing to do with it — Focus wore the
+     `done` green, Tokens wore `planning` — which spends the board's state
+     vocabulary on six things that are not states. Blocked keeps its colour,
+     because on that one card the colour IS the subject. */
   .feature-tag {
     display: inline-flex;
     align-items: center;
@@ -262,8 +261,10 @@
     font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--status);
+    color: var(--text-3);
   }
+
+  .feature-tag[data-mark="blocked"] { color: var(--st-blocked); }
 
   .feature-tag svg { width: 14px; height: 14px; flex: none; }
 
@@ -444,6 +445,19 @@
     padding-bottom: clamp(64px, 9vw, 104px);
   }
 
+  /* Reachable by a screen reader, invisible to everyone else. */
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+
   .close h2 { max-width: 22ch; margin: 0 auto var(--space-lg); }
   .close .actions { justify-content: center; }
 
@@ -498,6 +512,10 @@
     <button class="os-btn" type="button" data-os="windows" aria-pressed="false">Windows</button>
   </div>
   <p class="err" id="err" role="alert"></p>
+  <!-- The copy buttons' only feedback was a word swap inside the button, and
+       aria-label pinned the accessible name to "Copy" so a screen reader never
+       heard it change. Announced here instead. -->
+  <p class="sr-only" id="copy-status" role="status"></p>
 </header>
 
 <!-- Signature: the board's own cards, driving themselves. Not a screenshot,
@@ -506,11 +524,16 @@
   <div class="board-bar">
     <span class="live-dot" aria-hidden="true"></span>
     <span>Live board</span>
+    <!-- WCAG 2.2.2, Level A: anything that moves or auto-updates for more than
+         five seconds needs a way to stop it. This ran for as long as the page
+         was open. The control is present even under reduced motion, where it
+         starts paused, so it stays honest about what the board is doing. -->
+    <button class="board-pause" id="board-pause" type="button" aria-pressed="false">Pause</button>
   </div>
   <!-- Illustration, not document structure: these carry no heading tags, or
        "Claude" and "Codex" would outrank every real section on the page. -->
-  <div class="demo-usage" id="usage"></div>
-  <div class="cards" id="cards"></div>
+  <div class="usage" id="usage"></div>
+  <div class="grid" id="cards"></div>
 </div>
 
 <hr class="spectrum" />
@@ -522,7 +545,7 @@
   </div>
   <div class="features">
 
-    <article class="feature wide" style="--status: var(--st-done)">
+    <article class="feature wide">
       <div class="feature-tag" data-mark="focus">Focus</div>
       <h3>Tap the one that needs you, and its terminal comes to the front</h3>
       <p>The board used to be read-only: it told you an agent was waiting and left you to find
@@ -545,16 +568,16 @@
         notification, so a five-second approval doesn't cost you an hour.</p>
     </article>
 
-    <article class="feature" style="--status: var(--st-limit-warn)">
-      <div class="feature-tag" data-mark="testing">Limits</div>
+    <article class="feature">
+      <div class="feature-tag" data-mark="limits">Limits</div>
       <h3>Watch your plan, not the clock</h3>
-      <p>One block per agent, up to three across: session and weekly windows for Claude, and the
-        same for Codex including its per-model caps, each with the time until it resets. Green,
-        amber, red as a window fills.</p>
+      <p>One block per agent, up to three across: the session and weekly windows for Claude and
+        for Codex, including the per-model caps both of them report, each with the time until it
+        resets. Green, amber, red as a window fills.</p>
     </article>
 
-    <article class="feature" style="--status: var(--st-planning)">
-      <div class="feature-tag" data-mark="planning">Tokens</div>
+    <article class="feature">
+      <div class="feature-tag" data-mark="tokens">Tokens</div>
       <h3>See where they actually went</h3>
       <p>Tap a limit block for thirty days of spend: tokens per day as bars, the plan limit
         drawn over them as a line, and a ranked breakdown of which projects spent it. Each card
@@ -564,15 +587,15 @@
         screen says so, because a percentage of an unknown quota and a token count do not convert.</p>
     </article>
 
-    <article class="feature" style="--status: var(--st-coding)">
-      <div class="feature-tag" data-mark="coding">History</div>
+    <article class="feature">
+      <div class="feature-tag" data-mark="history">History</div>
       <h3>Replay what happened</h3>
-      <p>Tap any session for its timeline: every status change and command, timestamped, so you
-        can see where a long run actually went.</p>
+      <p>In the app, tap any session for its timeline: every status change and command,
+        timestamped, so you can see where a long run actually went.</p>
     </article>
 
-    <article class="feature" style="--status: var(--st-idle)">
-      <div class="feature-tag" data-mark="idle">Yours</div>
+    <article class="feature">
+      <div class="feature-tag" data-mark="yours">Yours</div>
       <h3>Open source, self-hostable</h3>
       <p>MIT licensed, and one Node process — with Postgres if you want it to survive a
         restart, and nothing at all if you do not. Use the hosted board or run the whole thing
@@ -592,21 +615,21 @@
     <figure class="phone">
       <div class="phone-frame">
         <img src="/img/board.webp" width="570" height="1240" loading="lazy" decoding="async"
-             alt="The AgStatus board on iPhone: plan-limit blocks for Claude and Codex side by side, above four session cards — one coding with a Focus button, one blocked and tinted red, two done — each showing its agent, machine, age and token count." />
+             alt="The AgStatus board on iPhone: plan-limit blocks for Claude and Codex side by side, above four session cards — one coding with a Focus button, one blocked and tinted red on a machine that has gone offline, two done — each showing which agent it is and how long ago it reported, and most of them a machine name and a token count." />
       </div>
       <figcaption>The board</figcaption>
     </figure>
     <figure class="phone">
       <div class="phone-frame">
         <img src="/img/usage.webp" width="570" height="1240" loading="lazy" decoding="async"
-             alt="The usage screen on iPhone: a bar chart of tokens spent per day for the last thirty days with the plan limit drawn over it as a line, and below it a ranked breakdown of spend per project." />
+             alt="The usage screen on iPhone: thirty days of tokens spent per day as green bars, with three plan-limit windows drawn over them as lines and named in a legend, and below it a ranked breakdown of spend per project with a bar and a percentage for each." />
       </div>
       <figcaption>Where the tokens went</figcaption>
     </figure>
     <figure class="phone">
       <div class="phone-frame">
         <img src="/img/history.webp" width="570" height="1240" loading="lazy" decoding="async"
-             alt="Session history on iPhone: a timeline of one agent's status changes, each with its state icon, the activity line, and a timestamp." />
+             alt="Session history on iPhone: a timeline of one agent's status changes, each row a coloured dot, the name of the state, the activity line and a timestamp." />
       </div>
       <figcaption>Session history</figcaption>
     </figure>
@@ -625,10 +648,15 @@
         <h3>Install the hook</h3>
         <p>Sets up Claude Code, and OpenAI Codex too when it finds it. Your existing settings are
           preserved, and the same command upgrades a machine later without touching your board.</p>
-        <div class="install-tabs" role="tablist" aria-label="Install method">
-          <button class="tab" role="tab" aria-selected="true" data-tab="posix" type="button">macOS / Linux</button>
-          <button class="tab" role="tab" aria-selected="false" data-tab="windows" type="button">Windows</button>
-          <button class="tab" role="tab" aria-selected="false" data-tab="plugin" type="button">Claude Code plugin</button>
+        <!-- role="group" with aria-pressed, not role="tab". The tab pattern
+             promises arrow-key navigation, a roving tabindex and tabpanels,
+             and none of that was here — a screen reader announced "tab, 1 of
+             3" and told the user to press arrows that do nothing. This is the
+             same shape as the OS switch above, which already works. -->
+        <div class="install-tabs" role="group" aria-label="Install method">
+          <button class="tab" aria-pressed="true" data-tab="posix" type="button">macOS / Linux</button>
+          <button class="tab" aria-pressed="false" data-tab="windows" type="button">Windows</button>
+          <button class="tab" aria-pressed="false" data-tab="plugin" type="button">Claude Code plugin</button>
         </div>
         <div>
           <code data-pane="posix">curl -fsSL https://agstatus.online/install.sh | sh</code>
@@ -715,7 +743,9 @@
   // ── feature tags carry the state's own mark, not a generic dot ──────────
   for (const tag of document.querySelectorAll('.feature-tag[data-mark]')) {
     const key = tag.dataset.mark;
-    const svg = key === 'focus' ? MARKS.ICON.focus : MARKS.STATE_MARK[key];
+    // TAG first: only Focus and Blocked take a board mark, because only those
+    // two cards are about something the board actually draws that mark for.
+    const svg = (MARKS.TAG || {})[key] || MARKS.ICON[key] || MARKS.STATE_MARK[key];
     if (svg) tag.insertAdjacentHTML('afterbegin', svg);
   }
 
@@ -723,7 +753,7 @@
   const tabs = document.querySelector('.install-tabs');
   function selectTab(btn) {
     for (const t of tabs.querySelectorAll('.tab')) {
-      t.setAttribute('aria-selected', String(t === btn));
+      t.setAttribute('aria-pressed', String(t === btn));
     }
     for (const pane of tabs.parentElement.querySelectorAll('[data-pane]')) {
       const name = pane.dataset.pane;
@@ -779,16 +809,22 @@
   const probe = String((uaData && uaData.platform) || navigator.platform || navigator.userAgent || '');
   if (/win/i.test(probe)) showOS('windows');
 
+  const copyStatus = document.getElementById('copy-status');
   cmdBtn.addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(INSTALL[os].cmd);
       cmdBtn.classList.add('copied');
       cmdBtn.querySelector('.copy').textContent = 'copied';
+      copyStatus.textContent = 'Install command copied';
       setTimeout(() => {
         cmdBtn.classList.remove('copied');
         cmdBtn.querySelector('.copy').textContent = 'copy';
       }, 1400);
-    } catch { /* clipboard denied: the text is selectable anyway */ }
+    } catch {
+      // The text is selectable either way, but say so rather than looking
+      // like nothing happened.
+      copyStatus.textContent = "Couldn't copy — select the command instead";
+    }
   });
 
   // ── create a board ──────────────────────────────────────────────────────
@@ -850,8 +886,14 @@
   ];
 
   const usage = [
-    { source: 'Claude', windows: [{ label: '5-hour limit', pct: 34 }, { label: 'Weekly limit', pct: 62 }] },
-    { source: 'Codex', windows: [{ label: '5-hour limit', pct: 18 }, { label: 'Weekly (GPT-6-Astra)', pct: 73 }] },
+    { source: 'Claude', windows: [
+      { label: '5-hour limit', pct: 34, resets: 'resets in 2h 17m' },
+      { label: 'Weekly limit', pct: 62, resets: 'resets in 2d 5h' },
+    ] },
+    { source: 'Codex', windows: [
+      { label: '5-hour limit', pct: 18, resets: 'resets in 1h 36m' },
+      { label: 'Weekly (GPT-6-Astra)', pct: 73, resets: 'resets in 4d 2h' },
+    ] },
   ];
 
   const cardsEl = document.getElementById('cards');
@@ -863,19 +905,19 @@
 
   function renderUsage() {
     usageEl.innerHTML = usage.map((u) => `
-      <div class="demo-block">
-        <div class="demo-src">${esc(u.source)}</div>
+      <section class="usage-block">
+        <div class="usage-src">${esc(u.source)}</div>
         ${u.windows.map((w) => `
           <div class="meter">
             <div class="meter-head">
               <span class="meter-label">${esc(w.label)}</span>
-              <span class="meter-value">${w.pct}%</span>
+              <span class="meter-value">${w.pct}%<span class="usage-reset"> · ${esc(w.resets)}</span></span>
             </div>
             <div class="meter-track">
               <div class="meter-fill ${level(w.pct)}" style="transform:scaleX(${(w.pct / 100).toFixed(3)})"></div>
             </div>
           </div>`).join('')}
-      </div>`).join('');
+      </section>`).join('');
   }
 
   function renderCards() {
@@ -905,13 +947,26 @@
   renderUsage();
   renderCards();
 
-  // Calm cadence: one session advances at a time. Frozen for reduced motion,
-  // and paused while the tab is hidden.
+  // Calm cadence: one session advances at a time. Paused while the tab is
+  // hidden, and under reduced motion it starts paused rather than vanishing —
+  // the control has to exist either way for WCAG 2.2.2.
   const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  if (!still) {
+  const pauseBtn = document.getElementById('board-pause');
+  let paused = still;
+
+  function setPaused(next) {
+    paused = next;
+    pauseBtn.textContent = paused ? 'Play' : 'Pause';
+    pauseBtn.setAttribute('aria-pressed', String(paused));
+    pauseBtn.setAttribute('aria-label', paused ? 'Resume the demo board' : 'Pause the demo board');
+  }
+  pauseBtn.addEventListener('click', () => setPaused(!paused));
+  setPaused(paused);
+
+  {
     let tick = 0;
     setInterval(() => {
-      if (document.hidden) return;
+      if (paused || document.hidden) return;
       tick += 1;
       const s = pick(sessions);
       // "Blocked" is the whole point of the product, so make sure a visitor
@@ -927,7 +982,7 @@
     }, 2600);
 
     setInterval(() => {
-      if (document.hidden) return;
+      if (paused || document.hidden) return;
       usage[0].windows[0].pct = Math.min(99, usage[0].windows[0].pct + 1);
       renderUsage();
     }, 7000);

@@ -7,9 +7,9 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 <p align="center">
-  <img src="docs/screenshots/ios-welcome.png" width="230" alt="AgStatus iOS — welcome screen">
-  <img src="docs/screenshots/ios-board.png" width="320" alt="AgStatus iOS — live board with agent sessions">
-  <img src="docs/screenshots/ios-demo.png" width="230" alt="AgStatus iOS — demo mode">
+  <img src="docs/screenshots/ios-welcome.png" width="230" alt="AgStatus iOS — setup screen, with the option to try the demo board">
+  <img src="docs/screenshots/ios-board.png" width="320" alt="AgStatus iOS — the live board: plan-limit blocks for Claude and Codex above four session cards, one of them blocked">
+  <img src="docs/screenshots/ios-usage.png" width="230" alt="AgStatus iOS — thirty days of token spend, with the plan limits drawn over it and a breakdown per project">
 </p>
 
 ## How it works
@@ -76,6 +76,16 @@ Details in [docs/hooks.md](docs/hooks.md).
   opt-in per device for `done` too.
 - **QR pairing** — the CLI prints a QR to open your board on the phone; the
   app hands out short-lived codes to pair more machines.
+- **Plan-limit bars** — one block per agent, up to three across: the session
+  and weekly windows for Claude and for Codex, including per-model caps, each
+  with the time until it resets. Read locally; only percentages are sent.
+- **Where the tokens went** — tap a limit block for thirty days of spend:
+  tokens per day as bars, the plan limits drawn over them as lines, and a
+  ranked breakdown per project. Cards carry their own session's total.
+- **Session history** — in the app, every status change and command for a
+  session, timestamped.
+- **Streaks** — a day counter with a wood → platinum ladder, so a long run of
+  active days is visible. iOS only for now.
 - **Demo mode** — try the iOS app with fake sessions, no server, no data sent.
 - **Privacy switch** — `--minimal` sends tool names only, never command text.
 - **Focus (opt-in)** — tap a session on the board to bring its terminal to
@@ -91,7 +101,7 @@ Details in [docs/hooks.md](docs/hooks.md).
 
 ## Self-hosting
 
-[![Web dashboard](docs/dashboard.jpg)](docs/self-hosting.md)
+[![The AgStatus web board: plan-limit blocks for Claude and Codex, above five session cards across planning, testing, done, coding and blocked — each with its state icon, agent, machine, age and token count](docs/dashboard.webp)](docs/self-hosting.md)
 
 ```bash
 docker run -d -p 3000:3000 ghcr.io/kardanovir/agstatus
@@ -111,7 +121,8 @@ claude-status/
 ├── cli/              # `agstatus` setup CLI + the Node hook it installs
 ├── hooks/            # Original bash hook for manual setup (deprecated)
 ├── ios/              # AgStatus: native SwiftUI app (+ legacy ClaudeStatus WebView app)
-├── integrations/     # Android WebView client
+├── android/          # AgStatus: native Jetpack Compose client (not published yet)
+├── integrations/     # Original Android WebView wrapper (deprecated)
 ├── deploy/           # Caddyfile for the TLS compose profile
 ├── test/             # Server test suite (Vitest)
 ├── docs/             # Guides, API reference, privacy policy, screenshots
@@ -124,6 +135,7 @@ claude-status/
 - [Self-hosting guide](docs/self-hosting.md) — quick start, env vars, TLS, push setup
 - [HTTP API reference](docs/api.md) — webhook, workspaces, pairing, devices, SSE
 - [Claude Code integration](docs/hooks.md) — the installer, event mapping, manual setup
+- [Focus support](docs/focus-support.md) — exactly what a tap reaches in each terminal
 - [Focus keys](docs/focus-keys.md) — bind a key per agent, and wire up a macro keypad
 - [Privacy policy](https://agstatus.online/privacy) — what the hosted instance stores and for how long ([mirror](docs/privacy.md))
 - [Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md)

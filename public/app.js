@@ -647,7 +647,11 @@
 
   function setConnected(ok) {
     connEl.classList.toggle('disconnected', !ok);
-    connEl.title = ok ? 'Live' : 'Reconnecting…';
+    const word = ok ? 'Live' : 'Reconnecting…';
+    connEl.title = word;
+    // role="status" on the wrapper, so writing the word here announces it.
+    const text = document.getElementById('conn-text');
+    if (text) text.textContent = word;
   }
 
   // Deleted/expired workspace: stop reconnecting and say so.
@@ -893,7 +897,7 @@
   // Same order as Theme.seriesColors on iOS.
   const LINE_COLORS = [
     'var(--st-done)', 'var(--st-coding)', 'var(--st-testing)',
-    'var(--st-planning)', 'var(--st-blocked)', 'var(--st-idle)',
+    'var(--st-planning)', 'var(--st-idle)', 'var(--st-blocked)',
   ];
 
   const dayLabel = (day) => {

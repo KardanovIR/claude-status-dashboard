@@ -11,8 +11,8 @@ Verified against the actual Android sources. Here is the document.
 
 | Claim | Evidence |
 |---|---|
-| Only two permissions: `INTERNET`, `CAMERA` | `/Users/ikardanov/Desktop/claude-status/android/app/src/main/AndroidManifest.xml`; merged manifest adds only camera `uses-feature` (from ZXing) and the AndroidX `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` signature permission |
-| No ads, no analytics, no tracking SDK, no Google Play Services | `/Users/ikardanov/Desktop/claude-status/android/gradle/libs.versions.toml` — deps are Compose, AndroidX, kotlinx-serialization, OkHttp(+SSE), `androidx.security:security-crypto`, `com.journeyapps:zxing-android-embedded`. Nothing else. |
+| Only two permissions: `INTERNET`, `CAMERA` | `android/app/src/main/AndroidManifest.xml`; merged manifest adds only camera `uses-feature` (from ZXing) and the AndroidX `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` signature permission |
+| No ads, no analytics, no tracking SDK, no Google Play Services | `android/gradle/libs.versions.toml` — deps are Compose, AndroidX, kotlinx-serialization, OkHttp(+SSE), `androidx.security:security-crypto`, `com.journeyapps:zxing-android-embedded`. Nothing else. |
 | No advertising ID | No `com.google.android.gms.permission.AD_ID` anywhere in the merged manifest; no GMS dependency |
 | No location | No location permission, no `Location*` API use |
 | No WebView / no embedded browser | grep for `WebView` across `app/src/main/` returns nothing; the only web navigation is three `Intent.ACTION_VIEW` hand-offs to the external browser (`ui/SettingsScreen.kt:493-497`) |
@@ -84,7 +84,7 @@ Reason: it is a read-only monitoring dashboard for developer tooling. Do **not**
 **Why "No" is the correct answer:**
 
 1. **There is no authoring surface in the app.** The Android app contains exactly three text inputs, all of them URL/host fields: the board-URL sheet, the self-hosting server field (`ui/WelcomeScreen.kt`), and the scanner's paste fallback (`ui/ScannerScreen.kt:308`). None of them writes content to a board. There is no compose box, no comment field, no reply, no name/caption/note field anywhere in the 4,558 lines of app code.
-2. **The app never uploads content.** Verified exhaustively in `/Users/ikardanov/Desktop/claude-status/android/app/src/main/kotlin/com/kardanov/agstatus/Api.kt`: the only request bodies the app ever sends are an empty body (workspace creation, pair-code creation) and `{"code":"AB12-CD34"}` (pair claim). The app is a **reader**. Content on a board is written by a CLI hook on the user's own computer, over a webhook, entirely outside the app.
+2. **The app never uploads content.** Verified exhaustively in `android/app/src/main/kotlin/com/kardanov/agstatus/Api.kt`: the only request bodies the app ever sends are an empty body (workspace creation, pair-code creation) and `{"code":"AB12-CD34"}` (pair claim). The app is a **reader**. Content on a board is written by a CLI hook on the user's own computer, over a webhook, entirely outside the app.
 3. **The content is machine-emitted telemetry about the user's own machine, not authored expression.** The wire model (`Models.kt:54-70`) is: session id, project folder name, one of six enum status words, a short activity message, an agent source tag, and two timestamps. It is the same category of data as a build log or a CI status — an app showing your own server's status is not a UGC platform.
 4. **There is no other-user relationship.** No accounts, no identities, no profiles, no follow, no feed, no discovery, no search across boards, no reply/comment/reaction mechanism. A board is a capability URL (`https://host/w/ags_<32 chars>`, `Models.kt:141`) that only its holder can reach. There is no way for one user of the app to encounter another user's content.
 
@@ -185,11 +185,11 @@ Note this is independent of the target-audience selection in Part 2 — a 3+ con
 | **Advertising ID** (asked inside Data safety) | **No — the app does not use an advertising ID** | Verified: no `com.google.android.gms.permission.AD_ID` in the merged manifest and no Google Play Services dependency. |
 | **Sensitive-permission declaration forms** | None required | The app declares none of the permissions that trigger a declaration form (no `QUERY_ALL_PACKAGES`, `MANAGE_EXTERNAL_STORAGE`, SMS/Call Log, `READ_MEDIA_*`, exact alarm, full-screen intent, or accessibility service). `CAMERA` has no separate Play declaration form. |
 | **Account deletion** (asked in Data safety) | "My app does not allow users to create an account" | There is no account system; separately, the app already offers immediate self-service deletion of all server data via Settings → "Delete board and all its data" (`ui/SettingsScreen.kt:217`, `SessionStore.deleteBoardEverywhere`). |
-| **Target API level** | Satisfied | `targetSdk = 36` in `/Users/ikardanov/Desktop/claude-status/android/app/build.gradle.kts`. |
+| **Target API level** | Satisfied | `targetSdk = 36` in `android/app/build.gradle.kts`. |
 
 ### Data safety — the shape of the truthful answer (referenced, not filled here)
 
-- **Data collected:** the honest, defensible position is to declare **App activity → Other user-generated content** (the session name, project folder name, and short activity message that appear on the board), *Collected, not shared with third parties, purpose: App functionality only.* Although the Android app itself never uploads this text (the CLI hook does), the hosted board at `agstatus.online` is operated by the same developer, so declaring it is both accurate and safer than claiming zero collection. This mirrors the decision already recorded for the iOS submission in `/Users/ikardanov/Desktop/claude-status/docs/app-store-submission.md:191`.
+- **Data collected:** the honest, defensible position is to declare **App activity → Other user-generated content** (the session name, project folder name, and short activity message that appear on the board), *Collected, not shared with third parties, purpose: App functionality only.* Although the Android app itself never uploads this text (the CLI hook does), the hosted board at `agstatus.online` is operated by the same developer, so declaring it is both accurate and safer than claiming zero collection. This mirrors the decision already recorded for the iOS submission in `docs/app-store-submission.md:191`.
 - **Do not declare** for the Android build: Device or other IDs (the iOS push token has no Android equivalent — there is no FCM), Location, Personal info, Financial info, Photos and videos, Files and docs, Contacts, Messages, Health, Calendar.
 - **Camera:** used for live QR decode only; no image is stored or transmitted, so no photo/video data type is collected.
 - **Encryption in transit: Yes** — `network_security_config.xml` forbids cleartext for every domain; the only exceptions are `10.0.2.2`/`localhost`, which never leave the device.
@@ -201,8 +201,16 @@ Note this is independent of the target-audience selection in Part 2 — a 3+ con
 
 Ordered by severity.
 
-### R1 — Privacy policy that doesn't cover the Android app → **rejection, and repeat rejection**
-**The problem:** the live policy at `https://agstatus.online/privacy` says *"This policy covers the AgStatus iOS app and the hosted server at agstatus.online"* (`/Users/ikardanov/Desktop/claude-status/public/privacy.html:127`, mirrored in `docs/privacy.md:6`), and it contains a **Push notifications** section describing APNs (`public/privacy.html:173-179`) and an **iOS Keychain** storage claim (`public/privacy.html:181`). None of that is true of the Android app, and the policy does not name it.
+### R1 — Privacy policy that doesn't cover the Android app → ~~rejection~~ **fixed 2026-10-05, one clause left**
+**The problem (historical):** the live policy said *"This policy covers the AgStatus iOS app and the hosted server at agstatus.online"*, contained a **Push notifications** section describing APNs, and claimed **iOS Keychain** storage. None of that was true of the Android app, and the policy did not name it.
+
+**What is true now** (`public/privacy.html`, repo-relative; the mirror at `docs/privacy.md` is kept in step):
+- names the Android client and says the policy covers it where behaviour differs (scope paragraph, "What the app stores on your device");
+- states the encrypted preferences file **and** its documented fallback to app-private preferences when the keyset is unreadable;
+- scopes push explicitly: *"Push is iOS only; the Android app has no push and contacts no notification service"*;
+- states that camera frames are decoded on device and that no image is stored or transmitted.
+
+**Still to do before submitting:** the policy currently says the Android client *"is not published to any store"*. That sentence has to change in the same commit that publishes it, or the reviewer reads a policy that disclaims the app they are reviewing.
 **Why it bites:** Play requires the privacy policy to be applicable to, and comprehensive for, the app being submitted. A policy that names only the iOS app is a standard, easily-caught rejection, and reviewers do open the URL.
 **Safe answer / fix before submitting:** update the policy so it names the AgStatus **Android** app explicitly, states that the Android app stores the board URL and token in `EncryptedSharedPreferences` on the device, states that the camera is used only to decode a pairing QR code and that no image is stored or transmitted, and either scopes the push-notification section to the iOS app explicitly or notes that the Android app has no notifications. Do not submit until the URL serves that text.
 
@@ -227,7 +235,7 @@ Ordered by severity.
 **Safe answer:** declare **App activity → Other user-generated content**, App functionality only, not shared, encrypted in transit, deletable on request. Keep it consistent word-for-word with the privacy policy.
 
 ### R7 — Any mention of notifications or alerts in the Play listing → **rejection for misleading claims**
-**Why it bites:** the Android app has no push notifications at all — no FCM, no `POST_NOTIFICATIONS`. But the repo's own README headline is *"Live status board + push alerts for your coding agents"* (`/Users/ikardanov/Desktop/claude-status/README.md:3`), and the existing store copy in `docs/app-store-submission.md:107` describes opt-in alerts. If that copy is reused for Play, the listing promises a feature the binary cannot perform.
+**Why it bites:** the Android app has no push notifications at all — no FCM, no `POST_NOTIFICATIONS`. But the repo's own README headline is *"Live status board + push alerts for your coding agents"* (`README.md:3`), and the existing store copy in `docs/app-store-submission.md:107` describes opt-in alerts. If that copy is reused for Play, the listing promises a feature the binary cannot perform.
 **Safe answer:** strip every mention of push, alerts, and notifications from the Play title, short description, full description, screenshots, and "What's new." This is not a content-rating field, but it is the single most likely cause of a rejection on this submission.
 
 ### R8 — Third-party brand names in the listing → **rejection under impersonation/IP rules**

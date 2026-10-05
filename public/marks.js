@@ -71,5 +71,25 @@
     resume: punched('', `<path d="${DISC}M6.3 5.2 11 8l-4.7 2.8Z"/>`),
   };
 
-  window.AGSTATUS_MARKS = { STATE_MARK, ICON };
+  // Marks for things that are NOT states. The landing page used to label its
+  // feature cards with STATE_MARKs — the testing beaker on "Limits", the
+  // planning list on "Tokens" — which is the board's state vocabulary saying
+  // something it does not mean. tokens.css is explicit that the limit colour
+  // is "Not a state — a LIMIT. The two are different things"; the same goes
+  // for the icon beside it.
+  const TAG = {
+    // A gauge, for a proportion of something.
+    limits: stroked('', '<path d="M2.6 12.2a5.9 5.9 0 0 1 10.8 0"/><path d="M8 12.2 10.7 7.9"/>'),
+    // Bars, for an amount spent over time.
+    tokens: stroked('', '<path d="M3.2 13V8.4M8 13V3.2M12.8 13v-3"/>'),
+    // A timeline: when things happened, in order.
+    history: stroked('', '<path d="M4 2.8v10.4M7.4 4.6h6M7.4 8h4.2M7.4 11.4h5"/>'
+      + '<circle cx="4" cy="4.6" r="1.1" fill="currentColor" stroke="none"/>'
+      + '<circle cx="4" cy="11.4" r="1.1" fill="currentColor" stroke="none"/>'),
+    // A key: it is yours, and you hold it.
+    yours: stroked('', '<circle cx="5.2" cy="10.8" r="2.7"/>'
+      + '<path d="M7.1 8.9 13.6 2.4M11.3 4.7l1.5 1.5M12.7 3.3l1.5 1.5"/>'),
+  };
+
+  window.AGSTATUS_MARKS = { STATE_MARK, ICON, TAG };
 })();
